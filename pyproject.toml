@@ -5,10 +5,12 @@ build-backend = "hatchling.build"
 [project]
 name = "cytovanni"
 authors = [
-    "Valentin Wüst <valentin.wuest@bioquant.uni-heidelberg.de>",
-    "Simon Anders <simon.anders@bioquant.uni-heidelberg.de>",
+    { name = "Valentin Wüst", email = "valentin.wuest@bioquant.uni-heidelberg.de" },
+    { name = "Simon Anders", email = "simon.anders@bioquant.uni-heidelberg.de" },
 ]
-maintainers = ["Valentin Wüst <valentin.wuest@bioquant.uni-heidelberg.de>"]
+maintainers = [
+    { name = "Valentin Wüst", email = "valentin.wuest@bioquant.uni-heidelberg.de" },
+]
 dynamic = ["version"]
 description = "Computational Standardization of Flow Cytometry Data"
 readme = "README.md"
