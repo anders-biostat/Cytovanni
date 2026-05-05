@@ -1,0 +1,44 @@
+Bootstrap: docker
+From: bioconductor/bioconductor_docker:RELEASE_3_21
+
+%post
+    # Jupyter
+    apt-get update && apt-get install -y python3-jupyter-core python3-jupyter-client jupyter
+
+    # R IRkernel
+    R --no-echo -e "
+        install.packages('IRkernel', repos='https://cloud.r-project.org');
+        IRkernel::installspec(user = FALSE, name = 'r-kernel', displayname = 'R (Cytovanni Docker)');
+    "
+    # Core Packages
+    R --no-echo -e "
+        install.packages(c(
+            'tidyverse',     # ggplot2, dplyr, tidyr, readr, purrr, tibble, stringr, forcats
+            'data.table',
+            'patchwork',     # combining ggplots
+            'cowplot',       # publication-style figures
+            'scales',
+            'viridis',
+            'RColorBrewer',
+            'ggpubr',
+            'remotes'
+        ), repos='https://cloud.r-project.org');
+    "
+    # packages
+    R --no-echo -e "
+        install.packages('BiocManager', repos='https://cloud.r-project.org');
+        BiocManager::install(c('flowCore', 'FlowSOM', 'saeyslab/CytoNorm', 'flowWorkspace', 'PeacoQC', 'Biobase'), ask = FALSE, update = TRUE);
+        install.packages('remotes', repos='https://cloud.r-project.org');
+        remotes::install_github('DrCytometer/AutoSpectral', upgrade = 'never')
+        remotes::install_github('DrCytometer/AutoSpectralRcpp', upgrade = 'never')
+    "
+
+%environment
+
+
+%labels
+    Author Valentin Wüst
+    Version v0.0.2
+
+%help
+

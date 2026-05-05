@@ -1,0 +1,53 @@
+Bootstrap: docker
+From: pytorch/pytorch:2.8.0-cuda12.9-cudnn9-devel
+
+%post
+    pip install --no-cache-dir uv
+
+    # install rapids
+    uv pip install --system --pre --extra-index-url=https://pypi.nvidia.com --index-strategy unsafe-best-match \
+    	"cudf-cu12==25.08.*" "dask-cudf-cu12==25.08.*" "cuml-cu12==25.08.*" \
+    	"cugraph-cu12==25.08.*" "nx-cugraph-cu12==25.08.*" "raft-dask-cu12==25.08.*"
+    
+    uv pip install --system jupyter ipykernel
+    uv pip install --system "jax[cuda12]"
+    uv pip install --system scvi-tools numpy pandas muon flowkit flowutils readfcs matplotlib seaborn datashader scanpy igraph
+
+    # couldn't get fastplotlib to work
+    #apt update
+    #apt install -y libturbojpeg0-dev libegl1-mesa libgl1-mesa-dri libglx-mesa0 mesa-utils mesa-utils-extra
+    #uv pip install --system "fastplotlib[notebook]" simplejpeg glfw
+    
+    uv pip install --system pykeops geomloss "rapids-singlecell==0.13.2"
+
+    # packages for Arges
+    uv pip install --system mahotas tifffile "cellpose==4.0.4"
+    
+    # packages for documentation
+    uv pip install --system mkdocs mknotebooks mkdocstrings[python] mkdocs-gen-files
+
+    # custom packages
+    uv pip install --system torchgmm
+    # datashader?
+    
+    python -m ipykernel install --user --name=cytovanni-docker --display-name "Python (Cytovanni-docker)"
+
+%environment
+    # use local compilers
+    export CC=/usr/bin/gcc
+    export CXX=/usr/bin/g++
+    export FC=/usr/bin/gfortran
+    # make matplotlib etc. use container cache instead of referring to .local of host user
+    export XDG_CONFIG_HOME=$(mktemp -d)
+    export XDG_CACHE_HOME=$(mktemp -d)
+    export XDG_DATA_HOME=$(mktemp -d)
+    # no user python packages to avoid host contamination
+    export PYTHONNOUSERSITE=1
+
+%labels
+    Author valentinwust
+    Version v0.3.1
+
+%help
+    Container that can run all parts of Cytovanni.
+
