@@ -1,0 +1,44 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "cytovanni"
+authors = [
+    "Valentin Wüst <valentin.wuest@bioquant.uni-heidelberg.de>",
+    "Simon Anders <simon.anders@bioquant.uni-heidelberg.de>",
+]
+maintainers = ["Valentin Wüst <valentin.wuest@bioquant.uni-heidelberg.de>"]
+dynamic = ["version"]
+description = "Computational Standardization of Flow Cytometry Data"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.10"
+dependencies = [
+    "numpy",
+    "pandas",
+    "torch",
+    "anndata",
+    "flowkit",
+    "flowio",
+    "flowutils",
+    "matplotlib",
+    "seaborn",
+    "scipy",
+    "scikit-learn",
+    "statsmodels",
+    "tqdm",
+    "Pillow",
+    "python-dateutil",
+]
+
+[project.optional-dependencies]
+geom = ["geomloss", "pykeops"]
+plot = ["datashader", "colorcet"]
+all = ["cytovanni[geom,plot]"]
+
+[project.urls]
+Repository = "https://github.com/anders-biostat/Cytovanni"
+
+[tool.hatch.version]
+path = "src/cytovanni/version.py"
