@@ -168,3 +168,5 @@ docs/tutorials/integration_variable-spectra/single_stain/
 docs/tutorials/integration_variable-spectra/standardized_fcs/
 data/example_variable-spectra/
 site/
+
+container/test.sif
