@@ -1,0 +1,12 @@
+Bootstrap: docker
+From: pytorch/pytorch:2.8.0-cuda12.9-cudnn9-devel
+
+%post
+    pip install "cytovanni[geom]"
+
+%runscript
+    python -c "
+import cytovanni; print(cytovanni.__version__)
+import geomloss; print('geomloss ok')
+import pykeops; print('pykeops ok')
+"
