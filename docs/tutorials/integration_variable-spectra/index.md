@@ -1,4 +1,4 @@
-# Standardization with Inferred Dye Spectra
+# Standardisation with Inferred Dye Spectra
 
 In this tutorial, we showcase our full pipeline, including inferring appropriate dye spectra for every batch.
 
