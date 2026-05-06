@@ -8,6 +8,6 @@ First, we use [rainbow beads to calibrate the flow cytometer](tutorials/integrat
 :hidden:
 :maxdepth: 2
 
-Rainbow <tutorials/integration_fixed-spectra/integration_fixed-spectra-rainbow>
-Model <tutorials/integration_fixed-spectra/integration_fixed-spectra-ref>
+Rainbow <integration_fixed-spectra-rainbow>
+Model <integration_fixed-spectra-ref>
 ```

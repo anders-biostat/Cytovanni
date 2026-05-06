@@ -8,7 +8,7 @@ As in the simpler case, we start with the [rainbow bead calibration](tutorials/i
 :hidden:
 :maxdepth: 2
 
-Rainbow <tutorials/integration_variable-spectra/integration_variable-spectra-rainbow>
-Dye <tutorials/integration_variable-spectra/integration_variable-spectra-dye>
-Full Model <tutorials/integration_variable-spectra/integration_variable-spectra-model>
+Rainbow <integration_variable-spectra-rainbow>
+Dye <integration_variable-spectra-dye>
+Full Model <integration_variable-spectra-model>
 ```
