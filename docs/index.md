@@ -20,6 +20,9 @@ As setting up a working CUDA installation can be tiresome, we strongly suggest [
 We provide a set of tutorials on how to use Cytovanni. First, a [cytometer configuration](tutorials/configuration/index) needs to be set up.
 We then provide example workflows using either [only the rainbow calibration and marker normalization](tutorials/integration_fixed-spectra/index), or our [full pipeline](tutorials/integration_variable-spectra/index) including inferred dye spectra for every batch.
 
+## LLMs
+We also include a `https://github.com/anders-biostat/Cytovanni/blob/main/llms.txt` in the GitHub repository, which should contain a condensed version of all the tutorials and make an LLM like Claude Code much more helpful when trying to use Cytovanni.
+
 
 
 

@@ -394,9 +394,9 @@ class RainbowIntegrator():
         """
         markkey = "__cytovanni_rainbow_standardized"
     
-        sample = fk.Sample(filepath, cache_original_events=True)
+        sample = fk.Sample(filepath, preprocess=False)
         metadata = sample.metadata
-        data_df = sample.as_dataframe(source="orig")
+        data_df = sample.as_dataframe(source="raw")
         pns = data_df.columns.get_level_values(1)
         data_df.columns = data_df.columns.get_level_values(0)
         adata = readfcs_sample(filepath, cytoconfig)

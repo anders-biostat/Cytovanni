@@ -155,7 +155,7 @@ def readfcs_sample(filepath, cytoconfig, metadct={}, gates=[], print_gates=False
 
         :param allow_missing_scatter: bool. If True, only warn if scatter channels are missing instead of throwing an error.
     """
-    sample = fk.Sample(filepath, cache_original_events=True)
+    sample = fk.Sample(filepath, preprocess=False)
     sample.channels["pnn"] = sample.channels["pnn"].apply(lambda channel: _replace_channel_name(channel, cytoconfig))
     
     if warn_spillover and sample_has_nonzero_spill(sample):
@@ -166,7 +166,7 @@ def readfcs_sample(filepath, cytoconfig, metadct={}, gates=[], print_gates=False
     sample.channels["pnv"] = sample.channels["channel_number"].apply(load_voltage)
     
     # Transfer data
-    sample_df = sample.as_dataframe(source="orig")
+    sample_df = sample.as_dataframe(source="raw")
     sample_df.columns = sample_df.columns.get_level_values(0)
     sample_df.columns = [_replace_channel_name(channel, cytoconfig) for channel in sample_df.columns]
     
@@ -304,8 +304,8 @@ def writefcs(filepath, data_df, sample_id="", add_metadata={}, overwrite_pns=Tru
     sample.export(filepath, source="raw", include_metadata=True)
 
 def fix_sample_bug(filepath, filepath_new, fct_bugfix, delete_spill=True):
-    sample = fk.Sample(filepath, cache_original_events=True)
-    data_df = sample.as_dataframe(source="orig")
+    sample = fk.Sample(filepath, preprocess=False)
+    data_df = sample.as_dataframe(source="raw")
     data_df.columns = data_df.columns.get_level_values(0)
     data_df = fct_bugfix(data_df)
     add_metadata = sample.metadata
@@ -317,9 +317,9 @@ def fix_sample_bug(filepath, filepath_new, fct_bugfix, delete_spill=True):
 def readfcs_dataframe(filepath):
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        sample = fk.Sample(filepath, ignore_offset_error=True, cache_original_events=True)
+        sample = fk.Sample(filepath, ignore_offset_error=True, preprocess=False)
 
-    data = sample.as_dataframe(source="orig")
+    data = sample.as_dataframe(source="raw")
     cols = data.columns.get_level_values(1).to_numpy()
     mask = cols==""
     cols[mask] = data.columns.get_level_values(0)[mask]

@@ -83,3 +83,55 @@ apptainer exec /your/path/cytovanni-R-container.sif R --slave -e "IRkernel::main
 ```
 
 Register with `kernel.json` using `"display_name": "R (Cytovanni)"` and `"language": "R"`.
+
+## CytometerConfiguration Setup
+
+Every Cytovanni workflow requires a `CytometerConfiguration` object. The TL;DR: only `channels_fluorescence`, `max_linear_range`, and `cytometer` usually need to be set.
+
+### Step 1: Find available channels
+
+```python
+cytovanni.io.readfcs_available_channels("/path/to/file.fcs")
+```
+
+This returns the channel names as they appear in the .fcs file, e.g. `['FSC-A', 'FSC-H', 'FSC-W', 'SSC-A', 'SSC-H', 'SSC-W', 'BV421-A', ...]`.
+
+### Step 2: Create the configuration
+
+```python
+cytoconfig = cytovanni.utils.CytometerConfiguration(
+    channels_fluorescence=['BB515-A', 'BV421-A', ...],  # always required, varies per instrument
+    max_linear_range=2e5,                                # approximate detector linearity limit
+    cytometer="MyInstrument",                            # name string, used for bookkeeping
+)
+```
+
+All other parameters have sensible defaults:
+- `channels_scatter` — defaults to `["FSC-A","FSC-H","FSC-W","SSC-A","SSC-H","SSC-W"]`, usually the same across instruments
+- `channels_meta` — defaults to `["Time"]`
+- `default_scatter_gate` — defaults to `["FSC-A", "SSC-A"]`, used by bead gating functions
+- `try_adding_HW` — if `True`, automatically loads `-H` and `-W` variants of fluorescence channels where available (default `False`)
+- `fct_hash_settings` — hash function to detect cytometer setting changes between batches; rarely needs changing
+
+### Reuse: subclass or save to JSON
+
+For repeated use, either subclass:
+
+```python
+class MyCytometerConfig(cytovanni.utils.CytometerConfiguration):
+    def __init__(self):
+        super().__init__(
+            channels_fluorescence=[...],
+            cytometer="MyInstrument",
+            max_linear_range=2e5,
+        )
+```
+
+Or save/load as JSON:
+
+```python
+cytoconfig.write_json("cytoconfig.json")
+cytoconfig = cytovanni.utils.CytometerConfiguration.load_json("cytoconfig.json")
+```
+
+Note: `fct_hash_settings` is never saved to JSON and always reverts to the default when loading.
