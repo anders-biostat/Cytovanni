@@ -8,7 +8,7 @@ From: pytorch/pytorch:2.8.0-cuda12.9-cudnn9-devel
     uv pip install --system cytovanni[all]
 
     # custom packages
-    uv pip install --system 
+    #uv pip install --system 
     
     python -m ipykernel install --user --name=cytovanni-docker --display-name "Python (Cytovanni-docker)"
 

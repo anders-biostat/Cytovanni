@@ -1,0 +1,85 @@
+# Cytovanni
+
+Cytovanni is a Python library for computational standardization of flow cytometry data.
+
+- GitHub repository: https://github.com/anders-biostat/Cytovanni
+- Documentation: https://cytovanni.readthedocs.io
+
+## Container Setup
+
+The recommended runtime is an Apptainer container with all dependencies. Jupyter and Apptainer must already be installed on the host. Ask the user where they want to store the container files (`.sif` and `init_kernel.sh`) — these paths are hardcoded, so the location matters.
+
+### 1. Download and build the container
+
+```bash
+curl -L https://raw.githubusercontent.com/anders-biostat/Cytovanni/main/container/container.def -o /your/path/container.def
+apptainer build -F /your/path/cytovanni-container.sif /your/path/container.def
+```
+
+Building takes several minutes and requires internet access.
+
+### 2. Create the kernel launch script
+
+Create `/your/path/init_kernel.sh`:
+```bash
+#!/bin/bash
+apptainer exec --nv /your/path/cytovanni-container.sif python -m ipykernel "$@"
+```
+
+Then make it executable: `chmod +x /your/path/init_kernel.sh`
+
+`--nv` enables GPU access. Use `--bind /extra/path` to mount additional directories (the user home directory is mounted automatically).
+
+### 3. Register the Jupyter kernel
+
+```bash
+mkdir -p ~/.local/share/jupyter/kernels/cytovanni-container
+```
+
+Create `~/.local/share/jupyter/kernels/cytovanni-container/kernel.json`:
+```json
+{
+  "argv": [
+    "/your/path/init_kernel.sh",
+    "-f",
+    "{connection_file}"
+  ],
+  "display_name": "Python (Cytovanni)",
+  "language": "python"
+}
+```
+
+Download the kernel logo:
+```bash
+curl -L https://raw.githubusercontent.com/anders-biostat/Cytovanni/main/container/logo-64x64.png -o ~/.local/share/jupyter/kernels/cytovanni-container/logo-64x64.png
+```
+
+The kernel will appear as **Python (Cytovanni)** in the Jupyter launcher.
+
+### Adding extra packages
+
+To add packages, modify `container.def` before building:
+```bash
+sed '/    # custom packages/a\    uv pip install --system package1 package2' -i container.def
+```
+
+## R Container (CytoNorm)
+
+```bash
+curl -L https://raw.githubusercontent.com/anders-biostat/Cytovanni/main/container/Rcontainer.def -o /your/path/Rcontainer.def
+apptainer build -F /your/path/cytovanni-R-container.sif /your/path/Rcontainer.def
+```
+
+Create `/your/path/init_R_kernel.sh`:
+```bash
+#!/bin/bash
+for i in "$@"; do
+    if [[ "$prev" == "-f" ]]; then
+        CONN_FILE="$i"
+    fi
+    prev="$i"
+done
+apptainer exec /your/path/cytovanni-R-container.sif R --slave -e "IRkernel::main('${CONN_FILE}')"
+```
+
+Register with `kernel.json` using `"display_name": "R (Cytovanni)"` and `"language": "R"`.
