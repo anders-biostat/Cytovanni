@@ -5,11 +5,10 @@ From: pytorch/pytorch:2.8.0-cuda12.9-cudnn9-devel
     pip install --no-cache-dir uv
 
     uv pip install --system jupyter ipykernel
-    uv pip install --system numpy pandas flowkit flowutils readfcs matplotlib seaborn scipy scikit-learn anndata statsmodels Pillow
-    uv pip install --system pykeops geomloss
+    uv pip install --system cytovanni[all]
 
     # custom packages
-    uv pip install --system datashader colorcet
+    uv pip install --system 
     
     python -m ipykernel install --user --name=cytovanni-docker --display-name "Python (Cytovanni-docker)"
 
@@ -27,7 +26,7 @@ From: pytorch/pytorch:2.8.0-cuda12.9-cudnn9-devel
 
 %labels
     Author valentinwust
-    Version v0.3.1
+    Version v1.0.0
 
 %help
     Container that can run all parts of Cytovanni.

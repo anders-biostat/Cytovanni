@@ -2,7 +2,7 @@
 
 The GitHub contains an apptainer definition file `container.def`, from which the .sif file can be built using
 ```bash
-apptainer build -F cytovanni-docker.sif container.def
+apptainer build -F cytovanni-container.sif container.def
 ```
 It is then possible to run scripts within this container, which contains all necessary dependencies for the package, as well as CUDA support as long as it is running on a machine with a CUDA-enabled graphics card.
 
@@ -18,14 +18,14 @@ However, our preferred way is using this container as a Jupyter kernel.
 For this, you need to create a script `init_kernel.sh` containing
 ```bash
 #!/bin/bash
-apptainer exec --nv /path/to/cytovanni-docker.sif python -m ipykernel "$@"
+apptainer exec --nv /path/to/cytovanni-container.sif python -m ipykernel "$@"
 ```
 `--nv` enables the container to access the graphics card, and `/path/to` should be replaced by the correct path structure.
 Apptainer automatically mounts the user directory; you can additionally mount other directories using `--bind`.
 You then need to create a custom Jupyter kernel file, first by creating the folder
 ```bash
-mkdir -p ~/.local/share/jupyter/kernels/cytovanni-docker
-cd ~/.local/share/jupyter/kernels/cytovanni-docker
+mkdir -p ~/.local/share/jupyter/kernels/cytovanni-container
+cd ~/.local/share/jupyter/kernels/cytovanni-container
 ```
 and then add a file `kernel.json` with
 ```json
@@ -35,18 +35,18 @@ and then add a file `kernel.json` with
     "-f",
     "{connection_file}"
   ],
-  "display_name": "Python (Cytovanni Docker)",
+  "display_name": "Python (Cytovanni)",
   "language": "python"
 }
 ```
-Copying `logo-64x64.png` into `~/.local/share/jupyter/kernels/cytovanni-docker` will additionally add a nice icon in the Jupyter launcher.
+Copying `logo-64x64.png` into `~/.local/share/jupyter/kernels/cytovanni-container` will additionally add a nice icon in the Jupyter launcher.
 
 This custom kernel can then be used just like any other Jupyter kernel.
 
 # R
 We also provide `Rcontainer.def` to run CytoNorm. Compiling works the same way as above,
 ```bash
-apptainer build -F cytovanni-R-docker.sif Rcontainer.def
+apptainer build -F cytovanni-R-container.sif Rcontainer.def
 ```
 along with `kernel.json`
 ```json
@@ -56,7 +56,7 @@ along with `kernel.json`
     "-f",
     "{connection_file}"
   ],
-  "display_name": "R (Cytovanni Docker)",
+  "display_name": "R (Cytovanni)",
   "language": "R"
 }
 ```
@@ -70,5 +70,5 @@ for i in "$@"; do
     fi
     prev="$i"
 done
-apptainer exec /path/to/cytovanni-R-docker.sif R --slave -e "IRkernel::main('${CONN_FILE}')"
+apptainer exec /path/to/cytovanni-R-container.sif R --slave -e "IRkernel::main('${CONN_FILE}')"
 ```
