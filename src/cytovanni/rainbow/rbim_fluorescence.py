@@ -14,14 +14,14 @@ from ..utils import silent_log
 from ..torch import diffclamp
 from ..torch import ExtendableParameter, CovarianceTrilExtendableParameter, PrecisionExtendableParameter
 from ..torch import ASinhMultivariateNormal
-from ..exceptions import MissingChannelException, IntegrationModuleException, IntegrationModuleWarning, IntegrationModuleUntrainedParameterWarning
+from ..exceptions import MissingChannelException, CalibrationModuleException, CalibrationModuleWarning, CalibrationModuleUntrainedParameterWarning
 from .rboe import RainbowBatchOrdinalEncoder
 from ..torch import pdsave_expand, pdsave_collect
 
 
-class RainbowFluorescenceGMMIntegrationModule(Module):
-    """ 
-        Integration Module on the fluorescence of rainbow beads.
+class RainbowFluorescenceGMMCalibrationModule(Module):
+    """
+        Calibration Module on the fluorescence of rainbow beads.
         Models every type of bead as a Sinh transformed multivariate Normal distribution with a sample dependent covariance matrix.
         The mean positions are fixed per type of rainbow bead, and only scaled (batch-dependent) and shifted (sampmle-dependent)
         such that they reproduce the positions in the samples.
@@ -29,8 +29,8 @@ class RainbowFluorescenceGMMIntegrationModule(Module):
     """
     def __init__(self, rboe, dct_Npeak, channels, class_cofactor,
                  include_shift=True, log_prob_onbase=False):
-        """ 
-            Module for the fluorescence integration with rainbow beads.
+        """
+            Module for the fluorescence calibration with rainbow beads.
             
             :param rboe: RainbowBatchOrdinalEncoder. Batch encoder, set up.
             
@@ -102,7 +102,7 @@ class RainbowFluorescenceGMMIntegrationModule(Module):
     def init_classshares_from_dataset(self, dataset):
         """ Init classshares from dataset.
             
-            :param dataset: RainbowFluorescenceGMMIntegrationDataset. Data to extract init from.
+            :param dataset: RainbowFluorescenceGMMCalibrationDataset. Data to extract init from.
         """
         for tp in self.param_logclassweights:
             if (tp in dataset.peak_shares_uididx) and (tp in dataset.peak_shares):
@@ -114,7 +114,7 @@ class RainbowFluorescenceGMMIntegrationModule(Module):
             Initialize as log of clipped GMM mean (after cofactor scaling), since it has to be positive.
             Initialise such that frozen value cannot be overwritten.
             
-            :param dataset: RainbowFluorescenceGMMIntegrationDataset. Data to extract init from.
+            :param dataset: RainbowFluorescenceGMMCalibrationDataset. Data to extract init from.
         """
         for tp in self.param_peakpos:
             if tp in dataset.GMM_means:
@@ -169,7 +169,7 @@ class RainbowFluorescenceGMMIntegrationModule(Module):
                 self.dct_Npeak[key] = dct_Npeak[key]
             else:
                 if self.dct_Npeak[key]!=dct_Npeak[key]:
-                    raise IntegrationModuleException(f"Rainbow type {key} is already registered as having {self.dct_Npeak[key]} peaks, but extended data says {dct_Npeak[key]} peaks!")
+                    raise CalibrationModuleException(f"Rainbow type {key} is already registered as having {self.dct_Npeak[key]} peaks, but extended data says {dct_Npeak[key]} peaks!")
                     
         for key in class_cofactor:
             if key not in self.class_cofactor:
@@ -342,7 +342,7 @@ class RainbowFluorescenceGMMIntegrationModule(Module):
     def accumulate_nll_gradients(self, dataset):
         """ Accumulate gradients over one sample from dataset, batched for memory conservation.
             
-            :param dataset: RainbowFluorescenceGMMIntegrationDataset. Data to get the sample from.
+            :param dataset: RainbowFluorescenceGMMCalibrationDataset. Data to get the sample from.
         """
         loaders = dataset.sample_loaders()
         total = sum([len(v) for v in loaders.values()])
@@ -398,13 +398,13 @@ class RainbowFluorescenceGMMIntegrationModule(Module):
         return module
     
     
-    def get_integration_factor(self, rainbow_batch=None, adata=None, fct_hash_settings=None, fix_untrained=True, warn_untrained=True, return_mask=False):
-        """ Get integration scale factor from rainbow_batch into common units.
-            Integrating from batch into common is done by multiplying with factor.
+    def get_calibration_factor(self, rainbow_batch=None, adata=None, fct_hash_settings=None, fix_untrained=True, warn_untrained=True, return_mask=False):
+        """ Get calibration scale factor from rainbow_batch into common units.
+            Calibrating from batch into common is done by multiplying with factor.
 
-            :param rainbow_batch: str. Optional, batch for which to get the integration factor.
+            :param rainbow_batch: str. Optional, batch for which to get the calibration factor.
 
-            :param adata: AnnData. Optional, AnnData from which to get the batch for the integration factor.
+            :param adata: AnnData. Optional, AnnData from which to get the batch for the calibration factor.
             
             :param fix_untrained: bool. Whether to fix untrained scale factors to 1.
             
@@ -423,7 +423,7 @@ class RainbowFluorescenceGMMIntegrationModule(Module):
                 warnstr += f" They are set to 1, will be untrustworthy!"
             else:
                 warnstr += f" They are not set to 1, will be untrustworthy!"
-            warnings.warn(warnstr, IntegrationModuleUntrainedParameterWarning)
+            warnings.warn(warnstr, CalibrationModuleUntrainedParameterWarning)
         if fix_untrained:
             scalefactor[~trained_mask] = 1.
         
@@ -432,19 +432,19 @@ class RainbowFluorescenceGMMIntegrationModule(Module):
         else:
             return scalefactor
     
-    def get_integration_rainbow_shift(self, adata=None, uid=None, tp=None):
-        """ Get integration rainbow sample shift, to be added before scaling.
+    def get_calibration_rainbow_shift(self, adata=None, uid=None, tp=None):
+        """ Get calibration rainbow sample shift, to be added before scaling.
             Since the shift is applied after the asinh cofactor, also needs rainbow type to calculate correct shift for sample 'uid'.
-            Integrating from batch into common is done by adding shift, and afterwards multiplying with factor.
+            Calibrating from batch into common is done by adding shift, and afterwards multiplying with factor.
 
             :param adata: AnnData. Optional, AnnData from which to get the uid and rainbow type for the sample shift.
 
-            :param uid: str. Optional, uid for which to get the integration factor.
+            :param uid: str. Optional, uid for which to get the calibration factor.
 
-            :param tp: str. Optional, rainbow type for which to get the integration factor.
+            :param tp: str. Optional, rainbow type for which to get the calibration factor.
         """
         if (adata is None) and ((uid is None) or (tp is None)):
-            raise IntegrationModuleException(f"Getting the rainbow integration shift requires either adata or both 'uid' and 'tp'!")
+            raise CalibrationModuleException(f"Getting the rainbow calibration shift requires either adata or both 'uid' and 'tp'!")
         
         # First try using explicit uid to get index
         try_adata = uid is None
@@ -452,36 +452,36 @@ class RainbowFluorescenceGMMIntegrationModule(Module):
             uid_idx = self.rboe.oes["uid"].transform(uid)
             if uid_idx==-1:
                 if adata is None:
-                    raise IntegrationModuleException(f"Did not find provided uid '{uid}' and no adata was given!")
+                    raise CalibrationModuleException(f"Did not find provided uid '{uid}' and no adata was given!")
                 else:
-                    warnings.warn(f"Uid '{uid}' was not found in ordinal encoder, trying to get it from adata!", IntegrationModuleWarning)
+                    warnings.warn(f"Uid '{uid}' was not found in ordinal encoder, trying to get it from adata!", CalibrationModuleWarning)
                     try_adata = True
         
         # If not available or failed, try from adata
         if try_adata:
             uid_idx = self.rboe.transform_adata(adata)["uid"]
             if uid_idx==-1 and ("uid" in adata.uns):
-                raise IntegrationModuleException(f"Could not obtain uid index from adata, '{adata.uns['uid']}' was not found in ordinal encoder!")
+                raise CalibrationModuleException(f"Could not obtain uid index from adata, '{adata.uns['uid']}' was not found in ordinal encoder!")
             if uid_idx==-1 and ("uid" not in adata.uns):
-                raise IntegrationModuleException(f"Could not obtain uid index from adata, adata.uns has no 'uid'!")
+                raise CalibrationModuleException(f"Could not obtain uid index from adata, adata.uns has no 'uid'!")
         
         # If tp given, try using it
         try_adata = tp is None
         if tp is not None:
             if not tp in self.class_cofactor:
                 if adata is None:
-                    raise IntegrationModuleException(f"Did not find provided rainbow type '{tp}' and no adata was given!")
+                    raise CalibrationModuleException(f"Did not find provided rainbow type '{tp}' and no adata was given!")
                 else:
-                    warnings.warn(f"Provided rainbow type '{tp}' was not set up, trying to get it from adata instead!", IntegrationModuleWarning)
+                    warnings.warn(f"Provided rainbow type '{tp}' was not set up, trying to get it from adata instead!", CalibrationModuleWarning)
                     try_adata = True
         
         # try getting tp from adata:
         if try_adata:
             if not "rainbow_type" in adata.uns:
-                raise IntegrationModuleException(f"Could not obtain rainbow type from adata, adata.uns has no 'rainbow_type'!")
+                raise CalibrationModuleException(f"Could not obtain rainbow type from adata, adata.uns has no 'rainbow_type'!")
             tp = adata.uns["rainbow_type"]
             if not tp in self.class_cofactor:
-                raise IntegrationModuleException(f"Rainbow type '{tp}' from adata was not set up!")
+                raise CalibrationModuleException(f"Rainbow type '{tp}' from adata was not set up!")
         
         # now get shift
         with torch.no_grad():
@@ -490,13 +490,13 @@ class RainbowFluorescenceGMMIntegrationModule(Module):
         return shift
 
     
-class RainbowFluorescenceGMMIntegrationTrainer():
+class RainbowFluorescenceGMMCalibrationTrainer():
     """ 
-        Simple trainer for RainbowFluorescenceGMMIntegrationModule.
+        Simple trainer for RainbowFluorescenceGMMCalibrationModule.
     """
     def __init__(self, module):
         """ 
-            :param module: RainbowFluorescenceGMMIntegrationModule. Module to train.
+            :param module: RainbowFluorescenceGMMCalibrationModule. Module to train.
         """
         self.module = module
         self.is_trained = False
@@ -507,7 +507,7 @@ class RainbowFluorescenceGMMIntegrationTrainer():
             
             Fit longer than necessary from loss itself to get better shift initialisation!
             
-            :param dataset: RainbowFluorescenceGMMIntegrationDataset. Data to train on.
+            :param dataset: RainbowFluorescenceGMMCalibrationDataset. Data to train on.
             
             :param Niter: int. Numer of iterations.
             
@@ -558,7 +558,7 @@ class RainbowFluorescenceGMMIntegrationTrainer():
         """ 
             Initial fit of only the covariances.
             
-            :param dataset: RainbowFluorescenceGMMIntegrationDataset. Data to train on.
+            :param dataset: RainbowFluorescenceGMMCalibrationDataset. Data to train on.
             
             :param Niter: int. Numer of iterations.
             
@@ -587,7 +587,7 @@ class RainbowFluorescenceGMMIntegrationTrainer():
     def fit_init(self, dataset, showprogress=False):
         """ First fit means separately, then fit covariance separately.
             
-            :param dataset: RainbowFluorescenceGMMIntegrationDataset. Data to train on.
+            :param dataset: RainbowFluorescenceGMMCalibrationDataset. Data to train on.
             
             :param plot: bool. Whether to plot losses after fitting is finished.
             
@@ -618,7 +618,7 @@ class RainbowFluorescenceGMMIntegrationTrainer():
     def fit(self, dataset, Niter=10000, lr=1e-2, warmup=40, showprogress=True):
         """ Fit full model.
             
-            :param dataset: RainbowFluorescenceGMMIntegrationDataset. The data to fit with.
+            :param dataset: RainbowFluorescenceGMMCalibrationDataset. The data to fit with.
             
             :param Niter: int. Number of iterations for the fit.
             

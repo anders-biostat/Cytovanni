@@ -87,7 +87,7 @@ def add_adata_unmixed(adata, spectra, addkey="unmx", layer="raw", add_arcsinh=Tr
         
         :param arcsinh_cofactor: float. Cofactor for ArcSinh.
     """
-    x = adata[:,spectra.columns].to_df(layer="integrated")
+    x = adata[:,spectra.columns].to_df(layer="calibrated")
     adata.obsm[addkey] = apply_unmixing_inv(invert_spectra(spectra), x)
     if add_arcsinh:
         adata.obsm[addkey+"_arcsinh"] = apply_arcsinh(adata.obsm[addkey], cofactor=arcsinh_cofactor)

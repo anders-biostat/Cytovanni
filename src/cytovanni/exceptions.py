@@ -26,8 +26,8 @@ class SettingsHashException(CytovanniException):
     """Something went wrong when calculating the hash of the settings."""
     pass
 
-class DefaultScatterIntegrationException(CytovanniException):
-    """The default for the scatter integration is not appropriately set."""
+class DefaultScatterCalibrationException(CytovanniException):
+    """The default for the scatter calibration is not appropriately set."""
     pass
 
 class RepeatedBatchException(CytovanniException):
@@ -42,8 +42,8 @@ class MissingChannelException(CytovanniException):
     """Some expected channels are missing in the adata."""
     pass
 
-class IntegrationModuleException(CytovanniException):
-    """Generic integration module exception."""
+class CalibrationModuleException(CytovanniException):
+    """Generic calibration module exception."""
     pass
 
 class CytometerConfigurationException(CytovanniException):
@@ -66,8 +66,8 @@ class SpilloverInversionException(CytovanniException):
     """Something went wrong inverting a spillover matrix."""
     pass
 
-class OverlapIntegrationException(CytovanniException):
-    """Generic exception for overlap integration part."""
+class OverlapStandardisationException(CytovanniException):
+    """Generic exception for overlap standardisation part."""
     pass
 
 
@@ -92,11 +92,11 @@ class AutoBatchWarning(CytovanniWarning):
     """Warning while automatically inferring rainbow batch from adata."""
     pass
 
-class IntegrationModuleWarning(CytovanniWarning):
-    """Generic integration module warning."""
+class CalibrationModuleWarning(CytovanniWarning):
+    """Generic calibration module warning."""
     pass
 
-class IntegrationModuleUntrainedParameterWarning(CytovanniWarning):
+class CalibrationModuleUntrainedParameterWarning(CytovanniWarning):
     """Some parameters were not trained and are fixed to their default value."""
     pass
 
@@ -124,6 +124,6 @@ class NegativeSpilloverWarning(CytovanniWarning):
     """Warning that some spectra entries are negative."""
     pass
 
-class OverlapIntegrationWarning(CytovanniWarning):
-    """Generic warning for overlap integration part."""
+class OverlapStandardisationWarning(CytovanniWarning):
+    """Generic warning for overlap standardisation part."""
     pass

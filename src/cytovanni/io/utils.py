@@ -11,6 +11,15 @@ import hashlib
 
 from ..exceptions import ChannelMismatchException, RainbowSpilloverWarning, ChannelMismatchWarning
 
+def _access_lowercase_df(df, keys):
+    cols = {c.lower(): c for c in df.columns}
+    return df[[cols[k] for k in keys]]
+def _access_lowercase_df_single(df, key):
+    cols = {c.lower(): c for c in df.columns}
+    return df[cols[key]]
+def _access_lowercase_dict(dct, key):
+    cols = {c.lower(): c for c in dct.keys()}
+    return dct[cols[key]]
 
 def readfcs_available_channels(filepath, simple_flowio=True):
     """ Returns all available channels in .fcs file at filepath.
@@ -21,7 +30,7 @@ def readfcs_available_channels(filepath, simple_flowio=True):
     """
     if simple_flowio:
         data = flowio.FlowData(filepath, only_text=True)
-        channels = np.asarray([data.channels[k]["PnN"] for k in data.channels])
+        channels = np.asarray([_access_lowercase_dict(data.channels[k], "pnn") for k in data.channels])
         return channels
     else:
         sample = fk.Sample(filepath)
@@ -34,7 +43,7 @@ def readfcs_channel_settings_hash(filepath, cytoconfig):
     data = flowio.FlowData(filepath, only_text=True)
     
     var = pd.DataFrame([[k for k in data.channels],
-                        [data.channels[k]["PnN"] for k in data.channels]],
+                        [_access_lowercase_dict(data.channels[k], "pnn") for k in data.channels]],
                        index=["channel_number", "pnn"]
                       ).T
     var["pnn"] = var["pnn"].apply(lambda channel: _replace_channel_name(channel, cytoconfig))
@@ -156,7 +165,7 @@ def readfcs_sample(filepath, cytoconfig, metadct={}, gates=[], print_gates=False
         :param allow_missing_scatter: bool. If True, only warn if scatter channels are missing instead of throwing an error.
     """
     sample = fk.Sample(filepath, preprocess=False)
-    sample.channels["pnn"] = sample.channels["pnn"].apply(lambda channel: _replace_channel_name(channel, cytoconfig))
+    sample.channels["pnn"] = _access_lowercase_df_single(sample.channels, "pnn").apply(lambda channel: _replace_channel_name(channel, cytoconfig))
     
     if warn_spillover and sample_has_nonzero_spill(sample):
         warnings.warn(warn_spillover_message, RainbowSpilloverWarning)
@@ -194,7 +203,7 @@ def readfcs_sample(filepath, cytoconfig, metadct={}, gates=[], print_gates=False
     channels = channels_scatter_available + cytoconfig.channels_fluorescence + channels_HW
     
     ## var data, channel config
-    var = sample.channels[["pnn","pns","png","pnv","pnr"]]
+    var = _access_lowercase_df(sample.channels, ["pnn","pns","png","pnv","pnr"])
     var.index = var["pnn"].tolist()
     var = var.loc[channels]
     

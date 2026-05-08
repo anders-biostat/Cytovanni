@@ -37,7 +37,7 @@ class DefaultMultiplier(ScaleMultiplier):
         return cls()
     
     def forward(self, x, scale):
-        """ Take data that was integrated by transformer, as well as scale the integrated data should
+        """ Take data that was standardised by transformer, as well as scale the standardised data should
             be multiplied with, applies simple multiplication.
         """
         return x * scale
@@ -52,7 +52,7 @@ class UnmxErrorExclusionMultiplier(ScaleMultiplier):
     def __init__(self, transformer, groups=[]):
         """ 
             
-            :params transformer: Module. The class that handles the spectral integration.
+            :params transformer: Module. The class that handles the spectral standardisation.
             
             :params groups: iterable. List of groups with the markers that should be excluded. Every entry should be (stain name, linear positive cutoff, stains to exclude). I.e. ('PE', 1e4, ['BUV396']) detaches the gradient of the scaling factor of 'BUV396' for all events where 'PE' is above 1e4.
         """
@@ -81,7 +81,7 @@ class UnmxErrorExclusionMultiplier(ScaleMultiplier):
         self.block_mask.requires_grad_(False)
     
     def forward(self, xc, scale):
-        """ Take data that was integrated by transformer, return weighting for every event.
+        """ Take data that was standardised by transformer, return weighting for every event.
             
             Don't bother with normalization of weights, MMD loss class anyway enforces proper normalization.
         """

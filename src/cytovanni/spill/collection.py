@@ -48,11 +48,11 @@ class SpilloverMeasurement():
     def __init__(self, rbint=None, is_spectral=False, rainbow_batch=None, rainbow_batch_adata=None, channels=None):
         """ 
             
-            :param rbint: RainbowIntegrator.
+            :param rbint: RainbowCalibrator.
             
             :param is_spectral: bool. Whether to use spectral convention to normalize single stain spectra.
             
-            :param rainbow_batch: str. Optional, rainbow batch for integration factor.
+            :param rainbow_batch: str. Optional, rainbow batch for calibration factor.
             
             :param rainbow_batch_adata: AnnData. Optional, adata from which to infer rainbow batch.
 
@@ -63,12 +63,12 @@ class SpilloverMeasurement():
             raise ValueError("Needs either rbint or channels to be set!")
         self.channels = rbint.rfim.channels if self.rbint is not None else channels
         self.spectra = {}
-        self.spectra_integrated = {}
+        self.spectra_calibrated = {}
         self.is_spectral = is_spectral
         
-        # integration factors
+        # calibration factors
         if (rainbow_batch is not None) + (rainbow_batch_adata is not None) >0:
-            self.integration_factor = rbint.get_integration_factor(rainbow_batch=rainbow_batch, adata=rainbow_batch_adata)
+            self.calibration_factor = rbint.get_calibration_factor(rainbow_batch=rainbow_batch, adata=rainbow_batch_adata)
     
     
     @classmethod
@@ -76,7 +76,7 @@ class SpilloverMeasurement():
         """ Load fitted spectra from custom spectra fit result.
             Ensures all single stains were recorded at the same settings.
             
-            :param rbint: RainbowIntegrator.
+            :param rbint: RainbowCalibrator.
             
             :param custom_data_folder: str. Folder where the custom fit was done.
             
@@ -113,7 +113,7 @@ class SpilloverMeasurement():
             spm.try_load_AutoSpill_spectra()
         spm.check_missing_metadata()
         if clip_negative: spm.clip_negative_spectra()
-        spm.add_integrated_spectra()
+        spm.add_calibrated_spectra()
         
         return spm
     
@@ -121,7 +121,7 @@ class SpilloverMeasurement():
     def from_AutoSpill(cls, rbint, asp_folder, rainbow_batch, is_spectral=False, clip_negative=True):
         """ Load fitted spectra from AutoSpill fit result.
             
-            :param rbint: RainbowIntegrator.
+            :param rbint: RainbowCalibrator.
             
             :param asp_folder: str. Folder where AutoSpill stored its results.
             
@@ -142,7 +142,7 @@ class SpilloverMeasurement():
         spm.try_load_AutoSpill_spectra()
         spm.check_missing_metadata()
         if clip_negative: spm.clip_negative_spectra()
-        spm.add_integrated_spectra()
+        spm.add_calibrated_spectra()
                 
         return spm
 
@@ -206,11 +206,11 @@ class SpilloverMeasurement():
         if len(present_dyes | metadata_dyes) > len(metadata_dyes):
             raise SpilloverException(f"Missing metadata for dyes {list(present_dyes - metadata_dyes)}!")
     
-    def add_integrated_spectra(self):
-        """ Add batch integrated version of all present spectra.
+    def add_calibrated_spectra(self):
+        """ Add batch calibrated version of all present spectra.
         """
         for key in self.spectra:
-            self.spectra_integrated[key] = scale_spectra_wfactors(self.spectra[key], self.integration_factor, self.is_spectral)
+            self.spectra_calibrated[key] = scale_spectra_wfactors(self.spectra[key], self.calibration_factor, self.is_spectral)
     
     def clip_negative_spectra(self, warn=True):
         """ Clip all negative spectra entries to zero.
@@ -223,10 +223,10 @@ class SpilloverMeasurement():
             clipped_entries += (self.spectra[key].to_numpy()<0).sum()
             self.spectra[key][self.spectra[key]<0] = 0.
             
-        for key in self.spectra_integrated:
+        for key in self.spectra_calibrated:
             n_keys += 1
-            clipped_entries += (self.spectra_integrated[key].to_numpy()<0).sum()
-            self.spectra_integrated[key][self.spectra_integrated[key]<0] = 0.
+            clipped_entries += (self.spectra_calibrated[key].to_numpy()<0).sum()
+            self.spectra_calibrated[key][self.spectra_calibrated[key]<0] = 0.
         
         if warn and clipped_entries>0:
             warnstr = f"Found {clipped_entries} negative entries in spectra across {n_keys} fits! Clipping to zero."
@@ -239,9 +239,9 @@ class SpilloverMeasurement():
         for skey in self.spectra:
             mask = self.panel_meta.loc[self.spectra[skey].columns, key].to_numpy().astype(bool)
             self.spectra[skey][self.spectra[skey].columns[mask]] = np.nan
-        for skey in self.spectra_integrated:
-            mask = self.panel_meta.loc[self.spectra_integrated[skey].columns, key].to_numpy().astype(bool)
-            self.spectra_integrated[skey][self.spectra_integrated[skey].columns[mask]] = np.nan
+        for skey in self.spectra_calibrated:
+            mask = self.panel_meta.loc[self.spectra_calibrated[skey].columns, key].to_numpy().astype(bool)
+            self.spectra_calibrated[skey][self.spectra_calibrated[skey].columns[mask]] = np.nan
         
         for mkey in mask_meta:
             mask = self.panel_meta[key].to_numpy().astype(bool)
@@ -256,13 +256,13 @@ def _collect_meta(spillovers, dye, stain, register_on):
             metas.append(sp.panel_meta.loc[dye])
     return pd.DataFrame(metas, index=index)
 
-def _collect_spectrum(spillovers, dye, stain, register_on, key, integrated=False):
+def _collect_spectrum(spillovers, dye, stain, register_on, key, calibrated=False):
     index = []
     spectra = []
     for name, sp in spillovers.items():
         # make sure metadata is present
         if dye in sp.panel_meta.index and sp.panel_meta.loc[dye, register_on]==stain:
-            spect = (sp.spectra_integrated if integrated else sp.spectra)
+            spect = (sp.spectra_calibrated if calibrated else sp.spectra)
             # make sure fit type is present, and spectrum for dye is available
             if key in spect and dye in spect[key]:
                 index.append(name)
@@ -291,29 +291,29 @@ class SingleStainSpilloverCollection():
         self.stain = stain
         
         self.keys = list(np.unique([k for sp in self.spillovers for k in sp.spectra.keys()]))
-        self.keys_integrated = list(np.unique([k for sp in self.spillovers for k in sp.spectra_integrated.keys()]))
+        self.keys_calibrated = list(np.unique([k for sp in self.spillovers for k in sp.spectra_calibrated.keys()]))
         
         self.meta = _collect_meta(self.spillovers, self.dye, self.stain, self.register_on)
         
-        self.spectra = {key:_collect_spectrum(self.spillovers, self.dye, self.stain, self.register_on, key, integrated=False)
+        self.spectra = {key:_collect_spectrum(self.spillovers, self.dye, self.stain, self.register_on, key, calibrated=False)
                         for key in self.keys}
-        self.spectra_integrated = {key:_collect_spectrum(self.spillovers, self.dye, self.stain, self.register_on, key, integrated=True)
+        self.spectra_calibrated = {key:_collect_spectrum(self.spillovers, self.dye, self.stain, self.register_on, key, calibrated=True)
                                    for key in self.keys}
 
     def normalize_spectra(self, norm_channel=None):
         """ Normalize all spectra in self.
-            Normalizes each extraction type, integrated/raw etc. separately.
+            Normalizes each extraction type, calibrated/raw etc. separately.
             Either norm_channel is set to one, or the channel with the highest average intensity.
         """
         self.spectra = {k:_normalize_spectra_set(v, norm_channel=norm_channel)
                                        for k, v in self.spectra.items()}
-        self.spectra_integrated = {k:_normalize_spectra_set(v, norm_channel=norm_channel)
-                                       for k, v in self.spectra_integrated.items()}
+        self.spectra_calibrated = {k:_normalize_spectra_set(v, norm_channel=norm_channel)
+                                       for k, v in self.spectra_calibrated.items()}
     
-    def fit_PCA(self, method, integrated=True):
-        self.pcafitter = SingleSpectrumPCAFitter(self.spectra_integrated[method] if integrated else self.spectra[method], N=5, name=self.stain)
+    def fit_PCA(self, method, calibrated=True):
+        self.pcafitter = SingleSpectrumPCAFitter(self.spectra_calibrated[method] if calibrated else self.spectra[method], N=5, name=self.stain)
         self.pca_method = method
-        self.pca_integrated = integrated
+        self.pca_calibrated = calibrated
     
     def export_pca(self, pc):
         """ Export PCA data for panel pc.
@@ -341,7 +341,7 @@ class SingleStainSpilloverCollection():
         if self.pcafitter.is_dummy:
             warnings.warn(f"{self.stain} has trivial PCA fit, omitting plotting!", SpilloverWarning)
             return None
-        spill_channel = self.spectra_integrated[self.pca_method] if self.pca_integrated else self.spectra[self.pca_method]
+        spill_channel = self.spectra_calibrated[self.pca_method] if self.pca_calibrated else self.spectra[self.pca_method]
     
         variance_bychannel = self.pcafitter.variance_bychannel
         explained_variance_bychannel_ratio = self.pcafitter.explained_variance_bychannel_ratio.T
@@ -447,7 +447,7 @@ class SpilloverCollection():
         plt.xscale("log")
         plt.xlabel("Positive Peak Intensity")
     
-    def plot_spectrum(self, stain, method, hue, integrated=False):
+    def plot_spectrum(self, stain, method, hue, calibrated=False):
         """ Plot all single stain spectra for the same stain.
             
             :param stain: str. Stain to plot, value of register_on.
@@ -456,10 +456,10 @@ class SpilloverCollection():
             
             :param hue: str. Categorical metadata by which to color the plot.
             
-            :param integrated: bool. Whether to use the integrated spectra.
+            :param calibrated: bool. Whether to use the calibrated spectra.
         """
         sp = self[stain]
-        spectra = sp.spectra_integrated[method] if integrated else sp.spectra[method]
+        spectra = sp.spectra_calibrated[method] if calibrated else sp.spectra[method]
         plothue = sp.meta[hue].astype(str)
 
         fig, ax = plt.subplots(1,1,figsize=(10,7))
@@ -479,7 +479,7 @@ class SpilloverCollection():
         ax.set_xlim([5e-3,None])
         ax.set_title(stain, size=20)
     
-    def plot_spectrum_correlation_single(self, stain, method, c1, c2, hue, integrated=False):
+    def plot_spectrum_correlation_single(self, stain, method, c1, c2, hue, calibrated=False):
         """ Plot all single stain spectra for the same stain, values in two channels against each other.
             
             :param stain: str. Stain to plot, value of register_on.
@@ -492,10 +492,10 @@ class SpilloverCollection():
             
             :param hue: str. Categorical metadata by which to color the plot.
             
-            :param integrated: bool. Whether to use the integrated spectra.
+            :param calibrated: bool. Whether to use the calibrated spectra.
         """
         sp = self[stain]
-        spectra = sp.spectra_integrated[method] if integrated else sp.spectra[method]
+        spectra = sp.spectra_calibrated[method] if calibrated else sp.spectra[method]
         plothue = sp.meta[hue]
 
         fig, ax = plt.subplots(1,1,figsize=(8, 5))
@@ -507,31 +507,31 @@ class SpilloverCollection():
         ax.set_xlabel(c1, size=15)
         ax.set_ylabel(c2, size=15)
     
-    def count_channels_above_cutoff(self, method="linearos", cutoff=.01, integrated=False):
+    def count_channels_above_cutoff(self, method="linearos", cutoff=.01, calibrated=False):
         """ For every dye, count the number of channels in which the spillover is larger than cutoff
             for at least one spectrum measurement.
         """
         def get_single(key):
-            spectrum = self[key].spectra_integrated[method] if integrated else self[key].spectra[method]
+            spectrum = self[key].spectra_calibrated[method] if calibrated else self[key].spectra[method]
             return (((spectrum>cutoff) & (spectrum!=1.)).sum()>0).sum()
         return pd.Series([get_single(key) for key in self.available_keys], index=self.available_keys)
     
-    def count_channels_range_above_cutoff(self, method="linearos", cutoff=.01, integrated=False):
+    def count_channels_range_above_cutoff(self, method="linearos", cutoff=.01, calibrated=False):
         """ For every dye, count the number of channels in which the possible spillover range
             is larger than cutoff.
         """
         def get_single(key):
-            spectrum = self[key].spectra_integrated[method] if integrated else self[key].spectra[method]
+            spectrum = self[key].spectra_calibrated[method] if calibrated else self[key].spectra[method]
             return ((spectrum.max()-spectrum.min())>cutoff).sum()
         return pd.Series([get_single(key) for key in self.available_keys], index=self.available_keys)
 
-    def add_PCA_fit(self, method="linearos", integrated=False):
+    def add_PCA_fit(self, method="linearos", calibrated=False):
         """ Add PCA fit for every single stain.
         """
         for sp in self.single_stains.values():
-            sp.fit_PCA(method, integrated=integrated)
+            sp.fit_PCA(method, calibrated=calibrated)
         self.pca_method = method
-        self.pca_integrated = integrated
+        self.pca_calibrated = calibrated
     
     def plot_total_variance(self, channel_max=False):
         """ Plot total variance of spectra per dye.

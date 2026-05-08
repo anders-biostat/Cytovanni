@@ -214,6 +214,8 @@ class PanelConfiguration():
     def plot_test_spectra_reconstruction(self, spectra, linthresh=1e-2):
         """ Plot spectra against their reconstruction error, using either the full PCA or only the chosen components.
             Also returns a list of all absolute reconstruction errors.
+
+            Gray lines on the plot indicate 100% and 10% reconstruction error.
         """
         spectra_smoothed = self.get_spectra_from_embedding(self.get_spectra_embedding(spectra), only_included_components=True)
         spectra_smoothed_full = self.get_spectra_from_embedding(self.get_spectra_embedding(spectra), only_included_components=False)
@@ -224,6 +226,12 @@ class PanelConfiguration():
         ax[0].set_xscale("symlog", linthresh=linthresh)
         ax[0].set_ylim([min(-1, ax[0].get_ylim()[0]), max(1, ax[0].get_ylim()[1])])
         ax[0].set_yscale("symlog", linthresh=linthresh)
+        x = np.logspace(-4, np.log(ax[0].get_ylim()[1]), 1000)
+        ax[0].plot(x, x, color="gray", linewidth=.5)
+        ax[0].plot(x, .1*x, color="gray", linewidth=.5)
+        x = np.logspace(-4, np.log(-ax[0].get_ylim()[0]), 1000)
+        ax[0].plot(x, -x, color="gray", linewidth=.5)
+        ax[0].plot(x, -.1*x, color="gray", linewidth=.5)
         ax[0].set_title("All Principal Components", size=25)
         ax[0].set_xlabel("Original Intensity", size=15)
         ax[0].set_ylabel("Reconstruction Error", size=15)
@@ -232,6 +240,12 @@ class PanelConfiguration():
         ax[1].set_xscale("symlog", linthresh=linthresh)
         ax[1].set_ylim([min(-1, ax[1].get_ylim()[0]), max(1, ax[1].get_ylim()[1])])
         ax[1].set_yscale("symlog", linthresh=linthresh)
+        x = np.logspace(-4, np.log(ax[0].get_ylim()[1]), 1000)
+        ax[1].plot(x, x, color="gray", linewidth=.5)
+        ax[1].plot(x, .1*x, color="gray", linewidth=.5)
+        x = np.logspace(-4, np.log(-ax[0].get_ylim()[0]), 1000)
+        ax[1].plot(x, -x, color="gray", linewidth=.5)
+        ax[1].plot(x, -.1*x, color="gray", linewidth=.5)
         ax[1].set_title("Chosen Principal Components", size=25)
         ax[1].set_xlabel("Original Intensity", size=15)
         ax[1].set_ylabel("Reconstruction Error", size=15)

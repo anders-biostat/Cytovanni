@@ -9,7 +9,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import os
 
-from ..exceptions import OverlapIntegrationException
+from ..exceptions import OverlapStandardisationException
 from ..torch import MMDLoss, GeomSampleLoss, LossContainer
 from ..utils import apply_arcsinh
 from .moe import MultiOrdinalEncoder
@@ -24,7 +24,7 @@ def _sum_loss_separate_markers(fct, x, y, wx, wy):
     return fct(x_, y_, wx_, wy_).sum(0)
 
 class OverlapFitModel(Module):
-    """ Module that does the overlap fit integration.
+    """ Module that does the overlap fit standardisation.
         Automatically runs on the device that dataset sends its data to.
         
     """
@@ -33,7 +33,7 @@ class OverlapFitModel(Module):
             
             :param moe: MultiOrdinalEncoder. Batch encoder for all relevant batch keys.
             
-            :param transformer: Module. The class that handles the spectral integration.
+            :param transformer: Module. The class that handles the spectral standardisation.
             
             :param dataset: None, SampleOverlapDataset. Dataset with the data to be trained on.
             
@@ -88,7 +88,7 @@ class OverlapFitModel(Module):
             
             :param moe: MultiOrdinalEncoder. Batch encoder for all relevant batch keys.
             
-            :param transformer: Module. The class that handles the spectral integration.
+            :param transformer: Module. The class that handles the spectral standardisation.
             
             :param dataset: SampleOverlapDataset. Dataset with the data to be trained on.
             
@@ -245,7 +245,7 @@ class OverlapFitModel(Module):
             :param lr: float. Learning rate used by Adam.
         """
         if self.dataset is None:
-            raise OverlapIntegrationException("No training data available for training! Make sure dataset is set.")
+            raise OverlapStandardisationException("No training data available for training! Make sure dataset is set.")
         if optimizer=="Adam":
             optimizer = torch.optim.Adam(self.parameters(), lr=lr)
         elif optimizer=="SGD":
@@ -298,12 +298,12 @@ class OverlapFitModel(Module):
         ax[1].legend()
         ax[1].set_xlabel("Step")
 
-    def add_ad_integrated(self, ad, key_layer="integrated", fixed_batch=None,
-                          addkey="unmx_integrated", add_arcsinh=True, arcsinh_cofactor=1500,
+    def add_ad_standardised(self, ad, key_layer="calibrated", fixed_batch=None,
+                          addkey="unmx_standardised", add_arcsinh=True, arcsinh_cofactor=1500,
                           batch_size=3e4):
-        """ Add integrated, unmixed data to ad.
+        """ Add standardised, unmixed data to ad.
 
-            :param ad: AnnData. Sample that should be integrated.
+            :param ad: AnnData. Sample that should be standardised.
 
             :param key_layer: str. Layer in ad.layers to use for the raw intensities.
 
@@ -324,7 +324,7 @@ class OverlapFitModel(Module):
             for x in batches:
                 x = x.to(self.transformer.device)
                 bidx = self.moe.transform_ad(ad) if fixed_batch is None else self.moe.transform_dict(fixed_batch)
-                ints.append(self.transformer.integrate(x, bidx, evl=True).cpu().numpy())
+                ints.append(self.transformer.standardise(x, bidx, evl=True).cpu().numpy())
             xc_int = pd.DataFrame(np.vstack(ints), index=ad.obs.index, columns=self.transformer.stain_marker_name)
             ad.obsm[addkey] = xc_int
             if add_arcsinh:

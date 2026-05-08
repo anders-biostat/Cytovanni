@@ -4,10 +4,10 @@ import torch
 import warnings
 import itertools
 
-from ..exceptions import IntegrationModuleException, IntegrationModuleWarning
+from ..exceptions import CalibrationModuleException, CalibrationModuleWarning
 
 class DataLoader():
-    """ Simple dataloader from RainbowChannelGMMIntegrationDataset.
+    """ Simple dataloader from RainbowFluorescenceGMMCalibrationDataset.
     """
     def __init__(self, dataset, tp, sample_indices, batch_size):
         self.dataset = dataset
@@ -94,8 +94,8 @@ class Sampler():
         splitinds = torch.tensor_split(inds, splitpos)
         return splitinds, groupinds[torch.cat([splitpos-1, torch.tensor([-1])])]
 
-class RainbowFluorescenceGMMIntegrationDataset():
-    """ Dataset for rainbow channel GMM integration.
+class RainbowFluorescenceGMMCalibrationDataset():
+    """ Dataset for rainbow channel GMM calibration.
     """
     def __init__(self, rboe, adatas, device="cpu", Nsubsample=1000, batch_size=20000, data_on_device=True, channel_missing_cutoff=-np.inf, warn_missing=True):
         """ 
@@ -112,7 +112,7 @@ class RainbowFluorescenceGMMIntegrationDataset():
             
             :param data_on_device: bool. Whether data should be shifted to device immediately, usually the best choice since it isn't that big anyway.
             
-            :param channel_missing_cutoff: float. Usually, all channels need to be present for the integration to work. But when looking at calibration data etc. there may be rainbow bead measurements where a laser was turned off etc. Setting this to a finite value will treat all channels where every peak (in a given sample) is below this value as not fittable to avoid trying to fit pure noise. This is done by simply treating all peaks in that channel as nonlinear in the same way as for peaks that are off-scale.
+            :param channel_missing_cutoff: float. Usually, all channels need to be present for the calibration to work. But when looking at calibration data etc. there may be rainbow bead measurements where a laser was turned off etc. Setting this to a finite value will treat all channels where every peak (in a given sample) is below this value as not fittable to avoid trying to fit pure noise. This is done by simply treating all peaks in that channel as nonlinear in the same way as for peaks that are off-scale.
             
             :param warn_missing: bool. Whether to warn about missing channels that will not get trained.
         """
@@ -139,7 +139,7 @@ class RainbowFluorescenceGMMIntegrationDataset():
         """ Make sure simple GMM was run on all samples.
         """
         if np.any([("GMM_label" not in ad.obs) or ("GMM_means" not in ad.uns) for ad in adatas]):
-            raise IntegrationModuleException("Some of the adatas were not fitted with the simple GMM model!")
+            raise CalibrationModuleException("Some of the adatas were not fitted with the simple GMM model!")
     
     @classmethod
     def check_type_Npeak_consistency(cls, adatas, prior={}):
@@ -149,7 +149,7 @@ class RainbowFluorescenceGMMIntegrationDataset():
         for tp in np.unique([ad.uns["rainbow_type"] for ad in adatas]):
             uN = np.unique([ad.uns["GMM_means"].shape[0] for ad in adatas if ad.uns["rainbow_type"]==tp])
             if len(uN)>1 or (uN[0]==prior[tp] if tp in prior else False):
-                IntegrationModuleException(f"Number of rainbow peaks not consistent for rainbow type {tp}!")
+                CalibrationModuleException(f"Number of rainbow peaks not consistent for rainbow type {tp}!")
     
     @classmethod
     def get_type_Npeak(cls, adatas):
@@ -182,7 +182,7 @@ class RainbowFluorescenceGMMIntegrationDataset():
             n_batch, Nb = ((~self.df_channel_train.to_numpy()).sum(1)>0).sum(), self.df_channel_train.shape[0]
             warnstr+= f"\n{n_channel} (out of {Nc}) channels are not trainable in some batches, {n_batch} (out of {Nb}) batches have some not trainable channels."
             warnstr+= f"\nA full accounting of all untrained channels can be found at 'dataset.df_channel_train'."
-            warnings.warn(warnstr, IntegrationModuleWarning)
+            warnings.warn(warnstr, CalibrationModuleWarning)
     
     def setup_data(self):
         self.present_types = np.unique([ad.uns["rainbow_type"] for ad in self.adatas])
@@ -200,17 +200,17 @@ class RainbowFluorescenceGMMIntegrationDataset():
         self.data_batch_index = {tp: torch.cat([fct_single_index(ad, "rainbow_batch") for ad in adatas])
                                  for tp, adatas in self.adatas_tp.items()}
         if sum([(v==-1).sum() for v in self.data_batch_index.values()]).item()>0:
-            raise IntegrationModuleException("Some of the rainbow batches in adatas were not set up in the ordinal encoder!")
+            raise CalibrationModuleException("Some of the rainbow batches in adatas were not set up in the ordinal encoder!")
         
         self.data_type_index = {tp: torch.cat([fct_single_index(ad, "rainbow_type") for ad in adatas])
                                  for tp, adatas in self.adatas_tp.items()}
         if sum([(v==-1).sum() for v in self.data_type_index.values()]).item()>0:
-            raise IntegrationModuleException("Some of the rainbow types in adatas were not set up in the ordinal encoder!")
+            raise CalibrationModuleException("Some of the rainbow types in adatas were not set up in the ordinal encoder!")
         
         self.data_uid_index = {tp: torch.cat([fct_single_index(ad, "uid") for ad in adatas])
                                  for tp, adatas in self.adatas_tp.items()}
         if sum([(v==-1).sum() for v in self.data_uid_index.values()]).item()>0:
-            raise IntegrationModuleException("Some of the unique identifiers in adatas were not set up in the ordinal encoder!")
+            raise CalibrationModuleException("Some of the unique identifiers in adatas were not set up in the ordinal encoder!")
         
         # GMM result, mask non-linear ones
         def get_type_means(tp):

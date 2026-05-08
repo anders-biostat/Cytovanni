@@ -8,7 +8,7 @@ from ..utils import base_plot_NxN_ds, base_plot_NxN
 
 
 def plot_eval_histogram(adatas, unmxkey, uid, key_uid, key_color=None, key_subset=None, subset=[], xlim=[-1e4, 3e5], ylim=[1e-3,None], Nbin=100, savepath="", log=True, cofactor=1500):
-    """ Plot histograms for every marker to evaluate integration.
+    """ Plot histograms for every marker to evaluate standardisation.
 
         :param adatas: iterable. List of all sample adatas.
 
@@ -62,7 +62,7 @@ def plot_eval_histogram(adatas, unmxkey, uid, key_uid, key_color=None, key_subse
 
 
 def plot_eval_NxN(adatas, unmxkey, uid, key_uid, key_color=None, key_subset=None, subset=[], axlim=[-1e4, 3e5], savepath="", cofactor=1500, datashader=True):
-    """ Plot histograms for every marker to evaluate integration.
+    """ Plot histograms for every marker to evaluate standardisation.
 
         :param adatas: iterable. List of all sample adatas.
 

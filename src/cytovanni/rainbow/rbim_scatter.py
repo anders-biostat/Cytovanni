@@ -9,13 +9,13 @@ from tqdm import tqdm
 
 from ..utils import silent_log
 from ..torch import ExtendableParameter
-from ..exceptions import MissingChannelException, IntegrationModuleException
+from ..exceptions import MissingChannelException, CalibrationModuleException
 from .rboe import RainbowBatchOrdinalEncoder
 
-class RainbowScatterIntegrationModule(Module):
-    """ 
-        Integration module on the scatter channels of rainbow (or other) beads.
-        Assumes that every bead type has a fixed position for all the integrated scatter channels
+class RainbowScatterCalibrationModule(Module):
+    """
+        Calibration module on the scatter channels of rainbow (or other) beads.
+        Assumes that every bead type has a fixed position for all the calibrated scatter channels
         (taken as the median of the data), batch effects are simply factors along all the channels.
         
         Cheap, so runs only on the CPU.
@@ -34,31 +34,31 @@ class RainbowScatterIntegrationModule(Module):
         self.is_trained = False
     
     @classmethod
-    def from_data(cls, rboe, adatas, scatter_integration=None):
+    def from_data(cls, rboe, adatas, scatter_calibration=None):
         """ 
             :param rboe: RainbowBatchOrdinalEncoder. Batch encoder, already setup.
             
             :param adatas: iterable. Adatas for the samples that should be used for the fitting.
             
-            :param scatter_integration: dict. Optional, if None uses the default of the cytoconfig of the first adata. Dictionary of channels on which a factor should be fitted, with the channels that it should be applied to. E.g. to fit a factor for the forward scatter and apply it to 'FSC-A' and 'FSC-H' use {'FSC-A':['FSC-A','FSC-H']}. Sanity checks for this are also run through the cytoconfig of the first adata.
+            :param scatter_calibration: dict. Optional, if None uses the default of the cytoconfig of the first adata. Dictionary of channels on which a factor should be fitted, with the channels that it should be applied to. E.g. to fit a factor for the forward scatter and apply it to 'FSC-A' and 'FSC-H' use {'FSC-A':['FSC-A','FSC-H']}. Sanity checks for this are also run through the cytoconfig of the first adata.
         """
-        if scatter_integration is None:
-            scatter_integration = adatas[0].uns["cytoconfig"].get_default_scatter_integration()
+        if scatter_calibration is None:
+            scatter_calibration = adatas[0].uns["cytoconfig"].get_default_scatter_calibration()
         else:
-            scatter_integration = adatas[0].uns["cytoconfig"].check_scatter_integration(scatter_integrate)
+            scatter_calibration = adatas[0].uns["cytoconfig"].check_scatter_calibration(scatter_calibrate)
         
-        channels = np.asarray(list(scatter_integration.keys()))
+        channels = np.asarray(list(scatter_calibration.keys()))
         for ad in adatas:
             missing = list(channels[~np.in1d(channels, ad.var.index)])
             if len(missing)>0:
-                raise MissingChannelException(f"Channels {missing} are required to fit the rainbow scatter integration, but not present in adata!")
+                raise MissingChannelException(f"Channels {missing} are required to fit the rainbow scatter calibration, but not present in adata!")
         
         rsim = cls()
         rsim.rboe = rboe
         rsim.config["channels"] = channels
-        rsim.config["scatter_integration"] = scatter_integration
-        rsim.config["scatter_integration_source"] = [c for k,v in scatter_integration.items() for c in [k]*len(v)]
-        rsim.config["scatter_integration_target"] = [c for k,v in scatter_integration.items() for c in v]
+        rsim.config["scatter_calibration"] = scatter_calibration
+        rsim.config["scatter_calibration_source"] = [c for k,v in scatter_calibration.items() for c in [k]*len(v)]
+        rsim.config["scatter_calibration_target"] = [c for k,v in scatter_calibration.items() for c in v]
         
         rsim.init_parameters()
         rsim.collect_data(adatas)
@@ -119,9 +119,9 @@ class RainbowScatterIntegrationModule(Module):
         self.data_type_idx  = torch.tensor(metadata_df["rainbow_type"].to_numpy()).long()
         
         if (self.data_batch_idx==-1).sum()>0:
-            raise IntegrationModuleException("Some of the passed adatas have a 'rainbow_batch' that was not set up in the ordinal encoder!")
+            raise CalibrationModuleException("Some of the passed adatas have a 'rainbow_batch' that was not set up in the ordinal encoder!")
         if (self.data_type_idx==-1).sum()>0:
-            raise IntegrationModuleException("Some of the passed adatas have a 'rainbow_type' that was not set up in the ordinal encoder!")
+            raise CalibrationModuleException("Some of the passed adatas have a 'rainbow_type' that was not set up in the ordinal encoder!")
         # warn if not all in data!! or just use adatas for the whole setup
 
         get_med = lambda ad, key: np.clip(np.nanmedian(silent_log(ad[:,key].layers["raw"][:,0])), a_min=np.log(self.MIN_MEDIAN), a_max=None)
@@ -151,7 +151,7 @@ class RainbowScatterIntegrationModule(Module):
             :param minloss: float. Minimal loss at which to stop fitting for numerical reasons.
         """
         if not self.has_training_data:
-            raise IntegrationModuleException("RainbowScatterIntegrationModule needs training data for the fit!")
+            raise CalibrationModuleException("RainbowScatterCalibrationModule needs training data for the fit!")
         
         optimizer = torch.optim.SGD(self.parameters(), lr=lr, momentum=.5)
         self.losshistory = []
@@ -173,9 +173,9 @@ class RainbowScatterIntegrationModule(Module):
         """ Plot overview over training and results.
         """
         if not self.is_trained:
-            raise IntegrationModuleException("RainbowScatterIntegrationModule has not been trained yet!")
+            raise CalibrationModuleException("RainbowScatterCalibrationModule has not been trained yet!")
         if not self.has_training_data:
-            raise IntegrationModuleException("RainbowScatterIntegrationModule has no training data to plot!")
+            raise CalibrationModuleException("RainbowScatterCalibrationModule has no training data to plot!")
         Nc = len(self.config["channels"])
         fig, ax = plt.subplots(1,1+Nc,figsize=(6*(1+Nc),5))
         
@@ -213,7 +213,7 @@ class RainbowScatterIntegrationModule(Module):
         """
         initial_types, initial_batches = self.rboe.oes["rainbow_type"].labels, self.rboe.oes["rainbow_batch"].labels
         
-        # for every new added type, ensure that there is some batch overlap so it can be properly integrated
+        # for every new added type, ensure that there is some batch overlap so it can be properly calibrated
         new_orphan_types = []
         for tp in set(df["rainbow_type"].unique())-set(initial_types):
             batches = df.loc[df["rainbow_type"]==tp, "rainbow_batch"].unique()
@@ -225,7 +225,7 @@ class RainbowScatterIntegrationModule(Module):
                 if otheroverlap==0:
                     new_orphan_types.append(tp)
         if len(new_orphan_types)>0:
-            raise IntegrationModuleException(f"Newly added rainbow types {new_orphan_types} have no overlap with previously trained on data! Final integration for these types will not be consistent with the others, aborting.")
+            raise CalibrationModuleException(f"Newly added rainbow types {new_orphan_types} have no overlap with previously trained on data! Final calibration for these types will not be consistent with the others, aborting.")
         
         extend_inds = self.rboe.extend(df)
         self.param_logposition.extend(extend_inds["rainbow_type"])
@@ -250,18 +250,18 @@ class RainbowScatterIntegrationModule(Module):
         
         self.fit()
     
-    def get_integration_factor(self, rainbow_batch=None, adata=None, fct_hash_settings=None):
-        """ Get integration scale factor from rainbow_batch into common units.
-            Integrating from batch into common is done by multiplying with factor.
+    def get_calibration_factor(self, rainbow_batch=None, adata=None, fct_hash_settings=None):
+        """ Get calibration scale factor from rainbow_batch into common units.
+            Calibrating from batch into common is done by multiplying with factor.
 
-            :param rainbow_batch: str. Optional, batch for which to get the integration factor.
+            :param rainbow_batch: str. Optional, batch for which to get the calibration factor.
 
-            :param adata: AnnData. Optional, AnnData from which to get the batch for the integration factor.
+            :param adata: AnnData. Optional, AnnData from which to get the batch for the calibration factor.
         """
         batchidx = self.rboe.transform_adata_batch(adata=adata, rainbow_batch=rainbow_batch, fct_hash_settings=fct_hash_settings)
         with torch.no_grad():
             scalefactor = pd.Series((-self.param_logshift())[batchidx].cpu().exp().numpy(), index=self.config["channels"])
-        scalefactor = scalefactor.loc[self.config["scatter_integration_source"]]
-        scalefactor.index = self.config["scatter_integration_target"]
+        scalefactor = scalefactor.loc[self.config["scatter_calibration_source"]]
+        scalefactor.index = self.config["scatter_calibration_target"]
         return scalefactor
     

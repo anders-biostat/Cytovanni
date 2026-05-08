@@ -9,9 +9,9 @@ from .setvolt import get_voltages_from_rainbow, color_voltageconfig
 
 from .rboe import RainbowBatchOrdinalEncoder
 
-from .rbim_scatter import RainbowScatterIntegrationModule
-from .rbim_data import RainbowFluorescenceGMMIntegrationDataset
-from .rbim_fluorescence import RainbowFluorescenceGMMIntegrationModule, RainbowFluorescenceGMMIntegrationTrainer
-from .rbim import RainbowIntegrator
+from .rbim_scatter import RainbowScatterCalibrationModule
+from .rbim_data import RainbowFluorescenceGMMCalibrationDataset
+from .rbim_fluorescence import RainbowFluorescenceGMMCalibrationModule, RainbowFluorescenceGMMCalibrationTrainer
+from .rbim import RainbowCalibrator
 
 from .pmt import PMTExponentFitter

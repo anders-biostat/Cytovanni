@@ -6,7 +6,7 @@ import seaborn as sns
 import matplotlib.pyplot as plt
 
 from ..spill import PanelConfiguration
-from ..exceptions import SpilloverInversionException, OverlapIntegrationException, OverlapIntegrationWarning
+from ..exceptions import SpilloverInversionException, OverlapStandardisationException, OverlapStandardisationWarning
 from ..torch import ExtendableParameter, diffclamp
 from ..torch import torch_invert_spectra, torch_apply_unmixing_inv, torch_apply_unmixing_lstsq
 from ..torch import pdsave_expand, pdsave_collect, pdsave_expand_dict, pdsave_collect_dict
@@ -257,7 +257,7 @@ class PanelModule(Module):
 
         return val, val_std, R
 
-    def get_unmixing_resistance_fromad(self, adata, embedding_np, key_layer="integrated", arcsinh_cofactor=1500, embedding_step=1., include_unused=False, single_step=False, gradstep_maxnorm=True, batch_size=1e4, label_marker=True):
+    def get_unmixing_resistance_fromad(self, adata, embedding_np, key_layer="calibrated", arcsinh_cofactor=1500, embedding_step=1., include_unused=False, single_step=False, gradstep_maxnorm=True, batch_size=1e4, label_marker=True):
         """ Get resistance to unmixing errors R directly from adata.
 
             :param adata: AnnData. adata from which to get the data.
@@ -286,7 +286,7 @@ class PanelModule(Module):
                                          batch_size=batch_size)[-1]
         return pd.DataFrame(R, index=adata.obs.index, columns=self.panelconfig.stain_marker_name if label_marker else self.stains)
 
-    def get_grouped_jac_fromad(self, adata, embedding_np, stainscale_np=None, key_layer="integrated", arcsinh_cofactor=1500, batch_size=1e4, label_marker=True):
+    def get_grouped_jac_fromad(self, adata, embedding_np, stainscale_np=None, key_layer="calibrated", arcsinh_cofactor=1500, batch_size=1e4, label_marker=True):
         """ Get influence of all panel components on marker means for adata.
             Subset adata if only a subset of events should be used!
 
@@ -319,8 +319,8 @@ class PanelModule(Module):
         mean_jac = np.vstack(jacob).mean(0)
         return pd.DataFrame(mean_jac, index=self.panelconfig.stain_marker_name if label_marker else self.stains, columns=self.components).T
     
-    def get_grouped_jac_single_fromad(self, adata, stain, key_layer="integrated", arcsinh_cofactor=1500, s_dig=3, include=10):
-        """ Run get_grouped_jac_fromad on adata after transformer.add_integration_parameters was called on it.
+    def get_grouped_jac_single_fromad(self, adata, stain, key_layer="calibrated", arcsinh_cofactor=1500, s_dig=3, include=10):
+        """ Run get_grouped_jac_fromad on adata after transformer.add_standardisation_parameters was called on it.
             Focus on one stain and also return which components were used in the panel.
             
             :param adata: AnnData. adata to get the data from.
@@ -421,7 +421,7 @@ class PanelModule(Module):
 
         return df
     
-    def get_clustermeans_withz(self, embedding, adata, key_cluster, key_layer="integrated", cluster_reorder=True, Nmax=4000, arcsinh_cofactor=1500, embedding_step=1., label_marker=True, include_unused=True):
+    def get_clustermeans_withz(self, embedding, adata, key_cluster, key_layer="calibrated", cluster_reorder=True, Nmax=4000, arcsinh_cofactor=1500, embedding_step=1., label_marker=True, include_unused=True):
         """ Takes embedding and adata. Returns mean (on ArcSinh transformed markers),
             as well as z-transformed mean to indicate how different from zero the mean is if potential
             compensation errors are taken into account.
@@ -522,12 +522,12 @@ class PanelEmbeddingModule(Module):
         
         if not np.all(np.isin(pem.batch_keys, list(pem.moe.keys()))):
             missing = list(set(pem.batch_keys) - set(pem.moe.keys()))
-            raise OverlapIntegrationException(f"Batches {missing} from the component batch mapping are not present in the batch encoder!")
+            raise OverlapStandardisationException(f"Batches {missing} from the component batch mapping are not present in the batch encoder!")
         pem.key_comp_batch = pem.key_comp_batch.loc[pem.panelmodule.components]
         
         if batch_order is not None and len(set(pem.batch_keys)-set(pem.batch_order))>0:
             missing = set(pem.batch_keys)-set(pem.batch_order)
-            raise OverlapIntegrationException(f"Batches {missing} from the component batch mapping are not present in the batch ordering! Either pass None, or provide an ordering of all used batches.")
+            raise OverlapStandardisationException(f"Batches {missing} from the component batch mapping are not present in the batch ordering! Either pass None, or provide an ordering of all used batches.")
         
         pem.init_params()
         pem.anchor_batches(anchor_bidx)

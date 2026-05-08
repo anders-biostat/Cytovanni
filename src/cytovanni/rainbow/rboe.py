@@ -148,7 +148,7 @@ class RainbowBatchOrdinalEncoder():
             finally tries to infer batch from training data and current UTC etc. with .find_closest_batch.
         """
         if (adata is None) and (rainbow_batch is None):
-            raise OrdinalEncoderException(f"Getting scatter integration factor requires at least either adata or explicit rainbow_batch!")
+            raise OrdinalEncoderException(f"Getting scatter calibration factor requires at least either adata or explicit rainbow_batch!")
         
         # First try explicit batch
         if rainbow_batch is not None:

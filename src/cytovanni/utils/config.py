@@ -5,7 +5,7 @@ import warnings
 import matplotlib.pyplot as plt
 import hashlib
 from .misc import textcolor, get_cmap, cmap_to_legendhandles, wavelength_to_hex
-from ..exceptions import DefaultScatterGatingException, SettingsHashException, DefaultScatterIntegrationException, CytometerConfigurationException, CytovanniWarning
+from ..exceptions import DefaultScatterGatingException, SettingsHashException, DefaultScatterCalibrationException, CytometerConfigurationException, CytovanniWarning
 
 def _default_hash_settings(adata, use_voltages=True, use_gains=True, include_scatter=True, include_fluorescence=True):
     """ Convert all relevant settings of the cytometer when sample adata was measured to a hash.
@@ -56,7 +56,7 @@ class CytometerConfiguration:
 
     :param channels_scatter: list. List of all relevant scatter channels, 'FSC-A', 'SSC-A' etc.
     
-    :param default_scatter_gate: list. Optionally set the scatter channels that the scatter integration should default to. Dictionary of channels on which a factor should be fitted, with the channels that it should be applied to. E.g. to fit a factor for the forward scatter and apply it to 'FSC-A' and 'FSC-H' use {'FSC-A':['FSC-A','FSC-H']}.
+    :param default_scatter_gate: list. Optionally set the scatter channels that the scatter calibration should default to. Dictionary of channels on which a factor should be fitted, with the channels that it should be applied to. E.g. to fit a factor for the forward scatter and apply it to 'FSC-A' and 'FSC-H' use {'FSC-A':['FSC-A','FSC-H']}.
     
     :param max_linear_range: float. Maximum intensity at which linearity can be assumed for the detectors.
     
@@ -76,7 +76,7 @@ class CytometerConfiguration:
                  channels_scatter=["FSC-A","FSC-H","FSC-W",
                                    "SSC-A","SSC-H","SSC-W"],
                  default_scatter_gate=["FSC-A", "SSC-A"],
-                 default_scatter_integrate={"FSC-A":["FSC-A", "FSC-H"],
+                 default_scatter_calibrate={"FSC-A":["FSC-A", "FSC-H"],
                                             "SSC-A":["SSC-A", "SSC-H"]},
                  channels_meta=["Time"],
                  max_linear_range=2e5,
@@ -91,7 +91,7 @@ class CytometerConfiguration:
         self.channels_scatter = list(channels_scatter)
         self.channels_meta = list(channels_meta)
         self.default_scatter_gate_channels = list(default_scatter_gate)
-        self.default_scatter_integrate = default_scatter_integrate
+        self.default_scatter_calibrate = default_scatter_calibrate
         
         self.max_linear_range = float(max_linear_range)
         self.cytometer = str(cytometer)
@@ -160,7 +160,7 @@ class CytometerConfiguration:
         """ Export configuration to dictionary.
         """
         savekeys = ["channels_fluorescence", "channels_scatter", "channels_meta",
-                    "default_scatter_gate_channels", "default_scatter_integrate",
+                    "default_scatter_gate_channels", "default_scatter_calibrate",
                     "max_linear_range", "cytometer", "try_adding_HW",
                     "channels_fluorescence_addHW", "laserdict", "replace_channelname_dict"]
         export = {}
@@ -216,44 +216,44 @@ class CytometerConfiguration:
         except Exception as e:
             raise SettingsHashException("Something went wrong when calculating the settings hash from adata!") from e
     
-    def check_scatter_integration(self, scatter_integrate, message_default=False):
-        """ Sanity checks for the scatter integration.
+    def check_scatter_calibration(self, scatter_calibrate, message_default=False):
+        """ Sanity checks for the scatter calibration.
         """
 
         # check that all keys are present
         missing = []
-        for key in scatter_integrate:
+        for key in scatter_calibrate:
             if not key in self.channels_scatter:
                 missing.append(key)
-            for ikey in scatter_integrate[key]:
+            for ikey in scatter_calibrate[key]:
                 if not ikey in self.channels_scatter:
                     missing.append(ikey)
         if len(missing)>0:
-            raise DefaultScatterIntegrationException(f"Channels {missing} are present in the {'default ' if message_default else ''}scatter integration, but not among the loaded scatter channels {self.channels_scatter}!")
+            raise DefaultScatterCalibrationException(f"Channels {missing} are present in the {'default ' if message_default else ''}scatter calibration, but not among the loaded scatter channels {self.channels_scatter}!")
 
-        # check that there is no overlap among the channels that should be integrated with different factors
+        # check that there is no overlap among the channels that should be calibrated with different factors
         overlap = []
-        for i, key1 in enumerate(scatter_integrate):
-            for j, key2 in enumerate(scatter_integrate):
+        for i, key1 in enumerate(scatter_calibrate):
+            for j, key2 in enumerate(scatter_calibrate):
                 if i>j:
-                    if not set(scatter_integrate[key1]).isdisjoint(scatter_integrate[key2]):
+                    if not set(scatter_calibrate[key1]).isdisjoint(scatter_calibrate[key2]):
                         overlap.append((key1,key2))
         if len(overlap)>0:
-            raise DefaultScatterIntegrationException(f"There is some overlap present within the {'default ' if message_default else ''}scatter integration among channels that should be integrated with different factors!")
+            raise DefaultScatterCalibrationException(f"There is some overlap present within the {'default ' if message_default else ''}scatter calibration among channels that should be calibrated with different factors!")
     
-    def get_default_scatter_integration(self):
-        """ Get self.default_scatter_integrate, but also implements some sanity checks.
+    def get_default_scatter_calibration(self):
+        """ Get self.default_scatter_calibrate, but also implements some sanity checks.
             Do this here instead of at instantiation because setting this appropriately is optional.
         """
-        scatter_integrate = self.default_scatter_integrate
-        self.check_scatter_integration(scatter_integrate, message_default=True)
-        return scatter_integrate
+        scatter_calibrate = self.default_scatter_calibrate
+        self.check_scatter_calibration(scatter_calibrate, message_default=True)
+        return scatter_calibrate
     
     def plot_height_clipping(self, adata, logscale=False):
         """ Plot height clipping. Area of fluorescence channels against height of fluorescence channels,
             once the height channels saturate the area can no longer be assumed to be linear.
             Preferrably test this with rainbow beads; due to their small size clipping sets in earlier
-            than for cells, and for the rainbow integration it is important to set the max linear range
+            than for cells, and for rainbow calibration it is important to set the max linear range
             appropriately for them.
         """
         fig, ax = plt.subplots(figsize=(10,5))
@@ -421,14 +421,14 @@ class CytometerConfiguration_S8(CytometerConfiguration):
         
         default_scatter_gate = ["LightLoss (Imaging)-A", "SSC (Imaging)-A"]
         
-        default_scatter_integrate = {"FSC-A":["FSC-A", "FSC-H"],
+        default_scatter_calibrate = {"FSC-A":["FSC-A", "FSC-H"],
                                      "SSC (Imaging)-A":["SSC (Imaging)-A", "SSC (Imaging)-H"]}
         
         super().__init__(
             channels_fluorescence=channels_fluorescence,
             channels_scatter=channels_scatter,
             default_scatter_gate=default_scatter_gate,
-            default_scatter_integrate=default_scatter_integrate,
+            default_scatter_calibrate=default_scatter_calibrate,
             max_linear_range=4e6,
             cytometer="S8",
             laserdict=laserdict
@@ -620,7 +620,7 @@ class CytometerConfiguration_Aurora(CytometerConfiguration):
                               "SSC-A", "SSC-H", "SSC-W",
                               "SSC-B-A", "SSC-B-H", "SSC-B-W"],
              default_scatter_gate=["FSC-A", "SSC-A"],
-             default_scatter_integrate={"FSC-A":["FSC-A", "FSC-H"],
+             default_scatter_calibrate={"FSC-A":["FSC-A", "FSC-H"],
                                         "SSC-A":["SSC-A", "SSC-H"],
                                         "SSC-B-A":["SSC-B-A", "SSC-B-H"]},
             cytometer="Aurora",

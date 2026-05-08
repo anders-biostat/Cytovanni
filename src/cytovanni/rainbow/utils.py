@@ -2,10 +2,10 @@ import numpy as np
 import pandas as pd
 import warnings
 
-from ..exceptions import IntegrationModuleWarning, IntegrationModuleException
+from ..exceptions import CalibrationModuleWarning, CalibrationModuleException
 
 def scale_spectra_wfactors(spectra, factors, spectral=False):
-    """ Scale spectra with integration factors.
+    """ Scale spectra with calibration factors.
         If spectral flow, norm largest entry of every spectrum to one.
         For conventional flow, try keeping the entry that is one normed to one,
         use spectral convention as fallback if multiple entries are exactly one.
@@ -17,11 +17,11 @@ def scale_spectra_wfactors(spectra, factors, spectral=False):
     spectra = spectra.astype(float)
     factors = factors.astype(float)
     if len(set(spectra.index) & set(factors.index)) != spectra.shape[0]:
-        raise IntegrationModuleException(f"Cannot apply integration to spectra, missing factors for channels {list(set(spectra.index) - set(factors.index))}.")
-    
+        raise CalibrationModuleException(f"Cannot apply calibration to spectra, missing factors for channels {list(set(spectra.index) - set(factors.index))}.")
+
     apply_factors = factors.loc[spectra.index]
     if np.isnan(apply_factors).sum()>0:
-        raise IntegrationModuleException(f"Cannot apply integration to spectra, the integration factors contain nan.")
+        raise CalibrationModuleException(f"Cannot apply calibration to spectra, the calibration factors contain nan.")
     
     #negativecount = (spectra<0).sum()
     #if negativecount.sum()>0:

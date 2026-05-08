@@ -34,7 +34,7 @@ class DummyWeights(Module):
         return cls()
     
     def forward(self, x, idx_batch, samp_cov):
-        """ Take data that was integrated by transformer, return weighting for every event.
+        """ Take data that was standardised by transformer, return weighting for every event.
         """
         return None
 
@@ -49,7 +49,7 @@ class RareMarkerWeights(Module):
     def __init__(self, transformer, groups=[]):
         """ 
             
-            :params transformer: Module. The class that handles the spectral integration.
+            :params transformer: Module. The class that handles the spectral standardisation.
             
             :params groups: iterable. List of groups to upweight. Every entry should be (stain name, linear positive cutoff, relative weight). I.e. ('PE', 1e4, 2) doubles the relative importance of every event where PE is above 1e4. Note that magnitude should be chosen to be appropriate for the anchors, as they will not get scaled. Group weights below one will get clipped to one.
         """
@@ -76,7 +76,7 @@ class RareMarkerWeights(Module):
         self.group_value.requires_grad_(False)
     
     def forward(self, x, idx_batch, samp_cov):
-        """ Take data that was integrated by transformer, return weighting for every event.
+        """ Take data that was standardised by transformer, return weighting for every event.
         """
         if self.is_dummy: return None
         

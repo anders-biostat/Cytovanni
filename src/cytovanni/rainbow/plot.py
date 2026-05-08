@@ -65,8 +65,8 @@ def plot_eval_RBInt_fit(rbint, adatas, channels=None, legendkey=None, bins=300, 
         channels = rbint.rfim.channels
     
     for ad in adatas:
-        rbint.add_integrated_rainbow(ad, include_shift=True, addlayer="integrated_rb")
-        rbint.add_integrated_rainbow(ad, include_shift=False, addlayer="integrated_rb_noshift")
+        rbint.add_calibrated_rainbow(ad, include_shift=True, addlayer="calibrated_rb")
+        rbint.add_calibrated_rainbow(ad, include_shift=False, addlayer="calibrated_rb_noshift")
     
     fig, ax = plt.subplots(len(channels), 3, figsize=(20, len(channels)*3.5), layout="tight")
     if len(ax.shape)<2: ax = ax[None]
@@ -76,15 +76,15 @@ def plot_eval_RBInt_fit(rbint, adatas, channels=None, legendkey=None, bins=300, 
     cmap = get_cmap([ad.uns[legendkey] for ad in adatas]) if legendkey is not None else None
 
     ax[0,0].set_title("Raw", size=25)
-    ax[0,1].set_title("Integrated w/o Shift", size=25)
-    ax[0,2].set_title("Integrated", size=25)
+    ax[0,1].set_title("Calibrated w/o Shift", size=25)
+    ax[0,2].set_title("Calibrated", size=25)
     
     for i, channel in enumerate(channels):
         for ad in adatas:
             color = None if legendkey is None else cmap[ad.uns[legendkey]]
             ax[i, 0].hist(get_data(ad, "raw", channel), bins=bins, fill=False, density=True, histtype="step", color=color)
-            ax[i, 1].hist(get_data(ad, "integrated_rb_noshift", channel), bins=bins, fill=False, density=True, histtype="step", color=color)
-            ax[i, 2].hist(get_data(ad, "integrated_rb", channel), bins=bins, fill=False, density=True, histtype="step", color=color)
+            ax[i, 1].hist(get_data(ad, "calibrated_rb_noshift", channel), bins=bins, fill=False, density=True, histtype="step", color=color)
+            ax[i, 2].hist(get_data(ad, "calibrated_rb", channel), bins=bins, fill=False, density=True, histtype="step", color=color)
         ax[i, 0].set_ylabel(channel, size=25)
         if cmap is not None:
             ax[i, 0].legend(handles=cmap_to_legendhandles(cmap))

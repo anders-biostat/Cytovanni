@@ -181,7 +181,7 @@ class ConnectionSampler():
 class SampleOverlapDataset():
     """ 
     """
-    def __init__(self, adatas, moe, channels, key_layer="integrated", load_obsm=False, key_batch_sample="batch", data_isanchor=None, key_id="type", key_uid="uid",
+    def __init__(self, adatas, moe, channels, key_layer="calibrated", load_obsm=False, key_batch_sample="batch", data_isanchor=None, key_id="type", key_uid="uid",
                        keys_sample_covariate=[], sN_cells=2000, sN_persample=2, device="cpu", data_on_device=True, min_sample_cells=1000):
         """ 
             
@@ -197,7 +197,7 @@ class SampleOverlapDataset():
             
             :param key_batch_sample: str. Batch key to use when blocking connections withint batches for sampling. If set to None, uses all possible connections.
             
-            :param data_isanchor: None, iterable. If none, just sample connections normally. If iterable, should be boolean that indicates for every adata whether it should be treated as an integration anchor. Then, only connections that include at least one anchor are used for training.
+            :param data_isanchor: None, iterable. If none, just sample connections normally. If iterable, should be boolean that indicates for every adata whether it should be treated as a standardisation anchor. Then, only connections that include at least one anchor are used for training.
             
             :param key_id: str. Key of sample id in adata.uns that is used to generate connections.
             

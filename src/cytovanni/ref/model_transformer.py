@@ -6,7 +6,7 @@ import matplotlib
 import matplotlib.pyplot as plt
 import seaborn as sns
 
-from ..exceptions import OverlapIntegrationException, OverlapIntegrationWarning
+from ..exceptions import OverlapStandardisationException, OverlapStandardisationWarning
 from ..torch import ExtendableParameter, LossContainer, diffclamp
 from ..utils import get_cmap, cmap_to_legendhandles
 from ..utils import invert_spectra
@@ -75,17 +75,17 @@ class DummyTransformer(Module):
         return dt
         
     def forward(self, x, bidx):
-        """ Take input and batch idx, output integrated, unmixed and transformed version on which to apply MMD loss.
+        """ Take input and batch idx, output standardised, unmixed and transformed version on which to apply MMD loss.
         """
-        return self.apply_transformation( self.integrate(x, bidx) )
+        return self.apply_transformation( self.standardise(x, bidx) )
     
     def apply_transformation(self, x):
         """ Transform intensities into scale on which MMD should be calculated, e.g. ArcSinh.
         """
         return x
     
-    def integrate(self, x, bidx):
-        """ Return integrated version of input, i.e. if input is intensities output should be integrated and unmixed intensities.
+    def standardise(self, x, bidx):
+        """ Return standardised version of input, i.e. if input is intensities output should be standardised and unmixed intensities.
         """
         return x
     
@@ -320,26 +320,26 @@ class SpectralFitTransformer(Module):
         self.smp = smp
         
     def forward(self, x, bidx):
-        """ Take input and batch idx, output integrated, unmixed and transformed version on which to apply MMD loss.
+        """ Take input and batch idx, output standardised, unmixed and transformed version on which to apply MMD loss.
         """
-        return self.apply_transformation( self.integrate(x, bidx) )
+        return self.apply_transformation( self.standardise(x, bidx) )
     
     def apply_transformation(self, x):
         """ Transform intensities into scale on which MMD should be calculated, e.g. ArcSinh.
         """
         return torch.arcsinh(x/self.config["arcsinh_cofactor"])
     
-    def integrate(self, x, bidx, evl=False):
-        """ Return integrated version of input, i.e. if input is intensities output should be integrated and unmixed intensities.
+    def standardise(self, x, bidx, evl=False):
+        """ Return standardised version of input, i.e. if input is intensities output should be standardised and unmixed intensities.
         """
         x = x * self.param_channelscale.factor[bidx[self.config["key_scale_channels"]]]
         xc = self.pem.get_unmixed(x, bidx)
         xc = self.smp( xc, self.param_stainscale.factor[bidx[self.config["key_scale_stains"]]] ) # just a multiplication, but optionally with some detached gradients
         return xc
     
-    def get_freeparam_integratetransf(self, bidx):
+    def get_freeparam_standardisetransf(self, bidx):
         """ For given idx_batch, returns both embedding and log scale factors as gradient accumulating parameters,
-            as well as function to do the integration and transformation that doesn't mask any part of the embedding or scale factors.
+            as well as function to do the standardisation and transformation that doesn't mask any part of the embedding or scale factors.
             
             Ignores effects of scale multiplier.
         """
@@ -354,17 +354,17 @@ class SpectralFitTransformer(Module):
         params, fct_unmix = self.pem.get_freeparam_unmix(bidx)
         params.update({"channellogscale":channellogscale, "stainlogscale":stainlogscale})
         
-        def fct_integratetransf(x):
+        def fct_standardisetransf(x):
             x = x * channellogscale.exp()
             xc = fct_unmix(x)
             xc = xc * stainlogscale.exp()
             xct = self.apply_transformation(xc)
             return xct
         
-        return params, fct_integratetransf
+        return params, fct_standardisetransf
     
     def get_freeparam_collect(self, paramlist):
-        """ Takes list of 'params' output of get_freeparam_integratetransf,
+        """ Takes list of 'params' output of get_freeparam_standardisetransf,
             collects gradients and returns dict of numpy arrays of shape (len(paramlist), param_components).
         """
         graddict = {}
@@ -505,8 +505,8 @@ class SpectralFitTransformer(Module):
             ax[0].legend(handles=cmap_to_legendhandles(cmap_stain), loc="upper left")
             ax[1].legend(handles=cmap_to_legendhandles(cmap_channel), loc="upper left")
     
-    def get_intparams_fromad(self, ad, label_include_stain=False):
-        """ Get all relevant integration parameters from adata, uses adata.uns to get the batch indices.
+    def get_standardisationparams_fromad(self, ad, label_include_stain=False):
+        """ Get all relevant standardisation parameters from adata, uses adata.uns to get the batch indices.
             
             If label_include_stain, name also includes the fluorophore, otherwise just the marker.
 
@@ -514,7 +514,7 @@ class SpectralFitTransformer(Module):
                 - channel scaling, pd.Series with index channels.
                 - stain scaling, pd.Series with index stain_marker_name.
                 - spectra, pd.DataFrame with index channels and columns stain_marker_name.
-                - unmx_int_matrix, pd.DataFrame with index channels, columns stain_marker_name; multiplying raw data (after rainbow integration) with this matrix yields integrated unmixed marker abundances.
+                - unmx_int_matrix, pd.DataFrame with index channels, columns stain_marker_name; multiplying raw data (after rainbow calibration) with this matrix yields standardised unmixed marker abundances.
                 - spectra_embedding, np.array of component embedding of spectra.
         """
         bidx = self.moe.transform_ad(ad)
@@ -532,28 +532,28 @@ class SpectralFitTransformer(Module):
 
         return channelscale, stainscale, spectra, unmx_int_matrix, spectra_embedding
     
-    def add_integration_parameters(self, adata, rbint_key="rainbow_integration_factor", label_include_stain=False):
-        """ Add integration parameters to adata.
+    def add_standardisation_parameters(self, adata, rbint_key="rainbow_calibration_factor", label_include_stain=False):
+        """ Add standardisation parameters to adata.
 
-                - adata.var["sfm_integration_factor"]: channel integration factor, padded by nan for other vars
-                - adata.varm["sfm_stain_factor"]: stain integration factor, column stain, repeated for all vars for easier storage
+                - adata.var["sfm_calibration_factor"]: channel calibration factor, padded by nan for other vars
+                - adata.varm["sfm_stain_factor"]: stain standardisation factor, column stain, repeated for all vars for easier storage
                 - adata.varm["sfm_spectra"]: fitted stain spectra, padded by nan for other vars
-                - adata.varm["sfm_integ_unmx"]: matrix to to integration and unmixing on integrated data, adata.to_df(layer="integrated") @ adata.varm["sfm_integ_unmx"] yields properly unmixed and integrated data
-                - adata.varm["rb_sfm_integ_unmx"]: as above but also including the rainbow integration factors, adata.to_df(layer="raw") @ adata.varm["rb_sfm_integ_unmx"] yields properly integrated data, only added if adata.var[rbint_key] is present
+                - adata.varm["sfm_standardise_unmx"]: matrix for standardisation and unmixing on calibrated data, adata.to_df(layer="calibrated") @ adata.varm["sfm_standardise_unmx"] yields properly unmixed and calibrated data
+                - adata.varm["rb_sfm_standardise_unmx"]: as above but also including the rainbow calibration factors, adata.to_df(layer="raw") @ adata.varm["rb_sfm_standardise_unmx"] yields properly standardised and calibrated data, only added if adata.var[rbint_key] is present
                 - adata.uns["panel_embedding"]: np.array of component embedding of spectra
         """
-        channelscale, stainscale, spectra, unmx_int_matrix, spectra_embedding = self.get_intparams_fromad(adata, label_include_stain=label_include_stain)
+        channelscale, stainscale, spectra, unmx_int_matrix, spectra_embedding = self.get_standardisationparams_fromad(adata, label_include_stain=label_include_stain)
 
-        adata.var["sfm_integration_factor"] = np.nan
-        adata.var.loc[channelscale.index, "sfm_integration_factor"] = channelscale
+        adata.var["sfm_calibration_factor"] = np.nan
+        adata.var.loc[channelscale.index, "sfm_calibration_factor"] = channelscale
 
         for c in adata.var.index[~np.isin(adata.var.index,spectra.index)]:
             spectra.loc[c] = np.nan
             unmx_int_matrix.loc[c] = 0.
         adata.varm["sfm_spectra"] = spectra.loc[adata.var.index]
-        adata.varm["sfm_integ_unmx"] = unmx_int_matrix.loc[adata.var.index]
+        adata.varm["sfm_standardise_unmx"] = unmx_int_matrix.loc[adata.var.index]
         if rbint_key in adata.var:
-            adata.varm["rb_sfm_integ_unmx"] = adata.var[rbint_key].fillna(0).to_numpy()[:,None] * adata.varm["sfm_integ_unmx"]
+            adata.varm["rb_sfm_standardise_unmx"] = adata.var[rbint_key].fillna(0).to_numpy()[:,None] * adata.varm["sfm_standardise_unmx"]
 
         stainscale_ext = pd.DataFrame(np.repeat([stainscale],adata.shape[1], axis=0), columns=stainscale.index, index=adata.var.index)
         adata.varm["sfm_stain_factor"] = stainscale_ext
@@ -696,17 +696,17 @@ class ScalingTransformer(Module):
         self.smp = smp
         
     def forward(self, x, bidx):
-        """ Take input and batch idx, output integrated, unmixed and transformed version on which to apply MMD loss.
+        """ Take input and batch idx, output standardised, unmixed and transformed version on which to apply MMD loss.
         """
-        return self.apply_transformation( self.integrate(x, bidx) )
+        return self.apply_transformation( self.standardise(x, bidx) )
     
     def apply_transformation(self, x):
         """ Transform intensities into scale on which MMD should be calculated, e.g. ArcSinh.
         """
         return torch.arcsinh(x/self.config["arcsinh_cofactor"])
     
-    def integrate(self, x, bidx, evl=False):
-        """ Return integrated version of input, i.e. if input is intensities output should be integrated and unmixed intensities.
+    def standardise(self, x, bidx, evl=False):
+        """ Return standardised version of input, i.e. if input is intensities output should be standardised and unmixed intensities.
         """
         xc = self.pem.get_unmixed(x, bidx).detach() # detach here, but there shouldn't be any gradients anyway
         factor = self.param_stainscale.factor
@@ -783,15 +783,15 @@ class ScalingTransformer(Module):
         if legend:
             ax.legend(handles=cmap_to_legendhandles(cmap_stain), loc="upper left")
 
-    def get_intparams_fromad(self, ad, label_include_stain=False):
-        """ Get all relevant integration parameters from adata, uses adata.uns to get the batch indices.
+    def get_standardisationparams_fromad(self, ad, label_include_stain=False):
+        """ Get all relevant standardisation parameters from adata, uses adata.uns to get the batch indices.
             
             If label_include_stain, name also includes the fluorophore, otherwise just the marker.
 
             returns:
                 - stain scaling, pd.Series with index stain_marker_name.
                 - spectra, pd.DataFrame with index channels and columns stain_marker_name.
-                - unmx_int_matrix, pd.DataFrame with index channels, columns stain_marker_name; multiplying raw data (after rainbow integration) with this matrix yields integrated unmixed marker abundances.
+                - unmx_int_matrix, pd.DataFrame with index channels, columns stain_marker_name; multiplying raw data (after rainbow calibration) with this matrix yields standardised unmixed marker abundances.
         """
         bidx = self.moe.transform_ad(ad)
 
@@ -808,20 +808,20 @@ class ScalingTransformer(Module):
         
         return stainscale, spectra, unmx_int_matrix
     
-    def add_integration_parameters(self, adata, label_include_stain=False):
-        """ Add integration parameters to adata.
+    def add_standardisation_parameters(self, adata, label_include_stain=False):
+        """ Add standardisation parameters to adata.
 
-                - adata.varm["sfm_stain_factor"]: stain integration factor, column stain, repeated for all vars for easier storage
+                - adata.varm["sfm_stain_factor"]: stain standardisation factor, column stain, repeated for all vars for easier storage
                 - adata.varm["sfm_spectra"]: stain spectra, padded by nan for other vars
-                - adata.varm["sfm_integ_unmx"]: matrix to to integration and unmixing on integrated data, adata.to_df(layer="integrated") @ adata.varm["sfm_integ_unmx"] yields properly unmixed and integrated data
+                - adata.varm["sfm_standardise_unmx"]: matrix for standardisation and unmixing on calibrated data, adata.to_df(layer="calibrated") @ adata.varm["sfm_standardise_unmx"] yields properly unmixed and calibrated data
         """
-        stainscale, spectra, unmx_int_matrix = self.get_intparams_fromad(adata, label_include_stain=label_include_stain)
+        stainscale, spectra, unmx_int_matrix = self.get_standardisationparams_fromad(adata, label_include_stain=label_include_stain)
 
         for c in adata.var.index[~np.isin(adata.var.index, spectra.index)]:
             spectra.loc[c] = np.nan
             unmx_int_matrix.loc[c] = 0.
         adata.varm["sfm_spectra"] = spectra.loc[adata.var.index]
-        adata.varm["sfm_integ_unmx"] = unmx_int_matrix.loc[adata.var.index]
+        adata.varm["sfm_standardise_unmx"] = unmx_int_matrix.loc[adata.var.index]
 
         #stainscale_ext = pd.DataFrame(np.repeat([stainscale],adata.shape[1], axis=0), columns=stainscale.index, index=adata.var.index)
         adata.var["sfm_stain_factor"] = stainscale
