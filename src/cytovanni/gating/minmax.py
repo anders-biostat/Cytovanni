@@ -28,5 +28,5 @@ class FluorescenceMinMaxGate(MinMaxGate):
     """ MinMaxGate, uses all fluorescence channels in cytoconfig.
     """
     def __init__(self, cytoconfig, v_min=-1e3, max_tolerance=1.5, layer="raw", v_max=None):
-        super().__init__(cytoconfig.channels_fluorescence, v_min, cytoconfig.max_linear_range*max_tolerance if v_max is None else v_max)
+        super().__init__(cytoconfig.channels_fluorescence, v_min, cytoconfig.max_linear_range*max_tolerance if v_max is None else v_max, layer=layer)
     
