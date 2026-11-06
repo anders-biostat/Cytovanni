@@ -20,10 +20,11 @@ def _GMM_choose_asinh_cofactor(adata, percentile=90, target=7, default=1500):
 
 def fit_rainbow_GMM(adata, N=None, init_params="kmeans",
                     random_state=None, n_init=10, max_iter=50,
-                    clipminperc=.1, clipmaxperc=99.9, warningthreshold=1.5, fct_cofactor=_GMM_choose_asinh_cofactor, Nretry=3, cofactor=None):
+                    clipminperc=.1, clipmaxperc=99.9, warningthreshold=1.5, fct_cofactor=_GMM_choose_asinh_cofactor, Nretry=3, cofactor=None, order_channels=None):
     """ Fit simple GMM on arcsinh transformed raw intensities, assign peak to every bead.
         Adds class label 'GMM_label' and log-likelihood under the GMM model 'GMM_llh' to adata.obs.
-        Adds means and covariances of the GMM model to adata.uns.
+        Adds means and covariances of the GMM model to adata.uns, in the same peak order as GMM_label
+        (array index k belongs to GMM_label k), and 'GMM_order_ok' (see order_channels).
         
         :param adata: AnnData. Data to be fitted.
         
@@ -36,6 +37,15 @@ def fit_rainbow_GMM(adata, N=None, init_params="kmeans",
         :param fct_cofactor: function. Function that chooses the arcsinh cofactor, defaults to _GMM_choose_asinh_cofactor.
 
         :param cofactor: None, float. If given, uses this instead of generating it through fct_cofactor.
+
+        :param order_channels: None or list of channel names. Peak ordering scheme.
+            None (default): peaks are sorted by their mean rank across all fluorescence channels, from dim to bright
+            (suits rainbow beads, whose peaks have the same brightness order in every channel).
+            List of K channels: peak k is the peak with the highest GMM mean in order_channels[k], the remaining N-K peaks
+            follow in the default order (e.g. calibration beads with one laser-specific positive peak per channel plus a
+            negative peak, whose mean rank order is not consistent across channels and files).
+            If these channels do not pick K distinct peaks, the default order is used, a GMMAssignmentWarning is raised
+            and adata.uns['GMM_order_ok'] is set to False (True otherwise).
     """
     if N is None:
         N = adata.uns["N_rainbow_peak"]
@@ -69,8 +79,21 @@ def fit_rainbow_GMM(adata, N=None, init_params="kmeans",
     gm.fit(X)
     labels = gm.predict(X)
 
-    # get proper label order correspondence
+    # get proper label order correspondence (label_order[component] = new label)
     label_order = np.argsort(np.argsort(np.argsort(np.argsort(gm.means_, 0), 0).mean(-1)))
+    order_ok = True
+    if order_channels is not None:
+        idx = pd.Index(adata.uns["cytoconfig"].channels_fluorescence).get_indexer(order_channels)
+        if (idx < 0).any():
+            raise ValueError(f"order_channels not found in channels_fluorescence: {np.asarray(order_channels)[idx < 0]}")
+        first = list(np.argmax(gm.means_[:, idx], axis=0))
+        if len(set(first)) == len(first):
+            rest = [i for i in np.argsort(label_order) if i not in first]
+            label_order = np.argsort(first + rest)
+        else:
+            order_ok = False
+            warnings.warn(f"order_channels do not pick distinct GMM peaks for sample {adata.uns.get('name_uid')}, "
+                          "using the default peak order!", GMMAssignmentWarning)
     labels = label_order[labels]
     # store data
     adata.obs["GMM_label"] = labels
@@ -80,6 +103,7 @@ def fit_rainbow_GMM(adata, N=None, init_params="kmeans",
     adata.uns["GMM_asinh_means"] = gm.means_[np.argsort(label_order)]
     adata.uns["GMM_asinh_covariances"] = gm.covariances_[np.argsort(label_order)]
     adata.uns["GMM_asinh_cofactor"] = asinh_cofactor
+    adata.uns["GMM_order_ok"] = order_ok
     adata.uns["GMM_asinh_stds"] = np.sqrt(adata.uns["GMM_asinh_covariances"][:, np.arange(gm.means_.shape[1]), np.arange(gm.means_.shape[1])])
     
     # Throw warning if peak class proportions seem too uneven
@@ -91,7 +115,8 @@ def fit_rainbow_GMM(adata, N=None, init_params="kmeans",
             warnings.warn(warnstr, GMMAssignmentWarning)
             # Reuse random state for predictability, but don't used fixed random state here, otherwise pointless!
             fit_rainbow_GMM(adata, N=N, init_params=init_params, random_state=random_state, n_init=n_init, max_iter=max_iter,
-                    clipminperc=clipminperc, clipmaxperc=clipmaxperc, warningthreshold=warningthreshold, fct_cofactor=fct_cofactor, Nretry=Nretry-1, cofactor=cofactor)
+                    clipminperc=clipminperc, clipmaxperc=clipmaxperc, warningthreshold=warningthreshold, fct_cofactor=fct_cofactor, Nretry=Nretry-1, cofactor=cofactor,
+                    order_channels=order_channels)
         else:
             warnstr = f"GMM rainbow bead class assignment may not have worked properly for sample {adata.uns['name_uid']}!"
             warnstr += f"\nSmallest peak class is {u[np.argmin(c)]} with share {label_shares[np.argmin(c)]:.2f}"
