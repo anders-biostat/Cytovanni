@@ -113,7 +113,8 @@ class HistogramTesselator():
         
         Replace kde estimation by much faster FFT version!
     """
-    def __init__(self, x, y, bounds_x, bounds_y, Nx=100, Ny=100, bw_factor=3., neigh_size=3, density_exclusion_corner=.05, name_x="FSC-A", name_y="SSC-A", Nsubsample=None):
+    def __init__(self, x, y, bounds_x, bounds_y, Nx=100, Ny=100, bw_factor=3., neigh_size=3, density_exclusion_corner=.05, name_x="FSC-A", name_y="SSC-A", Nsubsample=None,
+                 main_tile="count", merge_tiles_min_saddle=None):
         self.x, self.y = x, y
         if Nsubsample is not None:
             randind = np.random.permutation(len(x))[:Nsubsample]
@@ -167,6 +168,7 @@ class HistogramTesselator():
             self.voronoi = None
             self.voronoi_label = np.zeros_like(self.x)
             self.voronoi_label_ismain = np.full_like(self.x, True, dtype=bool)
+            self.saddle_ratio = {}
         else:
             if self.maxima_indices.shape[0]==2:
                 # can't deal with only two points for some reason, add dummy far away
@@ -179,8 +181,29 @@ class HistogramTesselator():
                 voronoi = Voronoi(self.maxima_indices)
             self.voronoi = ScaledVoronoi(voronoi, self.ind_to_point, self.point_to_ind)
             self.voronoi_label = self.voronoi.assign_group(np.vstack([self.x,self.y]).T)
-            u, c = np.unique(self.voronoi_label, return_counts=True)
-            self.voronoi_label_ismain = self.voronoi_label==u[np.argmax(c)]
+            # main tile: most events ("count", original behaviour) or highest density maximum ("density");
+            # optionally merge tiles connected to the main maximum by a density ridge (see _saddle_ratio)
+            maxima_density = self.density[tuple(self.maxima_indices[:len(self.maxima)].T)]
+            if main_tile=="count":
+                u, c = np.unique(self.voronoi_label, return_counts=True)
+                main = [u[np.argmax(c)]]
+            elif main_tile=="density":
+                main = [np.argmax(maxima_density)]
+            else:
+                raise ValueError(f"main_tile must be 'count' or 'density', got {main_tile}")
+            self.saddle_ratio = {j: self._saddle_ratio(main[0], j) for j in range(len(self.maxima)) if j != main[0]}
+            if merge_tiles_min_saddle is not None:
+                main = main + [j for j, r in self.saddle_ratio.items() if r >= merge_tiles_min_saddle]
+            self.voronoi_label_ismain = np.isin(self.voronoi_label, main)
+    
+    def _saddle_ratio(self, i, j, n=100):
+        """ Minimum density on the straight line (grid index space) between maxima i (main) and j, relative to the density
+            at maximum i. High: j sits on a ridge connected to the main peak (e.g. sub-bands of one bead population);
+            low: separated by a valley, or j is a small bump far from the main peak.
+        """
+        a, b = self.maxima_indices[i], self.maxima_indices[j]
+        path = np.rint(a[None] + np.linspace(0, 1, n)[:,None] * (b - a)[None]).astype(int)
+        return self.density[path[:,0], path[:,1]].min() / self.density[tuple(a)]
     
     def plot(self, ax=None, xlim=None, ylim=None, max_points=20000):
         """ Log density, events coloured by Voronoi tile (main tile black), maxima and tile borders.
@@ -289,6 +312,12 @@ class AutoSpillTesselationGating():
     final_density_bw_factor = 1.
     final_density_cutoff = .33 # .33
     
+    # Main tile choice: "count" (most events, original) or "density" (highest density maximum), in both tesselations;
+    # merge_tiles_min_saddle (region tesselation only): also keep tiles whose maximum is connected to the main maximum by a
+    # density ridge, i.e. min density on the line between both maxima >= merge_tiles_min_saddle * the main maximum
+    main_tile = "count"
+    merge_tiles_min_saddle = None
+
     # Plotting: view = union of these percentiles of all events, clip bounds and region (+ margin); max points drawn per scatter
     plot_view_percentiles = (5, 95)
     plot_view_margin = .1
@@ -319,7 +348,7 @@ class AutoSpillTesselationGating():
         # get initial histogram
         self.histogram_bound = HistogramTesselator(self.x, self.y, self.bounds_x, self.bounds_y, self.bound_density_grid_N, self.bound_density_grid_N,
                      bw_factor=self.bound_density_bw_factor, neigh_size=self.bound_density_neigh_size, density_exclusion_corner=self.bound_density_exclusion_corner,
-                     name_x=self.name_x, name_y=self.name_y, Nsubsample=self.subsample_kde_estimates)
+                     name_x=self.name_x, name_y=self.name_y, Nsubsample=self.subsample_kde_estimates, main_tile=self.main_tile)
         # get region for second step
         self.region_x, self.region_y = self.histogram_bound.rectangle_from_main(self.bound_density_mad_factor)
         
@@ -327,7 +356,8 @@ class AutoSpillTesselationGating():
         mask = (self.x>self.region_x[0]) & (self.x<self.region_x[1]) & (self.y>self.region_y[0]) & (self.y<self.region_y[1])
         self.histogram_region = HistogramTesselator(self.x[mask], self.y[mask], self.region_x, self.region_y, self.region_density_grid_N, self.region_density_grid_N,
                      bw_factor=self.region_density_bw_factor, neigh_size=self.region_density_neigh_size, density_exclusion_corner=self.region_density_exclusion_corner,
-                     name_x=self.name_x, name_y=self.name_y, Nsubsample=self.subsample_kde_estimates)
+                     name_x=self.name_x, name_y=self.name_y, Nsubsample=self.subsample_kde_estimates, main_tile=self.main_tile,
+                     merge_tiles_min_saddle=self.merge_tiles_min_saddle)
             
         # data in final tile
         self.x_final = self.histogram_region.x[self.histogram_region.voronoi_label_ismain]
