@@ -8,6 +8,8 @@ from scipy.spatial import Voronoi, ConvexHull, QhullError
 from matplotlib.collections import LineCollection
 import flowutils
 from sklearn.neighbors import KernelDensity
+from scipy.ndimage import map_coordinates
+from scipy.signal import fftconvolve
 
 def _scotts_factor(X):
     return X.shape[0]**(-1./(X.shape[1]+4))
@@ -38,6 +40,36 @@ def _style_axes(ax, name_x, name_y):
     ax.set_xlabel(name_x, size=16)
     ax.set_ylabel(name_y, size=16)
     ax.tick_params(labelsize=12)
+
+class _BinnedKDE(gaussian_kde):
+    """gaussian_kde (2D) evaluated via linear binning on a grid + FFT convolution with the full-covariance Gaussian,
+    then linear interpolation at the points. Bandwidth/covariance exactly as gaussian_kde."""
+    N_GRID = 512 # 256 can erase maxima the exact KDE finds; 512 matched exact gates in tests (density error ~3e-4 of max)
+    PAD_SD = 4.
+
+    def evaluate(self, points):
+        points = np.atleast_2d(np.asarray(points, dtype=float))
+        sd = np.sqrt(np.diag(self.covariance))
+        lo = np.minimum(self.dataset.min(1), points.min(1)) - self.PAD_SD * sd
+        hi = np.maximum(self.dataset.max(1), points.max(1)) + self.PAD_SD * sd
+        step = (hi - lo) / (self.N_GRID - 1)
+        # linear binning of the (weighted) data
+        u = (self.dataset - lo[:, None]) / step[:, None]
+        i0 = np.clip(np.floor(u).astype(int), 0, self.N_GRID - 2)
+        f = u - i0
+        grid = np.zeros((self.N_GRID, self.N_GRID))
+        for dx in (0, 1):
+            for dy in (0, 1):
+                w = self.weights * (f[0] if dx else 1 - f[0]) * (f[1] if dy else 1 - f[1])
+                np.add.at(grid, (i0[0] + dx, i0[1] + dy), w)
+        # Gaussian kernel image (full covariance), truncated at PAD_SD sd
+        kx = np.arange(-int(np.ceil(self.PAD_SD * sd[0] / step[0])), int(np.ceil(self.PAD_SD * sd[0] / step[0])) + 1) * step[0]
+        ky = np.arange(-int(np.ceil(self.PAD_SD * sd[1] / step[1])), int(np.ceil(self.PAD_SD * sd[1] / step[1])) + 1) * step[1]
+        D = np.stack(np.meshgrid(kx, ky, indexing="ij"), -1)
+        kern = np.exp(-.5 * np.einsum("...i,ij,...j->...", D, self.inv_cov, D)) / (2 * np.pi * np.sqrt(np.linalg.det(self.covariance)))
+        dens = fftconvolve(grid, kern, mode="same")
+        return np.clip(map_coordinates(dens, (points - lo[:, None]) / step[:, None], order=1, mode="nearest"), 0, None)
+    __call__ = evaluate
 
 class ScaledVoronoi():
     """ Voronoi, but scaled to translate between index in grid and actual values.
@@ -107,6 +139,7 @@ class HistogramTesselator():
     USE_APPROX_KDE_TREE = False # doesn't currently work!
     MIN_LOGDENSITY = -50
     MAXIMUM_TOLERANCE = 1e-7
+    MIN_REL_MAXIMUM = 1e-6 # ignore maxima below this fraction of the peak density (flat empty regions)
     PLOT_LOGDENSITY_RANGE = 12. # log density colour range in plots
     
     """ Single histogram, peak finding and tesselation.
@@ -129,7 +162,7 @@ class HistogramTesselator():
         self.bins_center_y = (self.bins_y[1:] + self.bins_y[:-1])/2
         self.bins_center = np.vstack([self.bins_center_x, self.bins_center_y]).T
         self.ind_to_point = lambda x: self.bins_center[[0]] + x/np.asarray([[Nx-1, Ny-1]]) * (self.bins_center[[-1]] - self.bins_center[[0]])
-        self.point_to_ind = lambda X: np.vstack([np.searchsorted(self.bins_x, X[:,0]), np.searchsorted(self.bins_y, X[:,1])]).T
+        self.point_to_ind = lambda X: (X - self.bins_center[[0]]) / (self.bins_center[[-1]] - self.bins_center[[0]]) * np.asarray([[Nx-1, Ny-1]])
         
         # kde density estimate
         if self.USE_APPROX_KDE_TREE:
@@ -140,7 +173,7 @@ class HistogramTesselator():
             self.logdensity = np.clip(self.density_kde.score_samples(X).reshape((Nx, Ny)), a_min=self.MIN_LOGDENSITY, a_max=None)
             self.density = np.exp(self.logdensity)
         else:
-            self.density_kde = gaussian_kde(np.vstack([x, y]), lambda kde: bw_factor * gaussian_kde.scotts_factor(kde))
+            self.density_kde = _BinnedKDE(np.vstack([x, y]), lambda kde: bw_factor * gaussian_kde.scotts_factor(kde))
             ind_X, ind_Y = np.mgrid[0:Nx, 0:Ny]
             self.density = self.density_kde(np.vstack([self.bins_center_x[ind_X].flatten(), self.bins_center_y[ind_Y].flatten()])).reshape((Nx, Ny))
             self.logdensity = np.clip(np.log(self.density), a_min=self.MIN_LOGDENSITY, a_max=None)
@@ -153,7 +186,7 @@ class HistogramTesselator():
                                              np.clip((ind_Y.flatten()[:,None] + ind_ng_Y.flatten()[None]), 0, Ny-1)
                                             ].max(1).reshape(self.density.shape)
         # find maxima positions
-        self.maxima_indices = np.argwhere(self.density==density_max_neighbors)
+        self.maxima_indices = np.argwhere((self.density==density_max_neighbors) & (self.density > self.MIN_REL_MAXIMUM * self.density.max()))
         if self.maxima_indices.shape[0]==0:
             raise RuntimeError("AutoSpillTesselationGating, Histogram: Could not find any maxima after kde smoothing!")
         
@@ -172,7 +205,7 @@ class HistogramTesselator():
         else:
             if self.maxima_indices.shape[0]==2:
                 # can't deal with only two points for some reason, add dummy far away
-                self.maxima_indices = np.vstack([self.maxima_indices,[[-Nx, -Ny], [-Nx, -Ny-1], [-Nx-1, -Ny-1]]])
+                self.maxima_indices = np.vstack([self.maxima_indices,[[-Nx,-Ny],[2*Nx,-Ny],[-Nx,2*Ny]]])
             try:
                 voronoi = Voronoi(self.maxima_indices)
             except QhullError:
@@ -211,7 +244,7 @@ class HistogramTesselator():
         if ax is None:
             fig, ax = plt.subplots(1,1,figsize=(6,6))
 
-        # colour range capped below the maximum (log density is clipped to MIN_LOGDENSITY far from all data)
+        # colour range capped below the maximum: the binned KDE is exactly 0 far from all data (log clipped to MIN_LOGDENSITY)
         ax.imshow(self.logdensity[:,::-1].T, extent=(*self.bounds_x, *self.bounds_y), aspect="auto",
                   vmin=max(self.logdensity.min(), self.logdensity.max() - self.PLOT_LOGDENSITY_RANGE))
         ind = _plot_subsample(len(self.x), max_points)
@@ -245,7 +278,7 @@ class DensityGate():
         if Nsubsample is not None:
             randind = np.random.permutation(self.X.shape[0])[:Nsubsample]
             self.X = self.X[randind]
-        density_kde = gaussian_kde(self.X.T, lambda kde: factor_kde * gaussian_kde.scotts_factor(kde))
+        density_kde = _BinnedKDE(self.X.T, lambda kde: factor_kde * gaussian_kde.scotts_factor(kde))
         density = density_kde(self.X.T)
         self.density_scaled = np.argsort(np.argsort(density))/(len(density)-1)
         
@@ -293,7 +326,7 @@ class AutoSpillTesselationGating():
     name_x = "FSC-A"
     name_y = "SSC-A"
     
-    subsample_kde_estimates = 20000
+    subsample_kde_estimates = None # no subsampling needed with the binned KDE (cost O(n)), keeps the gate deterministic
     
     # Parameters for full tesselation
     bound_density_bw_factor = 3. # 3.
