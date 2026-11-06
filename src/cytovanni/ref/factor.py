@@ -64,7 +64,7 @@ def fit_factor_Sinkhorn_LBFGS(datadct, arcsinh_cofactor=5000, Nsamp=2000, Niter=
             data_comp = data_comp[torch.randperm(data_comp.shape[0])][:Nsamp]
             for i in range(Nbatch):
                 loss += fct_loss(fct_ash(datas_scaled[i]), fct_ash(data_comp))
-            loss /= triu_comp.shape[1]
+            loss /= Nbatch
         else:
             loss = 0.
             for i, j in zip(triu_comp[0].numpy(), triu_comp[1].numpy()):
@@ -161,7 +161,7 @@ def fit_factor_Sinkhorn(datadct, arcsinh_cofactor=5000, Nsamp=2000, Niter=150, l
             data_comp = data_comp[torch.randperm(data_comp.shape[0])][:Nsamp]
             for i in range(Nbatch):
                 loss += fct_loss(fct_ash(datas_scaled[i]), fct_ash(data_comp))
-            loss /= triu_comp.shape[1]
+            loss /= Nbatch
         else:
             loss = 0.
             for i, j in zip(triu_comp[0].numpy(), triu_comp[1].numpy()):
