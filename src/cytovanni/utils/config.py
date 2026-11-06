@@ -628,4 +628,31 @@ class CytometerConfiguration_Aurora(CytometerConfiguration):
             laserdict=laserdict,
         )
 
+class CytometerConfiguration_NorthernLights(CytometerConfiguration):
+    """ Cytometer configuration for a 3 laser (V/B/R) Cytek Northern Lights, as used by Gosling et al. (Zenodo 21366352).
 
+        SpectroFlo < 4 writes '$CYT=Aurora' into the .fcs files of this instrument, so the header name is not reliable.
+        Same 22 bit range as the Aurora, see CytometerConfiguration_Aurora.
+    """
+    def __init__(self):
+        channels_fluorescence = ['V1-A', 'V2-A', 'V3-A', 'V4-A', 'V5-A', 'V6-A', 'V7-A', 'V8-A', 'V9-A', 'V10-A', 'V11-A', 'V12-A', 'V13-A', 'V14-A', 'V15-A', 'V16-A',
+                                 'B1-A', 'B2-A', 'B3-A', 'B4-A', 'B5-A', 'B6-A', 'B7-A', 'B8-A', 'B9-A', 'B10-A', 'B11-A', 'B12-A', 'B13-A', 'B14-A',
+                                 'R1-A', 'R2-A', 'R3-A', 'R4-A', 'R5-A', 'R6-A', 'R7-A', 'R8-A']
+
+        laserdict = {"Violet":['V1-A', 'V2-A', 'V3-A', 'V4-A', 'V5-A', 'V6-A', 'V7-A', 'V8-A', 'V9-A', 'V10-A', 'V11-A', 'V12-A', 'V13-A', 'V14-A', 'V15-A', 'V16-A', 'FSC-A', 'FSC-H', "SSC-A", "SSC-H"],
+                     "Blue":['B1-A', 'B2-A', 'B3-A', 'B4-A', 'B5-A', 'B6-A', 'B7-A', 'B8-A', 'B9-A', 'B10-A', 'B11-A', 'B12-A', 'B13-A', 'B14-A', "SSC-B-A", "SSC-B-H"],
+                     "Red":['R1-A', 'R2-A', 'R3-A', 'R4-A', 'R5-A', 'R6-A', 'R7-A', 'R8-A']}
+
+        super().__init__(
+            channels_fluorescence=channels_fluorescence,
+            channels_scatter=['FSC-A', 'FSC-H', 'FSC-W',
+                              "SSC-A", "SSC-H", "SSC-W",
+                              "SSC-B-A", "SSC-B-H", "SSC-B-W"],
+             default_scatter_gate=["FSC-A", "SSC-A"],
+             default_scatter_calibrate={"FSC-A":["FSC-A", "FSC-H"],
+                                        "SSC-A":["SSC-A", "SSC-H"],
+                                        "SSC-B-A":["SSC-B-A", "SSC-B-H"]},
+            cytometer="NorthernLights",
+            max_linear_range=4e6,
+            laserdict=laserdict,
+        )
