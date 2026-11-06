@@ -316,7 +316,7 @@ class OverlapFitModel(Module):
 
     def add_ad_standardised(self, ad, key_layer="calibrated", fixed_batch=None,
                           addkey="unmx_standardised", add_arcsinh=True, arcsinh_cofactor=1500,
-                          batch_size=3e4):
+                          batch_size=3e4, name_by="both"):
         """ Add standardised, unmixed data to ad.
 
             :param ad: AnnData. Sample that should be standardised.
@@ -332,7 +332,14 @@ class OverlapFitModel(Module):
             :param arcsinh_cofactor: float. Cofactor for ArcSinh.
 
             :param batch_size: int, float. To not overload the device, pass data through in batches of batch_size events. Usually no meaningful speed benefit to making this larger.
+
+            :param name_by: str. One of 'marker', 'stain', 'both', determines how the output markers are named.
         """
+        if not name_by in ['marker', 'stain', 'both']:
+            raise OverlapStandardisationException(f"Cannot name by {name_by}, available options are 'marker', 'stain', 'both'")
+        if name_by=="marker":  columns = self.transformer.pem.markers
+        elif name_by=="stain": columns = self.transformer.stains
+        else:                  columns = self.transformer.stain_marker_name
         with torch.no_grad():
             x_full = torch.as_tensor(ad[:,self.transformer.channels].layers[key_layer], dtype=torch.float32)
             batches = torch.split(x_full, int(batch_size))
@@ -341,7 +348,7 @@ class OverlapFitModel(Module):
                 x = x.to(self.transformer.device)
                 bidx = self.moe.transform_ad(ad) if fixed_batch is None else self.moe.transform_dict(fixed_batch)
                 ints.append(self.transformer.standardise(x, bidx, evl=True).cpu().numpy())
-            xc_int = pd.DataFrame(np.vstack(ints), index=ad.obs.index, columns=self.transformer.stain_marker_name)
+            xc_int = pd.DataFrame(np.vstack(ints), index=ad.obs.index, columns=columns)
             ad.obsm[addkey] = xc_int
             if add_arcsinh:
                 ad.obsm[addkey+"_arcsinh"] = apply_arcsinh(ad.obsm[addkey], cofactor=arcsinh_cofactor)
