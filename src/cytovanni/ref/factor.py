@@ -90,11 +90,11 @@ def fit_factor_Sinkhorn_LBFGS(datadct, arcsinh_cofactor=5000, Nsamp=2000, Niter=
             losshistory.append(loss.item())
             paramhistory.append(param_logfactor().detach().cpu().numpy())
 
-    cfct = tqdm if verbose else (lambda x, **kwargs: x)
-    for i in cfct(range(Niter), desc=name):
-        log_loss()
-        optimizer.step(closure)
-        inds, group = sampler.sample(split=True)
+    with tqdm(range(Niter), desc=name, disable=not verbose) as pbar:
+        for i in pbar:
+            log_loss()
+            optimizer.step(closure)
+            inds, group = sampler.sample(split=True)
     
     if verbose:
         fig, ax = plt.subplots(1,2,figsize=(15,5))
@@ -175,14 +175,14 @@ def fit_factor_Sinkhorn(datadct, arcsinh_cofactor=5000, Nsamp=2000, Niter=150, l
     losshistory = []
     paramhistory = []
 
-    cfct = tqdm if verbose else (lambda x, **kwargs: x)
-    for i in cfct(range(Niter), desc=name):
-        optimizer.zero_grad()
-        loss = _get_loss()
-        loss.backward()
-        losshistory.append(loss.item())
-        paramhistory.append(param_logfactor().detach().cpu().numpy())
-        optimizer.step()
+    with tqdm(range(Niter), desc=name, disable=not verbose) as pbar:
+        for i in pbar:
+            optimizer.zero_grad()
+            loss = _get_loss()
+            loss.backward()
+            losshistory.append(loss.item())
+            paramhistory.append(param_logfactor().detach().cpu().numpy())
+            optimizer.step()
     
     if verbose:
         fig, ax = plt.subplots(1,2,figsize=(15,5))
@@ -303,14 +303,14 @@ def fit_factors_Sinkhorn(datadct, fit_markers=None, arcsinh_cofactor=5000, Nsamp
     losshistory = []
     paramhistory = []
     
-    cfct = tqdm if verbose else (lambda x: x)
-    for i in cfct(range(Niter)):
-        optimizer.zero_grad()
-        loss = _get_loss()
-        loss.backward()
-        losshistory.append(loss.item())
-        paramhistory.append(param_logfactor()[:,train_mask].detach().cpu().numpy())
-        optimizer.step()
+    with tqdm(range(Niter), disable=not verbose) as pbar:
+        for i in pbar:
+            optimizer.zero_grad()
+            loss = _get_loss()
+            loss.backward()
+            losshistory.append(loss.item())
+            paramhistory.append(param_logfactor()[:,train_mask].detach().cpu().numpy())
+            optimizer.step()
     
     if verbose:
         fig, ax = plt.subplots(1,2,figsize=(15,5))
