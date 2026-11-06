@@ -49,7 +49,7 @@ def gate_scatter_bead_sample(adata, gatechannels=None, plot=False, plotpath="", 
     if plot or plotpath:
         asp.plot(title=titlefct(adata))
         if plotpath:
-            plt.savefig(plotpath, dpi=200)
+            plt.savefig(plotpath, dpi=120)
         if plot: plt.show()
         else:    plt.close()
     adata.obs["keepmask_scatter"] = asp.get_gatemask(*X)

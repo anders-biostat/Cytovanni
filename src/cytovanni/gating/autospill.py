@@ -4,7 +4,8 @@ import matplotlib.patches as patches
 import seaborn as sns
 from scipy.spatial import KDTree
 from scipy.stats import gaussian_kde
-from scipy.spatial import Voronoi, voronoi_plot_2d, ConvexHull, QhullError
+from scipy.spatial import Voronoi, ConvexHull, QhullError
+from matplotlib.collections import LineCollection
 import flowutils
 from sklearn.neighbors import KernelDensity
 
@@ -26,6 +27,18 @@ def _mad(data, axis=None):
     """
     return np.mean(np.abs(data - np.mean(data, axis)), axis)
 
+def _plot_subsample(n, max_points):
+    """ Indices of at most max_points of n events for plotting (fixed seed, so plots are reproducible).
+    """
+    if max_points is None or n <= max_points:
+        return np.arange(n)
+    return np.sort(np.random.default_rng(0).choice(n, max_points, replace=False))
+
+def _style_axes(ax, name_x, name_y):
+    ax.set_xlabel(name_x, size=16)
+    ax.set_ylabel(name_y, size=16)
+    ax.tick_params(labelsize=12)
+
 class ScaledVoronoi():
     """ Voronoi, but scaled to translate between index in grid and actual values.
     """
@@ -45,10 +58,56 @@ class ScaledVoronoi():
         group = KDTree(self.points_index).query(self.point_to_ind(X))[1]
         return group
 
+    def plot(self, ax=None, show_points=True, show_vertices=False,
+             line_colors="k", line_width=1., line_alpha=1., ray_length=100.):
+        """ Replacement for voronoi_plot_2d.
+            Ridge geometry is built in index space, where the perpendicular
+            bisector construction is valid, and only then mapped through
+            ind_to_point. Passing the scaled object to voronoi_plot_2d is
+            wrong because it re-derives ray directions by rotating the
+            tangent 90 deg, which the anisotropic scaling does not preserve.
+        """
+        vor, f = self.voronoi, self.ind_to_point
+        if ax is None:
+            _, ax = plt.subplots(1, 1, figsize=(6, 6))
+
+        if show_points:
+            ax.plot(*f(vor.points).T, ".")
+        if show_vertices:
+            ax.plot(*f(vor.vertices).T, "o")
+
+        center = vor.points.mean(axis=0)
+        ptp = np.ptp(vor.points, axis=0).max()
+
+        finite, infinite = [], []
+        for pointidx, simplex in zip(vor.ridge_points, vor.ridge_vertices):
+            simplex = np.asarray(simplex)
+            if np.all(simplex >= 0):
+                finite.append(f(vor.vertices[simplex]))
+            else:
+                i = simplex[simplex >= 0][0]
+                t = vor.points[pointidx[1]] - vor.points[pointidx[0]]
+                t = t / np.linalg.norm(t)
+                n = np.array([-t[1], t[0]])
+                midpoint = vor.points[pointidx].mean(axis=0)
+                direction = np.sign(np.dot(midpoint - center, n)) * n
+                if vor.furthest_site:
+                    direction = -direction
+                far = vor.vertices[i] + direction * ptp * ray_length
+                infinite.append(f(np.vstack([vor.vertices[i], far])))
+
+        ax.add_collection(LineCollection(finite, colors=line_colors,
+                                         lw=line_width, alpha=line_alpha))
+        ax.add_collection(LineCollection(infinite, colors=line_colors,
+                                         lw=line_width, alpha=line_alpha,
+                                         linestyle="dashed"))
+        return ax
+
 class HistogramTesselator():
     USE_APPROX_KDE_TREE = False # doesn't currently work!
     MIN_LOGDENSITY = -50
     MAXIMUM_TOLERANCE = 1e-7
+    PLOT_LOGDENSITY_RANGE = 12. # log density colour range in plots
     
     """ Single histogram, peak finding and tesselation.
         
@@ -123,24 +182,26 @@ class HistogramTesselator():
             u, c = np.unique(self.voronoi_label, return_counts=True)
             self.voronoi_label_ismain = self.voronoi_label==u[np.argmax(c)]
     
-    def plot(self, ax=None, xlim=None, ylim=None):
-        """ Voronoi plot at the boundaries sometimes wrong?!
+    def plot(self, ax=None, xlim=None, ylim=None, max_points=20000):
+        """ Log density, events coloured by Voronoi tile (main tile black), maxima and tile borders.
         """
         if ax is None:
             fig, ax = plt.subplots(1,1,figsize=(6,6))
 
-        ax.imshow(self.logdensity[:,::-1].T, extent=(*self.bounds_x, *self.bounds_y), aspect="auto")
-        mask = self.voronoi_label_ismain
-        ax.scatter(self.x[~mask], self.y[~mask], s=1, color="red")
-        ax.scatter(self.x[mask], self.y[mask], s=1, color="black")
-        ax.scatter(*self.maxima.T, color="white")
+        # colour range capped below the maximum (log density is clipped to MIN_LOGDENSITY far from all data)
+        ax.imshow(self.logdensity[:,::-1].T, extent=(*self.bounds_x, *self.bounds_y), aspect="auto",
+                  vmin=max(self.logdensity.min(), self.logdensity.max() - self.PLOT_LOGDENSITY_RANGE))
+        ind = _plot_subsample(len(self.x), max_points)
+        colors = plt.get_cmap("tab10")(np.asarray(self.voronoi_label)[ind].astype(int) % 10)
+        colors[self.voronoi_label_ismain[ind]] = (0, 0, 0, 1)
+        ax.scatter(self.x[ind], self.y[ind], s=1, c=colors, rasterized=True)
+        ax.scatter(*self.maxima.T, color="white", edgecolor="black", s=40, zorder=3)
         if self.voronoi is not None:
-            voronoi_plot_2d(self.voronoi, ax=ax, show_vertices=False)
+            self.voronoi.plot(ax=ax, show_points=False, show_vertices=False)
         ax.set_xlim(self.bounds_x if xlim is None else xlim)
         ax.set_ylim(self.bounds_y if ylim is None else ylim)
-        ax.set_xlabel(self.name_x, size=20)
-        ax.set_ylabel(self.name_y, size=20)
-        
+        _style_axes(ax, self.name_x, self.name_y)
+
         return ax
     
     def rectangle_from_main(self, mad_factor):
@@ -173,11 +234,12 @@ class DensityGate():
     def hull_gatemask(self, X):
         return flowutils.gating.points_in_polygon(self.vertices_hull, X)
     
-    def plot(self, ax=None, xlim=None, ylim=None):
+    def plot(self, ax=None, xlim=None, ylim=None, max_points=20000):
         if ax is None:
             fig, ax = plt.subplots(1,1,figsize=(6,6))
-        
-        sns.scatterplot(x=self.X[:,0], y=self.X[:,1], hue=self.density_scaled, s=5, palette="viridis", ax=ax, legend=False)
+
+        ind = _plot_subsample(self.X.shape[0], max_points)
+        ax.scatter(self.X[ind,0], self.X[ind,1], c=self.density_scaled[ind], s=5, cmap="viridis", edgecolor="w", linewidth=.3, rasterized=True)
         ax.plot(*self.vertices_hull.T, color="black")
         if xlim: ax.set_xlim(xlim)
         if ylim: ax.set_ylim(ylim)
@@ -227,6 +289,11 @@ class AutoSpillTesselationGating():
     final_density_bw_factor = 1.
     final_density_cutoff = .33 # .33
     
+    # Plotting: view = union of these percentiles of all events, clip bounds and region (+ margin); max points drawn per scatter
+    plot_view_percentiles = (5, 95)
+    plot_view_margin = .1
+    plot_max_points = 10000
+    
     def __init__(self, x, y, verbose=False, **kwargs):
         self.verbose = verbose
         self.x_full = x
@@ -272,25 +339,59 @@ class AutoSpillTesselationGating():
         if self.verbose:
             self.plot()
     
-    def plot(self, title="", figsize=(24,6)):
-        fig, ax = plt.subplots(1,3,figsize=figsize)
-        
-        self.histogram_bound.plot(ax=ax[0])
+    def _plot_view(self):
+        """ Plot limits: union of the plot_view_percentiles range of all events, the clip bounds and the region, plus a margin.
+        """
+        lims = []
+        for full, bounds, region in [(self.x_full, self.bounds_x, self.region_x), (self.y_full, self.bounds_y, self.region_y)]:
+            lo = min(np.percentile(full, self.plot_view_percentiles[0]), bounds[0], region[0])
+            hi = max(np.percentile(full, self.plot_view_percentiles[1]), bounds[1], region[1])
+            pad = self.plot_view_margin * (hi - lo)
+            lims.append((lo - pad, hi + pad))
+        return lims
+
+    def plot(self, title="", figsize=(32,6)):
+        fig, ax = plt.subplots(1,4,figsize=figsize)
+        xlim, ylim = self._plot_view()
+        ind = _plot_subsample(len(self.x_full), self.plot_max_points)
+        xf, yf = self.x_full[ind], self.y_full[ind]
+
+        # 1: all events, density and tiles within the clip bounds (dashed), region of step 2 (gray)
+        outside = (xf<=self.bounds_x[0]) | (xf>=self.bounds_x[1]) | (yf<=self.bounds_y[0]) | (yf>=self.bounds_y[1])
+        ax[0].scatter(xf[outside], yf[outside], s=1, color="0.7", rasterized=True)
+        self.histogram_bound.plot(ax=ax[0], xlim=xlim, ylim=ylim, max_points=self.plot_max_points)
+        ax[0].add_patch(patches.Rectangle((self.bounds_x[0], self.bounds_y[0]), self.bounds_x[1]-self.bounds_x[0], self.bounds_y[1]-self.bounds_y[0],
+                                       linewidth=1.5, linestyle="--", edgecolor='black', facecolor='none'))
         ax[0].add_patch(patches.Rectangle((self.region_x[0], self.region_y[0]), self.region_x[1]-self.region_x[0], self.region_y[1]-self.region_y[0],
                                        linewidth=2, edgecolor='gray', facecolor='none'))
+        ax[0].set_title("all events (gray: outside clip bounds, dashed)", size=12)
 
-        self.histogram_region.plot(ax=ax[1]) #(xlim=self.bounds_x, ylim=self.bounds_y)
+        # 2: tesselation within the region
+        self.histogram_region.plot(ax=ax[1], max_points=self.plot_max_points)
+        ax[1].set_title("region: tiles, main tile black", size=12)
 
-        self.densitygate.plot(ax=ax[2], xlim=self.region_x, ylim=self.region_y)
-        ax[2].set_xlabel(self.name_x, size=20)
-        ax[2].set_ylabel(self.name_y, size=20)
-        
-        if title:
-            fig.suptitle(title, size=30)
-        
+        # 3: final tile with density gate, other events of the region in gray
+        hr = self.histogram_region
+        indr = _plot_subsample(len(hr.x), self.plot_max_points)
+        ax[2].scatter(hr.x[indr], hr.y[indr], s=1, color="0.7", rasterized=True)
+        self.densitygate.plot(ax=ax[2], xlim=self.region_x, ylim=self.region_y, max_points=self.plot_max_points)
+        _style_axes(ax[2], self.name_x, self.name_y)
+        ax[2].set_title("main tile: density and gate", size=12)
+
+        # 4: gate on all events
+        mask = self.get_gatemask(xf, yf)
+        ax[3].scatter(xf[~mask], yf[~mask], s=1, color="red", rasterized=True)
+        ax[3].scatter(xf[mask], yf[mask], s=1, color="black", rasterized=True)
+        ax[3].plot(*self.densitygate.vertices_hull.T, color="white", lw=2.5)
+        ax[3].plot(*self.densitygate.vertices_hull.T, color="tab:blue", lw=1.2)
+        ax[3].set_xlim(xlim); ax[3].set_ylim(ylim)
+        _style_axes(ax[3], self.name_x, self.name_y)
         remainder = self.get_gatemask(self.x_full, self.y_full).mean()
-        ax[2].set_title(f"{remainder*100:.0f}% of all Events within Gate", size=15)
-        
+        ax[3].set_title(f"{remainder*100:.0f}% of all events within gate", size=12)
+
+        if title:
+            fig.suptitle(title, size=24)
+
         return fig, ax
     
     def get_gatemask(self, x, y):
