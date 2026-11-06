@@ -201,6 +201,102 @@ def fit_factor_Sinkhorn(datadct, arcsinh_cofactor=5000, Nsamp=2000, Niter=150, l
         
     return factors
 
+def fit_factor_Sinkhorn_grouped(datadct, arcsinh_cofactor=5000, Nsamp=2000, Niter=150, lr=5e-1, momentum=.8, device="cuda:0", verbose=True, init="null", anchor=None, dummy=False, name=""):
+    """ Fit scaling factor using Sinkhorn divergence as the loss, with multiple samples per batch.
+
+        Like fit_factor_Sinkhorn, but datadct is {batch: {sample: data}}, with one shared factor per batch.
+        Each sample is only compared to the aggregate of the same sample across batches, so differences
+        in composition or cell number between samples do not enter the fit.
+        Samples present in only one batch carry no information and are ignored.
+
+        Uses normal SGD.
+    """
+    # prepare data
+    keys = np.asarray(list(datadct.keys()))
+    Nbatch = len(keys)
+
+    if dummy:
+        return pd.Series(1., index=keys)
+    
+    if anchor is not None and not anchor in keys:
+        raise ValueError(f"Anchor needs to be one of the data dict keys, '{anchor}' is not available! {list(keys)}")
+    
+    # flatten into (batch index, sample, data) entries, group entries by sample
+    entries = [(i, sample, v) for i, k in enumerate(keys) for sample, v in datadct[k].items()]
+    entry_batch = [e[0] for e in entries]
+    samples = list(dict.fromkeys([e[1] for e in entries]))
+    sample_entries = [[j for j, e in enumerate(entries) if e[1]==sample] for sample in samples]
+    sample_entries = [se for se in sample_entries if len(se)>1]
+    
+    data_torch_split = [torch.tensor(np.asarray(e[2]), dtype=torch.float32) for e in entries]
+    data_torch = torch.cat(data_torch_split)[:,None].to(device)
+    
+    borders = np.cumsum([0]+[d.shape[0] for d in data_torch_split])
+    samplerinds = [torch.arange(borders[i],borders[i+1]) for i in range(len(borders)-1)]
+    sampler = Sampler(samplerinds, Nsamp, device=device)
+    
+    # prepare fit
+    fct_loss = GeomSampleLoss("sinkhorn", blur=.5, reach=1.)
+    fct_ash = lambda x: torch.arcsinh(x / arcsinh_cofactor)
+    if init=="null":
+        logfactor_init = torch.zeros((Nbatch,), dtype=torch.float32)
+    elif init=="mean":
+        datadct_pooled = {k:np.concatenate([np.asarray(v) for v in datadct[k].values()]) for k in keys}
+        logfactor_init = torch.tensor(fit_factor_MeanMatching(datadct_pooled).loc[keys].to_numpy(), dtype=torch.float32).log()
+    else:
+        raise NotImplemented(f"Initialisation '{init}' not available!")
+
+    param_logfactor = ExtendableParameter((Nbatch,),0,0, allow_grad=True, axis_norm=0)
+    param_logfactor.set_trainable_part(logfactor_init)
+    param_logfactor.to(device)
+    
+    def _get_loss():
+        inds, group = sampler.sample(split=True)
+        factors = param_logfactor().exp()
+        datas_scaled = [factors[entry_batch[j]] * data_torch[inds[j]] for j in range(len(entries))]
+
+        # compare each entry to the aggregate of its sample across batches
+        loss = 0.
+        for se in sample_entries:
+            data_comp = torch.cat([datas_scaled[j] for j in se], 0)
+            data_comp = data_comp[torch.randperm(data_comp.shape[0])][:Nsamp]
+            for j in se:
+                loss += fct_loss(fct_ash(datas_scaled[j]), fct_ash(data_comp))
+        loss /= sum([len(se) for se in sample_entries])
+    
+        return loss
+    
+    # fit
+    optimizer = torch.optim.SGD(param_logfactor.parameters(), lr=lr, momentum=momentum)
+    losshistory = []
+    paramhistory = []
+
+    with tqdm(range(Niter), desc=name, disable=not verbose) as pbar:
+        for i in pbar:
+            optimizer.zero_grad()
+            loss = _get_loss()
+            loss.backward()
+            losshistory.append(loss.item())
+            paramhistory.append(param_logfactor().detach().cpu().numpy())
+            optimizer.step()
+    
+    if verbose:
+        fig, ax = plt.subplots(1,2,figsize=(15,5))
+        ax[0].plot(losshistory)
+        ax[0].set_xlabel("Step")
+        ax[0].set_ylabel("OT Loss")
+        ax[1].plot(np.asarray(paramhistory))
+        ax[1].set_xlabel("Step")
+        ax[1].set_ylabel("Scale Factor [log]")
+        plt.show()
+
+    factors = pd.Series(param_logfactor().exp().detach().cpu().numpy(), index=keys)
+    # normalize here, fit more stable if only mean is fixed
+    if anchor is not None:
+        factors = factors / factors.loc[anchor]
+        
+    return factors
+
 def fit_factors_Sinkhorn(datadct, fit_markers=None, arcsinh_cofactor=5000, Nsamp=2000, Niter=300, lr=5e-1, momentum=.8, device="cuda:0", verbose=True, aggregate=True, Ncomp=10, init="null", anchor=None, dummy=False, separate=False):
     """ Fit scaling factors using Sinkhorn divergence as the loss.
 

@@ -7,7 +7,7 @@ from .model_transformer_smp import DefaultMultiplier, UnmxErrorExclusionMultipli
 from .model_transformer import DummyTransformer, SpectralFitTransformer, ScalingTransformer
 from .model import OverlapFitModel
 
-from .factor import fit_factor_Sinkhorn, fit_factor_MeanMatching, fit_factor_PercentileMatching
+from .factor import fit_factor_Sinkhorn, fit_factor_Sinkhorn_grouped, fit_factor_MeanMatching, fit_factor_PercentileMatching
 from .factor import fit_factors_Sinkhorn
 
 from .plot import plot_eval_histogram, plot_eval_NxN
