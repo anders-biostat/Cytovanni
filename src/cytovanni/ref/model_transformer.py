@@ -135,6 +135,20 @@ class ScaleFactor(Module):
         """ Anchor all batch indices in iterable indices to not be trainable.
         """
         self.parameter.freeze_selective((indices, slice(None)))
+
+    def add_to_fixed(self, values, bidx=None, cidx=None):
+        """ Add values to the fixed part of the log-scale parameter.
+
+            :param values: torch.Tensor. Values to add.
+            :param bidx: index expression, optional. Batch indices to update. Defaults to all batches.
+            :param cidx: index expression, optional. Channel indices to update. Defaults to all channels.
+        """
+        if bidx is None and cidx is None:
+            sl = None
+        else:
+            sl = (slice(None) if bidx is None else bidx,
+                  slice(None) if cidx is None else cidx)
+        self.parameter.add_to_fixed(values, sl=sl)
     
     def forward(self):
         if self.max_abs_value is None:
@@ -224,6 +238,25 @@ class SpectralFitTransformer(Module):
         if self.config["key_scale_channels"] in anchor_bidx:
             self.param_channelscale.anchor_bidx(anchor_bidx[self.config["key_scale_channels"]])
         self.pem.anchor_batches(anchor_bidx)
+
+    def add_stain_logscale_toself(self, logscale):
+        """ Add different stain logscale to self.
+    
+            logscale should be the output of another transformer.learned_stainlogscale
+        """
+        logscale_self = self.learned_stainlogscale
+        
+        if not set(logscale_self.index) == set(logscale.index):
+            raise OverlapStandardisationException(f"The normalization that should be incorporated uses different batches!")
+        if not logscale.columns.isin(logscale_self.columns).all():
+            new = [i for i in logscale.columns if not i in logscale_self.columns]
+            raise OverlapStandardisationException(f"The normalization that should be incorporated has markers that are not currently present!\n{new}")
+        
+        logscale = logscale.loc[logscale_self.index]
+        logscale_torch = torch.tensor(logscale.to_numpy())
+        colind = logscale_self.columns.get_indexer(logscale.columns)
+        
+        self.param_stainscale.add_to_fixed(logscale_torch, cidx=colind)
     
     @classmethod
     def from_data(cls, moe, pem, smp=None,
@@ -614,6 +647,25 @@ class ScalingTransformer(Module):
                 self.anchor_idx = [idx]
             except:
                 raise ValueError(f"Trying to anchor {anchor_bidx[self.config['key_scale_stains']]}, but this transformer only supports anchoring a single batch!")
+
+    def add_stain_logscale_toself(self, logscale):
+        """ Add different stain logscale to self.
+    
+            logscale should be the output of another transformer.learned_stainlogscale
+        """
+        logscale_self = self.learned_stainlogscale
+        
+        if not set(logscale_self.index) == set(logscale.index):
+            raise OverlapStandardisationException(f"The normalization that should be incorporated uses different batches!")
+        if not logscale.columns.isin(logscale_self.columns).all():
+            new = [i for i in logscale.columns if not i in logscale_self.columns]
+            raise OverlapStandardisationException(f"The normalization that should be incorporated has markers that are not currently present!\n{new}")
+        
+        logscale = logscale.loc[logscale_self.index]
+        logscale_torch = torch.tensor(logscale.to_numpy())
+        colind = logscale_self.columns.get_indexer(logscale.columns)
+        
+        self.param_stainscale.add_to_fixed(logscale_torch, cidx=colind)
             
 
     @classmethod

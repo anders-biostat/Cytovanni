@@ -170,6 +170,17 @@ class ExtendableParameter(Module):
         self.param_trainable.data[sl] = 0.
         self.param_fixed.data[sl] = current_sum[sl]
 
+    def add_to_fixed(self, values, sl=None):
+        """ Add values to the fixed part of the parameter.
+
+            :param values: torch.Tensor. Values to add. Must match the shape of param_fixed[sl] if sl is given, else param_fixed.
+            :param sl: index expression, optional. If given, only add to param_fixed[sl].
+        """
+        if sl is None:
+            self.param_fixed.data += values.to(dtype=torch.float32, device=self.param_fixed.device)
+        else:
+            self.param_fixed.data[sl] += values.to(dtype=torch.float32, device=self.param_fixed.device)
+
 
 class PrecisionExtendableParameter(ExtendableParameter):
     r"""ExtendableParameter, but initialised as the covariance decomposition for the rainbow GMM model.

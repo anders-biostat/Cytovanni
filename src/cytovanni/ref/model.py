@@ -136,6 +136,33 @@ class OverlapFitModel(Module):
         torch.save(exportdct, savepath)
     
     @classmethod
+    def from_exported(cls, exported, cls_transformer=None, cls_markerweight=None, cls_smp=None, eval_only=True):
+        """ Initialize from exported.
+            Will miss dataset and (optionally) test dataset and markerweight,
+            if training should be continued they need to be set manually.
+            
+            :param cls_transformer: class. If using custom transformer that is not implemented by me, pass the class here to instantiate from exported properly!
+            
+            :param cls_markerweight: class. If using custom marker weight that is not implemented by me, pass the class here to instantiate from exported properly!
+            
+            :param cls_smp: class.
+            
+            :param eval_only: bool. If True, doesn't prepare the loss etc. for training for loaded model.
+        """
+        moe = MultiOrdinalEncoder.from_exported(exported["moe"])
+        if cls_transformer is None: cls_transformer = pick_transformer_cls(exported["transformer_name"])
+        transformer = cls_transformer.from_exported(exported["transformer"], cls_smp=cls_smp)
+        if cls_markerweight is None: cls_markerweight = pick_weight_cls(exported["markerweight_name"])
+        markerweight = cls_markerweight.from_exported(exported["markerweight"], transformer)
+        
+        sfm = cls(moe, transformer, markerweight=markerweight, checkpoint_DDIST=exported["checkpoint_DDIST"], bandwidth_MMD=exported["bandwidth_MMD"],
+                  DDIST_mode=exported["DDIST_mode"], DDIST_kwargs=exported["DDIST_kwargs"], eval_only=eval_only)
+        if "losshistory" in exported:
+            sfm.losshistory = exported["losshistory"]
+        
+        return sfm
+    
+    @classmethod
     def from_saved(cls, savepath, cls_transformer=None, cls_markerweight=None, cls_smp=None, eval_only=True):
         """ Initialize from saved.
             Will miss dataset and (optionally) test dataset and markerweight,
@@ -150,18 +177,7 @@ class OverlapFitModel(Module):
             :param eval_only: bool. If True, doesn't prepare the loss etc. for training for loaded model.
         """
         exported = torch.load(savepath, map_location=torch.device("cpu"), weights_only=False)
-        moe = MultiOrdinalEncoder.from_exported(exported["moe"])
-        if cls_transformer is None: cls_transformer = pick_transformer_cls(exported["transformer_name"])
-        transformer = cls_transformer.from_exported(exported["transformer"], cls_smp=cls_smp)
-        if cls_markerweight is None: cls_markerweight = pick_weight_cls(exported["markerweight_name"])
-        markerweight = cls_markerweight.from_exported(exported["markerweight"], transformer)
-        
-        sfm = cls(moe, transformer, markerweight=markerweight, checkpoint_DDIST=exported["checkpoint_DDIST"], bandwidth_MMD=exported["bandwidth_MMD"],
-                  DDIST_mode=exported["DDIST_mode"], DDIST_kwargs=exported["DDIST_kwargs"], eval_only=eval_only)
-        if "losshistory" in exported:
-            sfm.losshistory = exported["losshistory"]
-        
-        return sfm
+        return cls.from_exported(exported, cls_transformer=cls_transformer, cls_markerweight=cls_markerweight, cls_smp=cls_smp, eval_only=eval_only) 
     
     def estimate_MMD_bandwidth(self, dataset):
         """ Estimate MMD bandwidth on transformed data across whole dataset, use median.
@@ -329,5 +345,17 @@ class OverlapFitModel(Module):
             ad.obsm[addkey] = xc_int
             if add_arcsinh:
                 ad.obsm[addkey+"_arcsinh"] = apply_arcsinh(ad.obsm[addkey], cofactor=arcsinh_cofactor)
+
+    def incorporate_stain_scaling(self, sfm_other, cls_transformer=None, cls_markerweight=None):
+        """ Incorporate the stain scaling from sfm_other into self.
+            Generates a copy of self to avoid accidentally running it multiple times.
+            
+            :param cls_transformer: class. If using custom transformer that is not implemented by me, pass the class here to instantiate from exported properly!
+            
+            :param cls_markerweight: class. If using custom marker weight that is not implemented by me, pass the class here to instantiate from exported properly!
+        """
+        self_new = OverlapFitModel.from_exported(self.export(), cls_transformer=cls_transformer, cls_markerweight=cls_markerweight)
+        self_new.transformer.add_stain_logscale_toself(sfm_other.transformer.learned_stainlogscale)
+        return self_new
 
 
