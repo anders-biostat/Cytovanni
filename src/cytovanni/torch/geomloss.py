@@ -2,6 +2,8 @@ import torch
 from torch.nn import Module, Parameter
 import numpy as np
 
+from .utils import _check_weight_sums
+
 class GeomSampleLoss(Module):
     """ Wrapper for SampleLoss from geomloss.
         Always use tensorized backend, we use low enough event counts that it will anywa get chosen.
@@ -46,8 +48,9 @@ class GeomSampleLoss(Module):
             normalised to sum 1 here (e.g. RareMarkerWeights sums to N, which is right for MMD but not for this loss).
             A missing side (None) gets uniform weights 1/N; with both None this is the unweighted loss.
 
-            :param wx: tensor (N,) (batched: (B, N)) or None. Non-negative weights of X.
-            :param wy: tensor (M,) (batched: (B, M)) or None. Non-negative weights of Y.
+            :param wx: tensor (N,) (batched: (B, N)) or None. Non-negative weights of X, with a positive, finite sum
+                (ValueError otherwise).
+            :param wy: tensor (M,) (batched: (B, M)) or None. Non-negative weights of Y, as wx.
         """
         if wx is None and wy is None:
             return self.loss(X, Y)
@@ -57,8 +60,11 @@ class GeomSampleLoss(Module):
 
     @staticmethod
     def _normalised_weights(w, X):
-        """ Weights normalised to sum 1 over the events (last axis; also for batched input X (B, N, D), w (B, N)). """
+        """ Weights normalised to sum 1 over the events (last axis; also for batched input X (B, N, D), w (B, N)).
+            Raises ValueError if a weight sum is not positive and finite.
+        """
         if w is None:
             return torch.full(X.shape[:-1], 1. / X.shape[-2], dtype=X.dtype, device=X.device)
         w = w.to(dtype=X.dtype)
+        _check_weight_sums(w)
         return w / w.sum(dim=-1, keepdim=True)

@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 import warnings
 
-from ..exceptions import AutoBatchException, InconsistentBatchException, RepeatedBatchException, OrdinalEncoderWarning, OrdinalEncoderException, AutoBatchWarning
+from ..exceptions import AutoBatchException, InconsistentBatchException, RepeatedBatchException, OrdinalEncoderWarning, OrdinalEncoderException, AutoBatchWarning, CalibrationModuleException
 from ..utils import CustomOrdinalEncoder
 
 class RainbowBatchOrdinalEncoder():
@@ -89,6 +89,28 @@ class RainbowBatchOrdinalEncoder():
         rboe.oes = {k:CustomOrdinalEncoder.from_old(exported["labels"][k], allow_unknown=True) for k in rboe.encode_keys}
         return rboe
     
+    def check_orphan_types(self, df):
+        """ Raise CalibrationModuleException if df contains new rainbow types without overlap to the trained data.
+
+            Call before extend. A new rainbow type can only be calibrated consistently with the known types if it was
+            measured in a known batch, or in a new batch in which a known type was measured as well (in df). Otherwise
+            the type and batch parameters of the new type are degenerate (scatter and fluorescence alike) and the
+            calibration factors of its batches are arbitrary.
+
+            :param df: pd.DataFrame. New metadata (columns 'rainbow_type', 'rainbow_batch'), as passed to extend.
+        """
+        initial_types, initial_batches = self.oes["rainbow_type"].labels, self.oes["rainbow_batch"].labels
+        new_orphan_types = []
+        for tp in set(df["rainbow_type"].unique())-set(initial_types):
+            batches = df.loc[df["rainbow_type"]==tp, "rainbow_batch"].unique()
+            # overlap with a trained batch, or a trained type measured in one of the new type's batches
+            if len(set(batches) & set(initial_batches))==0:
+                otheroverlap = (np.isin(df["rainbow_type"], initial_types) & np.isin(df["rainbow_batch"], batches)).sum()
+                if otheroverlap==0:
+                    new_orphan_types.append(tp)
+        if len(new_orphan_types)>0:
+            raise CalibrationModuleException(f"Newly added rainbow types {sorted(new_orphan_types)} have no overlap with previously trained on data! Final calibration for these types will not be consistent with the others, aborting.")
+
     def extend(self, df):
         """ Same as from_data, but extend by all unseen labels present in df.
             Returns a dict with all newly added ordinals.

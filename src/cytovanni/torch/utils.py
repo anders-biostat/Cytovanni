@@ -6,6 +6,15 @@ def _ensure_real_nll(nll):
     """
     return torch.nan_to_num(torch.clamp(nll, min=0, max=1e4), nan=0., posinf=0., neginf=0.)
 
+def _check_weight_sums(w, name="weights"):
+    """ Raise ValueError unless the event weights w sum to a positive, finite value (over the last axis).
+        Normalising by such a sum would otherwise give a silent NaN/inf loss.
+    """
+    s = w.sum(dim=-1)
+    bad = ~(torch.isfinite(s) & (s>0))
+    if bad.any():
+        raise ValueError(f"Event {name} must have a positive, finite sum; got {s[bad].flatten()[:5].tolist()}.")
+
 class DifferentiableClamp(torch.autograd.Function):
     """
     In the forward pass this operation behaves like torch.clamp.

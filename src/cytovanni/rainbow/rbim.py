@@ -195,13 +195,21 @@ class RainbowCalibrator():
         """ Extend fitmodel to new samples in adata, freezes all previously present parameters.
             Also fits the fluorescence.
             Previously loaded data is discarded and not used for the extension fit!
-            
+
+            Raises CalibrationModuleException (before anything is changed) if a new rainbow type has no overlap with
+            the trained data: it must be measured in a known batch, or in a new batch together with a known type
+            (RainbowBatchOrdinalEncoder.check_orphan_types). Otherwise its calibration factors would be arbitrary.
+
+            :param adatas: iterable of AnnData. New rainbow samples.
+
+            :param fitkwargs: passed to fit_fluorescence.
         """
         self._check_adatas(adatas)
+        df_meta = self._process_adatas_meta(adatas)
+        self.rboe.check_orphan_types(df_meta)
         self.adatas = adatas
-        
+
         # Extend batch encoder
-        df_meta = self._process_adatas_meta(self.adatas)
         extend_inds = self.rboe.extend(df_meta)
         
         # Extend and fit scatter calibrator
@@ -319,8 +327,16 @@ class RainbowCalibrator():
             
             Return means and covariances of Gaussians on arcsinh scale, the class shares,
             wether the peak is in the linear range, as well as the arcsinh cofactor that was used.
+            Works wherever the fluorescence module is (CPU, or GPU after fit_fluorescence(gpu=True));
+            the returned values are numpy arrays on the CPU.
+
+            :param adata: AnnData. Rainbow bead sample known to the model (its uid and rainbow type).
+
+            :param channels: list of str. Fluorescence channels to return, in this order.
         """
-        dataset = RainbowFluorescenceGMMCalibrationDataset(self.rboe, [adata], device="cpu", warn_missing=False,
+        # the dataset has to live on the device of the module (cuda after a GPU fit, cpu after from_saved)
+        device = next(self.rfim.parameters()).device
+        dataset = RainbowFluorescenceGMMCalibrationDataset(self.rboe, [adata], device=device, warn_missing=False,
                                                            channel_missing_cutoff=self.channel_missing_cutoff)
 
         peak_islinear = list(dataset.peak_usemask.values())[0]

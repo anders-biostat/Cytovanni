@@ -9,6 +9,20 @@ from zoneinfo import ZoneInfo
 from .misc import textcolor, get_cmap, cmap_to_legendhandles, wavelength_to_hex
 from ..exceptions import DefaultScatterGatingException, SettingsHashException, DefaultScatterCalibrationException, CytometerConfigurationException, CytovanniWarning
 
+def _to_builtin(value):
+    """ Recursively convert numpy values (as read back from .h5ad) to Python builtins:
+        ndarray -> list, numpy scalar -> int/float/str/bool, also inside dicts, lists and tuples.
+    """
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, dict):
+        return {_to_builtin(k): _to_builtin(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return type(value)(_to_builtin(v) for v in value)
+    return value
+
 def _default_hash_settings(adata, use_voltages=True, use_gains=True, include_scatter=True, include_fluorescence=True):
     """ Convert all relevant settings of the cytometer when sample adata was measured to a hash.
         Required to later automatically check that the correct rainbow batch was used,
@@ -240,8 +254,10 @@ class CytometerConfiguration:
 
             Raises CytometerConfigurationException if the exported class is not the class of this instance,
             or if the exported settings-hash function is not registered (see register_hash_function).
+            All values are converted to Python builtins (numpy arrays to lists, numpy scalars to Python scalars,
+            recursively), so a configuration read back from .h5ad equals the original and can be written with write_json.
         """
-        exported = dict(exported)
+        exported = _to_builtin(dict(exported))
         config_class = str(exported.pop("config_class", type(self).__name__))
         if config_class != type(self).__name__:
             raise CytometerConfigurationException(f"Exported configuration is a {config_class}, cannot import it into a {type(self).__name__}! Use CytometerConfiguration.from_exported.")
@@ -259,8 +275,6 @@ class CytometerConfiguration:
                 setattr(self, k, list(v))
             elif k in self._export_extras and isinstance(v, dict) and set(v.keys())=={"index", "values"}:
                 setattr(self, k, pd.Series(list(v["values"]), index=list(v["index"])))
-            elif k in self._export_extras and isinstance(v, np.ndarray):
-                setattr(self, k, v.tolist())
             else:
                 setattr(self, k, v)
         self.check_process_laserdict()

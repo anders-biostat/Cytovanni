@@ -32,7 +32,12 @@ def fit_rainbow_GMM(adata, N=None, init_params="kmeans",
         
         :param init_params: str. Either 'custom-uniform' or available options of GaussianMixture ('kmeans' etc.), custom uniform assumes equal peak sizes for the rainbow beads and initializes with percentiles along each channel.
         
-        :param Nretry: int. If found proportions fall outside of expected range, try again at most Nretry times to find better result. Disable if rainbow bead peak proportions are not uniform across peaks.
+        :param warningthreshold: float. The fit counts as failed if the smallest peak class share is below
+            1/N/warningthreshold and the largest above warningthreshold/N, or if any GMM component has no beads at all.
+
+        :param Nretry: int. If the fit counts as failed (see warningthreshold), try again at most Nretry times with a
+            new seed, then raise a GMMAssignmentWarning. Disable (0) if rainbow bead peak proportions are not uniform
+            across peaks; an empty component still gives the warning.
         
         :param fct_cofactor: function. Function that chooses the arcsinh cofactor, defaults to _GMM_choose_asinh_cofactor.
 
@@ -106,10 +111,13 @@ def fit_rainbow_GMM(adata, N=None, init_params="kmeans",
     adata.uns["GMM_order_ok"] = order_ok
     adata.uns["GMM_asinh_stds"] = np.sqrt(adata.uns["GMM_asinh_covariances"][:, np.arange(gm.means_.shape[1]), np.arange(gm.means_.shape[1])])
     
-    # Throw warning if peak class proportions seem too uneven
-    u, c = np.unique(labels, return_counts=True)
+    # Throw warning if peak class proportions seem too uneven, or if a component got no beads at all
+    # (bincount with minlength, so that empty components count with share 0)
+    c = np.bincount(labels, minlength=N)
+    u = np.arange(N)
     label_shares = c/c.sum()
-    if label_shares.min()<1/N/warningthreshold and label_shares.max()>warningthreshold/N:
+    uneven = label_shares.min()<1/N/warningthreshold and label_shares.max()>warningthreshold/N
+    if uneven or (c == 0).any():
         if Nretry>0:
             warnstr = f"GMM rainbow bead class assignment may not have worked properly for sample {adata.uns.get('name_uid')}, trying again ({Nretry})!"
             warnings.warn(warnstr, GMMAssignmentWarning)

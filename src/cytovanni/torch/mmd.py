@@ -2,6 +2,17 @@ import torch
 from torch.nn import Module, Parameter
 import numpy as np
 
+from .utils import _check_weight_sums
+
+def _bandwidth_floor(bandwidth):
+    """ Clamp an automatically estimated bandwidth to a small positive value, so that identical points (all distances
+        0) give a finite kernel instead of 0/0. The floor is the square root of the smallest normal number of the
+        bandwidth's dtype, but at least that of float32 (~1e-19), because the kernel multiplies the bandwidth with
+        float32 multipliers (and estimated bandwidths are reused as fixed ones). Ordinary bandwidths are far above it.
+    """
+    tiny = max(torch.finfo(bandwidth.dtype).tiny, torch.finfo(torch.float32).tiny)
+    return bandwidth.clamp_min(tiny ** .5)
+
 def subsamplemean_MMD(x, y, mmd=None, device="cpu", M=20, N=2000):
     """ Subsample both x and y to N, calculate MMD loss M times, average.
         To avoid the quadratic scaling of the MMD loss.
@@ -28,17 +39,18 @@ class RBF(Module):
     def get_bandwidth(self, L2_distances):
         if self.bandwidth is None:
             n_samples = L2_distances.shape[0]
-            return L2_distances.data.mean() / (1 - 1/n_samples) # mean across non-diagonal
+            return _bandwidth_floor(L2_distances.data.mean() / (1 - 1/n_samples)) # mean across non-diagonal
         return self.bandwidth
     
     @classmethod
     def estimate_bandwidth(cls, X):
         """ Estimate bandwidth here to make it consistent across different samples.
             This approach to estimating the bandwidth seems pretty optimal for our use case.
+            Floored at a small positive value (see _bandwidth_floor).
         """
         L2_distances = torch.cdist(X, X) ** 2
         n_samples = L2_distances.shape[0]
-        return L2_distances.data.mean() / (1 - 1/n_samples) # mean across non-diagonal
+        return _bandwidth_floor(L2_distances.data.mean() / (1 - 1/n_samples)) # mean across non-diagonal
 
     def forward(self, X, *args, **kwargs):
         L2_distances = torch.cdist(X, X) ** 2
@@ -49,6 +61,8 @@ class MMDLoss(Module):
         Technically .mean yields the biased estimator (1/(n-1) would be unbiased), irrelevant
         
         Implement weighting as in https://proceedings.mlr.press/v161/bellot21b.html but with weights for both x and y.
+        Weights are normalised to mean 1; a weight vector whose sum is not positive and finite raises ValueError.
+        Without a fixed bandwidth (kwarg bandwidth=None), it is estimated per call and floored at a small positive value.
     """
     def __init__(self, **kwargs_kernel):
         super().__init__()
@@ -67,6 +81,8 @@ class MMDLoss(Module):
         if wx is None and wy is None:
             return XX.mean() - 2 * XY.mean() + YY.mean()
         else:
+            for w, name in ((wx, "weights wx"), (wy, "weights wy")):
+                if w is not None: _check_weight_sums(w, name)
             wx = torch.ones_like(X[:,0]) if wx is None else wx*(wx.shape[0]/wx.sum())
             wy = torch.ones_like(Y[:,0]) if wy is None else wy*(wy.shape[0]/wy.sum())
             return (wx[:,None] * XX * wx[None,:]).mean() - 2 * (wx[:,None] * XY * wy[None,:]).mean() + (wy[:,None] * YY * wy[None,:]).mean()

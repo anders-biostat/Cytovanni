@@ -11,7 +11,10 @@ class SingleSpectrumPCAFitter():
             
             :param spectra: pd.DataFrame. Fitted spectra for the same dye from different measurements, columns are the channels, index the measurements.
             
-            :param N: int. Max number of principal components that should be fitted, capped at the number of spectra and of channels.
+            :param N: int. Max number of principal components that should be fitted, capped at the number of
+                spectra minus one and at the number of channels: n spectra centred on their mean span at most n-1
+                dimensions, a further component would have zero variance (and a NaN or huge normed embedding).
+                With a single spectrum, the fit is a dummy with N=0.
             
             :param name: str. Optional name.
         """
@@ -21,7 +24,8 @@ class SingleSpectrumPCAFitter():
         self.spectra = np.asarray(spectra)
         self.spectra_means = self.spectra.mean(0, keepdims=True)
         self.spectra_zeromean = self.spectra - self.spectra_means
-        self.N = min(N, *self.spectra.shape) # PCA needs N <= min(n_spectra, n_channels)
+        # mean-centred spectra have rank <= n_spectra-1; PCA also needs N <= n_channels
+        self.N = min(N, self.spectra.shape[0]-1, self.spectra.shape[1])
         self.name = name
         
         self.is_dummy = self.spectra.shape[0]<=1

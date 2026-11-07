@@ -43,7 +43,10 @@ class ConnectionSampler():
     """ Class to sample overlap connections.
         
         Only use connections that are not in the same batch.
-        For every connection, only trains the side that is further away from an anchor.
+        With anchors, connections are grown outwards from the anchor batches: first all connections with an anchor
+        sample, then, for d = 1 .. max_anchor_dist-1, connections from already connected batches at anchor distance d
+        to batches at another distance. So batches up to max_anchor_dist connections away from an anchor are trained.
+        With train_higher=False, only the side of a connection that is further away from an anchor is trained.
     """
     def __init__(self, idx_id, idx_batch, is_anchor=None, Nmax_persample=2, connect_train_within_anchors=False, max_anchor_dist=1, block_within_batch=True, train_higher=True):
         """ 
@@ -58,12 +61,14 @@ class ConnectionSampler():
             
             :param connect_train_within_anchors: bool. Whether to also allow connections between two anchors.
             
-            :param max_anchor_dist: int. Only include samples that are at most max_anchor_dist connections away from an anchor. Set to one to only sample connections with anchors.
+            :param max_anchor_dist: int >= 1. Only include samples that are at most max_anchor_dist connections away from an anchor. Set to one to only sample connections with anchors. Batches that are connected to an anchor, but further away, are not trained (warning; see find_nontraining_batches).
             
             :param block_within_batch: bool. Whether to block connections within the same batch.
             
             :param train_higher: bool. Whether to also train the side of connections that is closer to an anchor.
         """
+        if max_anchor_dist<1:
+            raise ValueError(f"max_anchor_dist must be at least 1, got {max_anchor_dist}!")
         self.Nmax_persample = Nmax_persample
         self.connect_train_within_anchors = connect_train_within_anchors
         self.max_anchor_dist = max_anchor_dist
@@ -94,6 +99,7 @@ class ConnectionSampler():
             # no anchors, train both on all connections. not recommended if using panel embedding, otherwise fine
             warnings.warn("No anchor batches were given, this is only recommended if no panel embeddings are being fit.")
             self.connections = self.connections_diffbatch
+            self.idx_anchor_distance = np.full(len(self.idx_batch), np.nan) # no anchors, no distance
             
         else:
             batch_is_anchor = np.zeros(self.idx_batch.max()+1)
@@ -111,7 +117,7 @@ class ConnectionSampler():
             
             connections = (self.connections_diffbatch>0) & ((self.idx_anchor_distance[None]==0) | (self.idx_anchor_distance[:,None]==0))
 
-            for i in list(range(1, self.max_anchor_dist+1)):
+            for i in range(1, self.max_anchor_dist):
 
                 batch_connections = np.zeros(self.idx_batch.max()+1)
                 csum = connections.sum(0)
@@ -125,6 +131,13 @@ class ConnectionSampler():
             self.connections = connections
         
         np.fill_diagonal(self.connections, False)
+        
+        if self.is_anchor is not None:
+            nontraining = np.intersect1d(self.find_nontraining_batches(), self.idx_batch)
+            beyond = nontraining[np.isfinite(self.batch_anchor_distance[nontraining]) & ~self.batch_is_anchor[nontraining]]
+            if len(beyond)>0:
+                warnings.warn(f"Batches {beyond.tolist()} (anchor distances {self.batch_anchor_distance[beyond].astype(int).tolist()}) are connected to an anchor batch, "
+                              f"but further than max_anchor_dist={self.max_anchor_dist} away, and are not trained (see find_nontraining_batches)!")
         
         # find connections
         self.cidx_left, self.cidx_right = self.connections.nonzero()
@@ -168,6 +181,9 @@ class ConnectionSampler():
         return connections, ctrain
     
     def get_df_sample_connections(self):
+        """ DataFrame of one sample of connections: train_left/right, anchor distances adist_left/right (NaN without
+            anchors) and sample indices idx_left/right.
+        """
         connections, ctrain = self.sample()
         
         df = pd.DataFrame(np.vstack([ctrain, self.idx_anchor_distance[connections]]), index=["train_left","train_right","adist_left","adist_right"]).T
@@ -188,7 +204,7 @@ class SampleOverlapDataset():
     """ 
     """
     def __init__(self, adatas, moe, channels, key_layer="calibrated", load_obsm=False, key_batch_sample="batch", data_isanchor=None, key_id="type", key_uid="uid",
-                       keys_sample_covariate=[], sN_cells=2000, sN_persample=2, device="cpu", data_on_device=True, min_sample_cells=1000):
+                       keys_sample_covariate=[], sN_cells=2000, sN_persample=2, max_anchor_dist=2, device="cpu", data_on_device=True, min_sample_cells=1000):
         """ 
             
             :param adatas: itarable. List of the adatas to include.
@@ -201,7 +217,7 @@ class SampleOverlapDataset():
 
             :param load_obsm: bool. Normally, loads data from adata.layers[key_layer], setting this to True switches the dataset to loading from adata.obsm[key_layer]
             
-            :param key_batch_sample: str. Batch key to use when blocking connections withint batches for sampling. If set to None, uses all possible connections.
+            :param key_batch_sample: str, None. Batch key to use when blocking connections within batches for sampling. If set to None, uses all possible connections (no blocking; with anchors, anchor distances then count connections between samples).
             
             :param data_isanchor: None, iterable. If none, just sample connections normally. If iterable, should be boolean that indicates for every adata whether it should be treated as a standardisation anchor. Then, only connections that include at least one anchor are used for training.
             
@@ -214,6 +230,8 @@ class SampleOverlapDataset():
             :param sN_cells: int. Random subset size per sample.
             
             :param sN_persample: int. Number of connections to use per sample.
+            
+            :param max_anchor_dist: int >= 1. With anchors, only batches at most this many connections away from an anchor batch are trained (see ConnectionSampler). 1: only connections with anchor samples.
             
             :param device: str. Automatically transfer data to CUDA device, or keep on 'cpu'.
             
@@ -239,6 +257,7 @@ class SampleOverlapDataset():
         
         self.sN_cells = sN_cells
         self.sN_persample = sN_persample
+        self.max_anchor_dist = max_anchor_dist
         
         self.device = device
         self.data_on_device = data_on_device
@@ -248,7 +267,10 @@ class SampleOverlapDataset():
         self.setup()
     
     def setup(self):
-        meta_keys = list( set(self.moe.necessary_keys) | set([self.key_batch_sample, self.key_id, self.key_uid]) )
+        meta_keys = set(self.moe.necessary_keys) | set([self.key_id, self.key_uid]) | set(self.keys_sample_covariate)
+        if self.key_batch_sample is not None:
+            meta_keys.add(self.key_batch_sample)
+        meta_keys = list(meta_keys)
         self.meta = pd.DataFrame({k:[ad.uns[k] for ad in self.adatas]
                                   for k in meta_keys})
         self.meta["_N"] = [ad.shape[0] for ad in self.adatas]
@@ -280,10 +302,16 @@ class SampleOverlapDataset():
         
         self.cellsampler = Sampler(self.data_split_indices, self.sN_cells, device=self.device)
         
-        idx_batch = self.data_idx_id.numpy() if self.key_batch_sample is None else self.data_idx_batch[self.key_batch_sample].numpy()
+        # without key_batch_sample: no blocking, all connections allowed; every sample is its own "batch" for the
+        # anchor distances, so these count connections between samples
+        if self.key_batch_sample is None:
+            idx_batch, block_within_batch = np.arange(self.Nsample), False
+        else:
+            idx_batch, block_within_batch = self.data_idx_batch[self.key_batch_sample].numpy(), True
         self.csampler = ConnectionSampler(self.data_idx_id.numpy(), idx_batch,
                                           is_anchor=self.data_isanchor, Nmax_persample=self.sN_persample,
-                                          connect_train_within_anchors=False, max_anchor_dist=1, block_within_batch=True, train_higher=True)
+                                          connect_train_within_anchors=False, max_anchor_dist=self.max_anchor_dist,
+                                          block_within_batch=block_within_batch, train_higher=True)
     
     def sample_single(self, idx, sampinds=None, expand_idx=True):
         """ Sample from single sample idx.
