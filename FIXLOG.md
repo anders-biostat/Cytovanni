@@ -76,7 +76,8 @@ A fix can change results relative to one of these and not the other; both are st
 | R2-E21 | `apply_df` missing on LineGate, CutoffUnmxGate, UnmxMinGate, CombinedGate | no (AttributeError -> works) | `make_calibrated_fcs(gates=[...])` with these gates |
 | R2-K1 (geomloss) | `raise NotImplemented(...)` -> `NotImplementedError` | no (error type only) | `GeomSampleLoss(mode)` with an unknown mode |
 | R2-K3 | `gate_scatter_bead_sample(**gating_kwargs)` keyword clash | no for working calls (TypeError -> override works) | `gating_kwargs` naming a default the function sets (`final_density_cutoff`, `bound_density_mad_factor`, ...) |
-| R2-K5 | `add_adata_unmixed` ignored `layer` | yes, default callers: unmixing now from `layer="raw"` (the documented default) instead of hard-coded "calibrated" | every call; callers wanting calibrated data must pass `layer="calibrated"` |
+| R2-K5 | `add_adata_unmixed` ignored `layer` | only for explicit `layer` != "calibrated" (now honoured); default unchanged ("calibrated") | calls passing `layer=` |
+| R2-G1 | `GeomSampleLoss("hausdorff")` AttributeError at construction | no (crash -> works) | `DDIST_mode="hausdorff"` |
 | R2-K7 | invalid escape `\D` in utils/rate.py docstring | no | SyntaxWarning at import |
 | R2-F1 | FCS start time read in the instrument time zone (`CytometerConfiguration.timezone`) | yes, only where the reading machine is not on Europe/Berlin time (UTC, uid shift by the offset); none for machines in Germany | `readfcs_sample` / `readfcs_rainbow_sample` / `read_fcs_timestamp` / `read_folder_timestamps` on a machine/container whose local time is not Europe/Berlin (incl. containers without zoneinfo, TZ falls back to UTC) |
 | R2-F2 | config export keeps class, hash function, timezone, subclass extras | no for existing files; files written now re-create the subclass | `to_dictionary`/`write_json`/`write_*_h5ad` + import; configs with a custom `fct_hash_settings` now raise on import unless registered |
@@ -363,6 +364,7 @@ Commit: R2-ref (`git log --grep R2-ref`), 2026-11-07. Approvals: R2_approval.md,
   Models saved before this fix must be re-saved with the key added (`exported["DDIST_separate"] = False` unless the
   model was trained with True). Reproducibility loads saved models at `processing/batchint_data/lib/sources.py:284`,
   `figures/plots_batchintHD7/lib/parameters.py:34`, `figures/plots_dye/lib/dye.py:843` (see USER_REMINDERS).
+- Decision (user 2026-11-07): keep it strict, no fallback for the missing key.
 - **Action:** re-save existing saved OverlapFitModels (R7). **Test:** v_all.py C12; f_ref.py.
 
 ### R2-C13 batches without path to an anchor
@@ -741,16 +743,18 @@ E20 allows a subset of the panel's dyes (`allow_missing=True`).
 - Test: jobs/r2_verify/v_all.py K3; f_core.py "K3".
 
 ### R2-K5 `add_adata_unmixed` ignored `layer`
-- Commit: R2-core (review/R2-bugs), 2026-11-07. Approval: todo/R2_approval.md item K5.
-- Where: utils.unmx.add_adata_unmixed (utils/unmx.py:90).
-- What was wrong: the data was always taken from layer "calibrated" (repro copy: "integrated"), whatever `layer` said.
-- Now: from `layer`. The signature default stays `layer="raw"` (documented), so **default callers change**: they now unmix
-  the raw layer instead of the calibrated one. Pass `layer="calibrated"` for the old behaviour.
-- Affected when: every call (default: raw instead of calibrated; explicit layer: now honoured).
-- Effect on results: `adata.obsm[addkey]` and `[addkey+"_arcsinh"]` change for every call whose `layer` != "calibrated".
+- Commit: R2-core (review/R2-bugs), 2026-11-07; default set in R2-K5-G1. Approval: todo/R2_approval.md item K5; default
+  decided by the user 2026-11-07 ("it should keep the default behaviour it had before").
+- Where: utils.unmx.add_adata_unmixed.
+- What was wrong: the data was always taken from layer "calibrated" (repro copy: "integrated"), whatever `layer` said;
+  the signature default `layer="raw"` was never used.
+- Now: from `layer`; the default is `layer="calibrated"`, so default calls behave as before.
+- Affected when: calls passing `layer` other than "calibrated" (now honoured).
+- Effect on results: none for default calls; `adata.obsm[addkey]` (+ `_arcsinh`) change for explicit other layers.
+  Vs the repro copy (hard-coded "integrated"): different layer name, see R7.
 - Affected analyses: none found (no calls in cytovanni_reproducibility or in the package).
-- Action: nothing known; callers relying on the default must pass `layer="calibrated"`.
-- Test: jobs/r2_verify/v_all.py K5.
+- Action: nothing.
+- Test: jobs/r2_verify/v_all.py K5; f_core.py K5.
 
 ### R2-K7 invalid escape in utils/rate.py docstring
 - Commit: R2-core (review/R2-bugs), 2026-11-07. Approval: todo/R2_approval.md item K7.
@@ -832,3 +836,13 @@ E20 allows a subset of the panel's dyes (`allow_missing=True`).
   this package) and lists the features written. No code change.
 - Effect on results: none. arges/lucy: see todo/ARGES_LUCY.md.
 - Test: jobs/r2_verify/v_all.py F3 stays CONFIRMED by design (the container is still not in the core).
+
+### R2-G1 `GeomSampleLoss("hausdorff")` could not be constructed
+- Commit: R2-K5-G1 (review/R2-bugs), 2026-11-07. Approval: todo/R2_approval.md addendum G1 (user 2026-11-07).
+- Where: torch.geomloss.GeomSampleLoss.__init__.
+- What was wrong: used `geomloss.kernel_samples.gaussian_kernel` without importing the submodule -> AttributeError, so
+  `OverlapFitModel(DDIST_mode="hausdorff")` was unusable (same in publish and the repro copy).
+- Now: imports `gaussian_kernel` from `geomloss.kernel_samples` (geomloss 0.2.x) or `geomloss._legacy.kernel_samples`
+  (0.3.x, which the container installs).
+- Effect on results: none (crash -> works). Affected analyses: none (hausdorff not used).
+- Test: jobs/r2_verify/f_core.py G1.

@@ -28,8 +28,12 @@ class GeomSampleLoss(Module):
         if mode=="sinkhorn":
             self.loss = geomloss.SamplesLoss(loss="sinkhorn", p=2, blur=blur, reach=reach, scaling=scaling, backend="tensorized")
         elif mode=="hausdorff":
+            try: # submodule, not loaded by `import geomloss`; moved to geomloss._legacy in geomloss 0.3
+                from geomloss.kernel_samples import gaussian_kernel
+            except ImportError:
+                from geomloss._legacy.kernel_samples import gaussian_kernel
             # not sure why this needs a kernel and sinkhorn doesn't, just use Gaussian
-            self.loss = geomloss.SamplesLoss(loss="hausdorff", p=2, blur=blur, reach=reach, scaling=scaling, backend="tensorized", kernel=geomloss.kernel_samples.gaussian_kernel)
+            self.loss = geomloss.SamplesLoss(loss="hausdorff", p=2, blur=blur, reach=reach, scaling=scaling, backend="tensorized", kernel=gaussian_kernel)
         else:
             raise NotImplementedError(f"GeomSampleLoss {mode} is not available!")
         

@@ -71,7 +71,7 @@ def apply_unmixing_lstsq(spectra, x):
     return pd.DataFrame(unmx, index=x.index, columns=spectra.index)
 
 
-def add_adata_unmixed(adata, spectra, addkey="unmx", layer="raw", add_arcsinh=True, arcsinh_cofactor=1500):
+def add_adata_unmixed(adata, spectra, addkey="unmx", layer="calibrated", add_arcsinh=True, arcsinh_cofactor=1500):
     """ Add unmixed data to adata.obsm, using single stains in spectra.
         Mixed fluorescence intensity is taken from layer.
         
@@ -81,7 +81,7 @@ def add_adata_unmixed(adata, spectra, addkey="unmx", layer="raw", add_arcsinh=Tr
         
         :param addkey: str. Unmixed data is added to adata.obsm[addkey].
         
-        :param layer: str. Raw data is taken from adata.layer[layer].
+        :param layer: str. Mixed (per-channel) data is taken from adata.layers[layer]. Default "calibrated".
         
         :param add_arcsinh: bool. If True, also add arcsinh transformed data to adata.obsm['addkey'_arcsinh].
         
