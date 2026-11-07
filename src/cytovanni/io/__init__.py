@@ -1,3 +1,8 @@
+"""Reading and writing data: .fcs files, their metadata and spillover matrices, and .h5ad files.
+
+.fcs samples are read into AnnData objects (`readfcs_sample`, `readfcs_rainbow_sample`); .h5ad files keep the
+cytometer configuration (`write_rainbow_h5ad`, `write_bead_h5ad`). Also specifics of the BD FACSDiscover S8.
+"""
 from .utils import readfcs_available_channels
 from .utils import sample_has_nonzero_spill, readfcs_spill, readfcs_autospectral_spill
 from .utils import readfcs_metadata

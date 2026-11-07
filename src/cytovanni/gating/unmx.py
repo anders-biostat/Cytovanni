@@ -1,9 +1,28 @@
+"""Gates on unmixed data (DataFrames in ``adata.obsm``)."""
 import flowutils
 import matplotlib.pyplot as plt
 import numpy as np
 
 class CutoffUnmxGate():
-    """ Gate on unmixed data above/below cuoff.
+    """Gate that keeps the events above (or below) a cutoff in one marker of the unmixed data.
+
+    Parameters
+    ----------
+    x : str
+        Marker: column of the unmixed DataFrame ``adata.obsm[key]``, e.g. ``"BV786 | CD14"``.
+    xcutoff : float
+        Cutoff, on the scale of ``adata.obsm[key]`` (e.g. arcsinh-transformed for a ``*_arcsinh`` key). The bound is
+        inclusive.
+    above : bool, default True
+        True keeps the events with value >= `xcutoff`, False those with value <= `xcutoff`.
+    key : str, default "unmx"
+        Key of the unmixed data in ``adata.obsm`` (a DataFrame with the markers as columns, as written by
+        `cytovanni.utils.add_adata_unmixed`).
+
+    Examples
+    --------
+    >>> gate = CutoffUnmxGate("BV786 | CD14", 2, key="unmx_arcsinh")
+    >>> adata_CD14 = adata[gate.apply(adata)]
     """
     def __init__(self, x, xcutoff, above=True, key="unmx"):
         self.x, self.xcutoff = x, xcutoff
@@ -15,6 +34,18 @@ class CutoffUnmxGate():
         return repstr
     
     def apply(self, ad):
+        """Apply the gate to an AnnData.
+
+        Parameters
+        ----------
+        ad : anndata.AnnData
+            Data with the unmixed DataFrame ``ad.obsm[key]``.
+
+        Returns
+        -------
+        pandas.Series
+            Boolean mask (index: ``ad.obs_names``), True for the events kept.
+        """
         x = ad.obsm[self.key][self.x]
         if self.above:
             return x>=self.xcutoff
@@ -22,13 +53,33 @@ class CutoffUnmxGate():
             return x<=self.xcutoff
 
     def apply_df(self, df):
-        """ Apply the gate to a DataFrame of unmixed data (what ad.obsm[key] holds, columns are markers).
-            Returns a boolean array.
+        """Apply the gate to a DataFrame of unmixed data (what ``ad.obsm[key]`` holds, markers as columns).
+
+        Parameters
+        ----------
+        df : pandas.DataFrame
+            Unmixed events, markers as columns (must contain `x`).
+
+        Returns
+        -------
+        numpy.ndarray
+            Boolean mask of shape (events,), True for the events kept.
         """
         x = df[self.x].to_numpy()
         return x>=self.xcutoff if self.above else x<=self.xcutoff
     
     def plot_adata(self, adata, ax=None, **kwargs):
+        """Histogram (100 bins) of the marker in ``adata.obsm[key]`` with the cutoff.
+
+        Parameters
+        ----------
+        adata : anndata.AnnData
+            Data to plot.
+        ax : matplotlib.axes.Axes, optional
+            Axes to draw into. Default: a new figure.
+        **kwargs
+            Passed to ``ax.hist``.
+        """
         if ax is None:
             fig, ax = plt.subplots()
         
@@ -39,8 +90,20 @@ class CutoffUnmxGate():
         ax.set_title(f"CutoffUnmxGate on\n'{self.key}'", size=25)
 
 class UnmxMinGate():
-    """ Gate AnnData to minimal marker abundance across whole panel.
-        Excludes events that are below cutoff in every marker.
+    """Gate that removes the events that are not above a cutoff in any marker of the unmixed data.
+
+    Keeps an event if at least one marker is > `cutoff` (strict), e.g. to remove unstained events or debris.
+
+    Parameters
+    ----------
+    key_unmx : str
+        Key of the unmixed data in ``adata.obsm`` (a DataFrame with the markers as columns).
+    cutoff : float
+        Cutoff, on the scale of ``adata.obsm[key_unmx]`` (e.g. arcsinh-transformed for a ``*_arcsinh`` key).
+
+    Examples
+    --------
+    >>> gate = UnmxMinGate("unmx_arcsinh", 1.)
     """
     def __init__(self, key_unmx, cutoff):
         self.key_unmx = key_unmx
@@ -51,6 +114,20 @@ class UnmxMinGate():
         return repstr
     
     def apply(self, ad, addkey=""):
+        """Apply the gate to an AnnData.
+
+        Parameters
+        ----------
+        ad : anndata.AnnData
+            Data with the unmixed DataFrame ``ad.obsm[key_unmx]``.
+        addkey : str, default ""
+            If given, also store the mask in ``ad.obs[addkey]`` (in place).
+
+        Returns
+        -------
+        pandas.Series
+            Boolean mask (index: ``ad.obs_names``), True for the events kept.
+        """
         vals = ad.obsm[self.key_unmx]
         mask = np.any(vals>self.cutoff, axis=1)
         if addkey:
@@ -58,12 +135,32 @@ class UnmxMinGate():
         return mask
 
     def apply_df(self, df):
-        """ Apply the gate to a DataFrame of unmixed data (what ad.obsm[key_unmx] holds, columns are markers).
-            Returns a boolean array.
+        """Apply the gate to a DataFrame (or array) of unmixed data (what ``ad.obsm[key_unmx]`` holds).
+
+        Parameters
+        ----------
+        df : pandas.DataFrame
+            Unmixed events, markers as columns.
+
+        Returns
+        -------
+        numpy.ndarray
+            Boolean mask of shape (events,), True for the events kept.
         """
         return np.any(np.asarray(df)>self.cutoff, axis=1)
     
     def plot_adata(self, adata, ax=None, **kwargs):
+        """Histogram (100 bins) of the maximum over all markers of ``adata.obsm[key_unmx]``, with the cutoff.
+
+        Parameters
+        ----------
+        adata : anndata.AnnData
+            Data to plot.
+        ax : matplotlib.axes.Axes, optional
+            Axes to draw into. Default: a new figure.
+        **kwargs
+            Passed to ``ax.hist``.
+        """
         if ax is None:
             fig, ax = plt.subplots()
         

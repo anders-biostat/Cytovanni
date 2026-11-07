@@ -1,3 +1,9 @@
+"""Cytovanni: computational standardisation of flow cytometry data.
+
+Subpackages: `cytovanni.io` (reading .fcs files into AnnData), `cytovanni.gating`, `cytovanni.rainbow` (rainbow bead
+calibration), `cytovanni.spill` (single-stain spectra), `cytovanni.ref` (reference-based batch standardisation),
+`cytovanni.utils` and `cytovanni.torch` (helpers), `cytovanni.exceptions`.
+"""
 from . import exceptions
 from . import utils
 from . import torch

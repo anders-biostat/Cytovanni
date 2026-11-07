@@ -1,37 +1,43 @@
+"""Exceptions and warnings of Cytovanni.
+
+All exceptions derive from `CytovanniException`, all warnings from `CytovanniWarning`, so that both can be caught or
+filtered as a group (e.g. ``warnings.simplefilter("ignore", CytovanniWarning)``).
+"""
+
 class CytovanniException(Exception):
-    """A generic Cytovanni exception"""
+    """Base class of all Cytovanni exceptions."""
     pass
 
 class ChannelMismatchException(CytovanniException):
-    """The cytometer config assumes the presence of channels that are not present in the loaded sample."""
+    """Channels of the cytometer configuration are missing in the loaded sample (`cytovanni.io.readfcs_sample`)."""
     pass
 
 class AutoBatchException(CytovanniException):
-    """Could not automatically infer rainbow batch from adata."""
+    """The rainbow batch of a sample could not be inferred automatically from its date, cytometer and settings."""
     pass
 
 class InconsistentBatchException(CytovanniException):
-    """Found different cytometer settings within the same rainbow batch."""
+    """Different cytometer settings (settings hashes) were found within the same rainbow batch."""
     pass
 
 class DefaultScatterGatingException(CytovanniException):
-    """The default for the two scatter channels to gate on is not appropriately set."""
+    """The default scatter gate channels of the cytometer configuration are invalid or not available."""
     pass
 
 class ScatterGatingChannelException(CytovanniException):
-    """The chosen scatter channels to gate on are not available."""
+    """The scatter channels chosen for gating are not available, or not exactly two."""
     pass
 
 class SettingsHashException(CytovanniException):
-    """Something went wrong when calculating the hash of the settings."""
+    """The settings hash of a sample could not be computed (raised from the error of the hash function)."""
     pass
 
 class DefaultScatterCalibrationException(CytovanniException):
-    """The default for the scatter calibration is not appropriately set."""
+    """The (default) scatter calibration names unknown channels or calibrates a channel with several factors."""
     pass
 
 class RepeatedBatchException(CytovanniException):
-    """Found the same rainbow batch name on multiple cytometers."""
+    """The same rainbow batch name was found on several cytometers."""
     pass
 
 class OrdinalEncoderException(CytovanniException):
@@ -73,11 +79,11 @@ class OverlapStandardisationException(CytovanniException):
 
 
 class CytovanniWarning(Warning):
-    """A generic Cytovanni warning"""
+    """Base class of all Cytovanni warnings."""
     pass
 
 class ChannelMismatchWarning(CytovanniWarning):
-    """The cytometer config assumes the presence of channels that are not present in the loaded sample."""
+    """Channels of the cytometer configuration are missing in the loaded sample (scatter channels, if allowed)."""
     pass
 
 class GMMAssignmentWarning(CytovanniWarning):
@@ -85,7 +91,7 @@ class GMMAssignmentWarning(CytovanniWarning):
     pass
 
 class RainbowSpilloverWarning(CytovanniWarning):
-    """Rainbow bead .fcs contains a non-trivial spillover matrix."""
+    """An .fcs file contains a non-trivial spillover matrix (warned by `cytovanni.io.readfcs_sample` on request)."""
     pass
 
 class AutoBatchWarning(CytovanniWarning):
