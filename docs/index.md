@@ -35,4 +35,5 @@ Container <tutorials/container>
 Configuration <tutorials/configuration/index>
 Fixed Spectra Workflow <tutorials/integration_fixed-spectra/index>
 Inferred Spectra Workflow <tutorials/integration_variable-spectra/index>
+API reference <api/index>
 ```

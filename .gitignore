@@ -170,3 +170,6 @@ data/example_variable-spectra/
 site/
 
 container/test.sif
+
+# sphinx autosummary output
+docs/api/generated/
