@@ -1,3 +1,10 @@
+"""Per-batch scaling factors for batch integration without a full reference model.
+
+Every function here returns one multiplicative factor per batch (and, for `fit_factors_Sinkhorn`, per marker):
+multiply the batch's data (on the linear scale the factors were fitted on, raw or calibrated) by its factor to
+bring the batches onto a common scale. The Sinkhorn fits match whole distributions on the arcsinh scale; mean and
+percentile matching are quick closed-form alternatives (also used as initialisation for the Sinkhorn fits).
+"""
 import numpy as np
 import pandas as pd
 import torch
@@ -11,6 +18,7 @@ from .model import _sum_loss_separate_markers
 import warnings
 
 def _triu_indices(N, Nmax=None, exclude_internal=[]):
+    """Index pairs (i < j) of `N` items, shape (2, pairs); a random subset of at most `Nmax` pairs if given."""
     ind_triu = torch.triu_indices(N,N, offset=1)
     ind_triu = ind_triu[:,~torch.all(torch.isin(ind_triu, torch.tensor(exclude_internal)), axis=0)]
     if Nmax is None:
@@ -19,22 +27,97 @@ def _triu_indices(N, Nmax=None, exclude_internal=[]):
         return ind_triu[:,torch.randperm(ind_triu.shape[1])][:,:Nmax]
 
 def _check_nonempty(sizes):
-    """ Raise ValueError if any of the batches (or batch/sample entries) has no events.
-
-        :param sizes: dict. Name -> number of events.
-    """
+    """Raise ValueError if any entry of `sizes` (dict of name to number of events) is 0."""
     empty = [k for k, n in sizes.items() if n==0]
     if len(empty)>0:
         raise ValueError(f"No events in {empty}, every batch needs data for the factor fit!")
 
 def fit_factor_Sinkhorn(datadct, arcsinh_cofactor=5000, Nsamp=2000, Niter=150, lr=5e-1, momentum=.8, device="cuda:0", verbose=True, aggregate=True, Ncomp=10, init="null", anchor=None, dummy=False, name=""):
-    """ Fit scaling factor using Sinkhorn divergence as the loss.
+    """Fit one scaling factor per batch for one marker by matching distributions with a Sinkhorn loss.
 
-        Uses normal SGD.
-        (An L-BFGS variant, fit_factor_Sinkhorn_LBFGS, was tried and removed: it diverged silently or crashed in some
-        runs, because the objective is stochastic (the subsample was redrawn at every closure call) and lr=1 was used
-        without a line search. Drawing a fixed subsample per step looked stable in a small test. See FIXLOG R2b-G2-11.)
-        Raises ValueError if a batch has no events.
+    Finds factors such that the arcsinh-transformed, rescaled distributions of all batches overlap as well as
+    possible. Unlike mean or percentile matching, this uses the whole distribution, so it is robust to a single
+    shifted population, but it assumes the batches have the same composition (e.g. the same reference sample).
+
+    Parameters
+    ----------
+    datadct : dict of str to numpy.ndarray
+        Events of one marker per batch: 1-D array of intensities on a linear scale (raw or calibrated, unmixed;
+        not arcsinh-transformed), e.g. ``{b: df[marker].to_numpy() for b, df in unmx_by_batch.items()}``.
+        The dict order sets the order of the result.
+    arcsinh_cofactor : float, default 5000
+        Cofactor (raw intensity units) of the transform used inside the loss: the loss compares
+        ``arcsinh(x * factor / arcsinh_cofactor)`` between batches. The factors are applied to the linear data.
+    Nsamp : int, default 2000
+        Events drawn per batch in every step (a new random subsample each step; batches with fewer events contribute
+        all of them). Also the size of the pooled comparison sample when `aggregate`.
+    Niter : int, default 150
+        Number of SGD steps (no convergence check: inspect the plots shown with `verbose`).
+    lr : float, default 0.5
+        SGD learning rate (on the log factors).
+    momentum : float, default 0.8
+        SGD momentum.
+    device : str, default "cuda:0"
+        Torch device for the fit, e.g. ``"cpu"``, ``"cuda:0"``. On the CPU the fit is much slower (minutes per fit).
+    verbose : bool, default True
+        Show a tqdm progress bar and, after the fit, plot the loss and the log factors per step (``plt.show()``).
+    aggregate : bool, default True
+        If True, compare every batch to a pooled sample (`Nsamp` events drawn from the rescaled subsamples of all
+        batches, including the batch itself); the loss is the mean over batches. If False, compare pairs of batches
+        directly (see `Ncomp`).
+    Ncomp : int, default 10
+        Only if not `aggregate`: number of random batch pairs compared per step (all pairs if there are fewer); the
+        loss is the mean over these pairs.
+    init : {'null', 'mean'}, default 'null'
+        Initial factors: 'null' starts all factors at 1, 'mean' at the result of `fit_factor_MeanMatching`.
+    anchor : str, optional
+        Batch whose factor is set to 1 after the fit (all factors are divided by its factor). Default: no anchor, the
+        factors are normalised to a geometric mean of 1 over all batches.
+    dummy : bool, default False
+        Skip the fit (and all checks) and return 1 for every batch.
+    name : str, default ""
+        Label of the progress bar.
+
+    Returns
+    -------
+    pandas.Series
+        Factor per batch (index: the keys of `datadct`, in dict order). Multiply the linear data of each batch by its
+        factor to standardise it.
+
+    Raises
+    ------
+    ValueError
+        If `anchor` is not a key of `datadct`, or a batch has no events.
+    NotImplementedError
+        If `init` is not 'null' or 'mean'.
+
+    See Also
+    --------
+    fit_factors_Sinkhorn : several markers at once (joint or per-marker loss).
+    fit_factor_Sinkhorn_grouped : several samples per batch.
+    fit_factor_MeanMatching, fit_factor_PercentileMatching : closed-form alternatives.
+
+    Notes
+    -----
+    The fitted parameters are the log factors, constrained to mean 0 over batches (so the factors have geometric mean
+    1); this fixes the otherwise free common scale and keeps the fit stable. `anchor` only rescales the result.
+
+    The loss is the debiased Sinkhorn divergence of ``geomloss.SamplesLoss`` (via `cytovanni.torch.GeomSampleLoss`)
+    with p=2 (squared Euclidean cost), blur 0.5 (entropic regularisation eps = blur^2), reach 1 (unbalanced transport,
+    marginal penalty rho = reach^2) and scaling 0.5, uniform weights. Blur and reach are fixed here; together with the
+    default cofactor of 5000 they were tuned for a 23-colour panel and may need different values for other data
+    (not exposed as arguments).
+
+    Since R1-D2 the aggregate loss is divided by the number of batches (before: by the number of batch pairs), which
+    sets the effective SGD step size. An L-BFGS variant (``fit_factor_Sinkhorn_LBFGS``) was removed because it diverged
+    or crashed in some runs: the objective is stochastic (new subsample at every closure call) and it used lr=1 without
+    line search; a fixed subsample per step looked stable in a small test (R2b-G2-11).
+
+    Examples
+    --------
+    >>> factors = fit_factor_Sinkhorn({b: df["CD3"].to_numpy() for b, df in unmx_by_batch.items()},
+    ...                               Niter=200, init="mean", device="cuda:0")
+    >>> standardised = {b: df["CD3"] * factors[b] for b, df in unmx_by_batch.items()}
     """
     # prepare data
     keys = np.asarray(list(datadct.keys()))
@@ -121,15 +204,79 @@ def fit_factor_Sinkhorn(datadct, arcsinh_cofactor=5000, Nsamp=2000, Niter=150, l
     return factors
 
 def fit_factor_Sinkhorn_grouped(datadct, arcsinh_cofactor=5000, Nsamp=2000, Niter=150, lr=5e-1, momentum=.8, device="cuda:0", verbose=True, init="null", anchor=None, dummy=False, name=""):
-    """ Fit scaling factor using Sinkhorn divergence as the loss, with multiple samples per batch.
+    """Fit one scaling factor per batch for one marker, with several samples per batch.
 
-        Like fit_factor_Sinkhorn, but datadct is {batch: {sample: data}}, with one shared factor per batch.
-        Each sample is only compared to the aggregate of the same sample across batches, so differences
-        in composition or cell number between samples do not enter the fit.
-        Samples present in only one batch carry no information and are ignored.
-        Raises ValueError if a batch/sample entry has no events.
+    Like `fit_factor_Sinkhorn` with ``aggregate=True``, but each batch holds several samples and shares one factor
+    across them. Each (batch, sample) entry is compared only to the pooled same sample across batches, so differences
+    in composition or event number between samples do not enter the fit.
 
-        Uses normal SGD.
+    Parameters
+    ----------
+    datadct : dict of str to dict of str to numpy.ndarray
+        ``{batch: {sample: events}}``: events of one marker as 1-D array-like of intensities on a linear scale (raw or
+        calibrated, unmixed; not arcsinh-transformed). Samples are matched across batches by name. The outer dict
+        order sets the order of the result.
+    arcsinh_cofactor : float, default 5000
+        Cofactor (raw intensity units) of the transform used inside the loss: the loss compares
+        ``arcsinh(x * factor / arcsinh_cofactor)`` between batches. The factors are applied to the linear data.
+    Nsamp : int, default 2000
+        Events drawn per (batch, sample) entry in every step (a new random subsample each step; entries with fewer
+        events contribute all of them). Also the size of the pooled comparison sample of each sample.
+    Niter : int, default 150
+        Number of SGD steps (no convergence check: inspect the plots shown with `verbose`).
+    lr : float, default 0.5
+        SGD learning rate (on the log factors).
+    momentum : float, default 0.8
+        SGD momentum.
+    device : str, default "cuda:0"
+        Torch device for the fit, e.g. ``"cpu"``, ``"cuda:0"``. On the CPU the fit is much slower (minutes per fit).
+    verbose : bool, default True
+        Show a tqdm progress bar and, after the fit, plot the loss and the log factors per step (``plt.show()``).
+    init : {'null', 'mean'}, default 'null'
+        Initial factors: 'null' starts all factors at 1, 'mean' at `fit_factor_MeanMatching` on all samples of each
+        batch pooled.
+    anchor : str, optional
+        Batch whose factor is set to 1 after the fit (all factors are divided by its factor). Default: no anchor, the
+        factors are normalised to a geometric mean of 1 over all batches.
+    dummy : bool, default False
+        Skip the fit (and all checks) and return 1 for every batch.
+    name : str, default ""
+        Label of the progress bar.
+
+    Returns
+    -------
+    pandas.Series
+        Factor per batch (index: the outer keys of `datadct`, in dict order). Multiply the linear data of every sample
+        of a batch by its factor to standardise it.
+
+    Raises
+    ------
+    ValueError
+        If `anchor` is not a key of `datadct`, a (batch, sample) entry has no events, or no sample is present in more
+        than one batch.
+    NotImplementedError
+        If `init` is not 'null' or 'mean'.
+
+    Warns
+    -----
+    UserWarning
+        If some batches share no sample with any other batch: their factors are not constrained by the data.
+
+    See Also
+    --------
+    fit_factor_Sinkhorn : one sample per batch, also pairwise comparisons.
+
+    Notes
+    -----
+    Samples present in only one batch carry no information and are ignored. The loss is the mean over all compared
+    (batch, sample) entries of the Sinkhorn divergence to the pooled sample; loss settings, the mean-0 constraint on
+    the log factors and the role of `anchor` are as in `fit_factor_Sinkhorn` (p=2, blur 0.5, reach 1, scaling 0.5,
+    debiased; tuned for a 23-colour panel at cofactor 5000).
+
+    Examples
+    --------
+    >>> factors = fit_factor_Sinkhorn_grouped({"day1": {"donorA": xa1, "donorB": xb1},
+    ...                                        "day2": {"donorA": xa2, "donorB": xb2}}, anchor="day1")
     """
     # prepare data
     keys = np.asarray(list(datadct.keys()))
@@ -224,40 +371,89 @@ def fit_factor_Sinkhorn_grouped(datadct, arcsinh_cofactor=5000, Nsamp=2000, Nite
     return factors
 
 def fit_factors_Sinkhorn(datadct, fit_markers=None, arcsinh_cofactor=5000, Nsamp=2000, Niter=300, lr=5e-1, momentum=.8, device="cuda:0", verbose=True, aggregate=True, Ncomp=10, init="null", anchor=None, dummy=False, separate=False):
-    """ Fit scaling factors using Sinkhorn divergence as the loss.
+    """Fit one scaling factor per batch and marker by matching distributions with a Sinkhorn loss.
 
-        Basically fit_factor_Sinkhorn, but for multiple factors in parallel.
-        Requires all datas to have all markers. Raises ValueError if a batch has no events.
+    The multi-marker version of `fit_factor_Sinkhorn`: all factors are fitted together, either with one Sinkhorn loss
+    on the joint distribution of the fitted markers (default) or with one loss per marker (`separate`).
 
-        Uses normal SGD.
+    Parameters
+    ----------
+    datadct : dict of str to pandas.DataFrame
+        Events per batch, DataFrame of shape (events, stain) with intensities on a linear scale (raw or calibrated,
+        unmixed; not arcsinh-transformed), e.g. ``{ad.uns["date"]: ad.obsm["unmx"] for ad in adatas}``. All frames
+        must have the same, unique marker columns; they are aligned to the column order of the first frame (R2d-D1).
+        The dict order sets the row order of the result.
+    fit_markers : list of str, optional
+        Markers that enter the loss. The others keep factor 1 (they are still returned). Names not among the columns
+        are ignored silently; if no name matches, the fit fails with a torch RuntimeError. Default: all markers.
+    arcsinh_cofactor : float, default 5000
+        Cofactor (raw intensity units) of the transform used inside the loss: the loss compares
+        ``arcsinh(x * factor / arcsinh_cofactor)`` between batches. The factors are applied to the linear data.
+    Nsamp : int, default 2000
+        Events drawn per batch in every step (a new random subsample each step; batches with fewer events contribute
+        all of them). Also the size of the pooled comparison sample when `aggregate`.
+    Niter : int, default 300
+        Number of SGD steps (no convergence check: inspect the plots shown with `verbose`).
+    lr : float, default 0.5
+        SGD learning rate (on the log factors).
+    momentum : float, default 0.8
+        SGD momentum.
+    device : str, default "cuda:0"
+        Torch device for the fit, e.g. ``"cpu"``, ``"cuda:0"``. On the CPU the fit is much slower (minutes per fit).
+    verbose : bool, default True
+        Show a tqdm progress bar and, after the fit, plot the loss and the log factors per step (``plt.show()``).
+    aggregate : bool, default True
+        If True, compare every batch to a pooled sample (`Nsamp` events drawn from the rescaled subsamples of all
+        batches, including the batch itself); the loss is the mean over batches. If False, compare pairs of batches
+        directly (see `Ncomp`).
+    Ncomp : int, default 10
+        Only if not `aggregate`: number of random batch pairs compared per step (all pairs if there are fewer); the
+        loss is the mean over these pairs.
+    init : {'null', 'mean'}, default 'null'
+        Initial factors: 'null' starts all factors at 1, 'mean' at `fit_factor_MeanMatching` per fitted marker (1 for
+        the other markers).
+    anchor : str, optional
+        Batch whose factors are set to 1 after the fit (every marker column is divided by the anchor's factor).
+        Default: no anchor, the factors of each marker are normalised to a geometric mean of 1 over all batches.
+    dummy : bool, default False
+        Skip the fit and return 1 everywhere (the marker columns are still checked and aligned).
+    separate : bool, default False
+        If False, one Sinkhorn loss on the joint (multi-dimensional) distribution of the fitted markers, so
+        co-expression patterns enter the fit. If True, one 1-D Sinkhorn loss per fitted marker, summed over markers
+        (the loss and so the effective step size grow with the number of fitted markers).
 
-        :param datadct: dict. Dictionary that contains the data to be fitted, should have the batch name as key, and pd.DataFrame with index cell and column marker as value for each batch.
+    Returns
+    -------
+    pandas.DataFrame
+        Factors of shape (batch, stain): index the keys of `datadct`, columns the markers in the order of the first
+        frame. Multiply each batch's linear data column-wise by its row to standardise it.
 
-        :param arcsinh_cofactor: float. Arcsinh cofactor to use during the fit.
+    Raises
+    ------
+    ValueError
+        If the first frame has duplicate columns, a frame's marker set differs from the first frame's, `anchor` is not
+        a key of `datadct`, or a batch has no events.
+    NotImplementedError
+        If `init` is not 'null' or 'mean'.
 
-        :param Nsamp: int. Number of cells to sample per batch for the Sinkhorn loss.
+    See Also
+    --------
+    fit_factor_Sinkhorn : one marker; settings and loss details.
+    ScalingTransformer : the same per-batch, per-marker scaling within the reference model (`OverlapFitModel`).
 
-        :param Niter: int. Number of fit iterations.
+    Notes
+    -----
+    The log factors are constrained to mean 0 over batches for every marker; `anchor` only rescales the result.
+    Loss settings are as in `fit_factor_Sinkhorn` (p=2, blur 0.5, reach 1, scaling 0.5, debiased; tuned for a
+    23-colour panel at cofactor 5000). The aggregate loss is divided by the number of batches, as in
+    `fit_factor_Sinkhorn`. Unfitted markers are scaled with their factor 1 but are not part of the loss.
 
-        :param lr: float. Learning rate.
-
-        :param momentum: float. Momentum.
-
-        :param device: str. Device (cpu, cuda:0 etc.) to perform the fit on.
-
-        :param verbose: bool. If true, also plots the loss etc.
-
-        :param aggregate: bool. If true, calculates the loss between each batch and their aggregate, if false performs pairwise comparisons.
-
-        :param Ncomp: int. If not aggregate, number of total comparisons per iteration.
-
-        :param init: str. Either 'null', i.e. initializing all factors as 1., or 'mean', which uses mean matching as the initialization.
-
-        :param anchor: None, str. If given, normalizes factors such that this batch stays the same.
-
-        :param dummy: bool. If True, skips the fit and returns 1. for all scaling factors.
-
-        :param separate: bool. If True, uses Sinkhorn separately on each parameter, instead of on all of them at once.
+    Examples
+    --------
+    >>> datadct = {ad.uns["date"]: ad.obsm["unmx"] for ad in adatas}
+    >>> factors = fit_factors_Sinkhorn(datadct, fit_markers=["CD3", "CD19"], lr=2e-1, momentum=.7,
+    ...                                aggregate=False, anchor="RF_12_11_2021")
+    >>> standardised = {b: df[factors.columns] * factors.loc[b] for b, df in datadct.items()}
     """
     # prepare data
     keys = np.asarray(list(datadct.keys()))
@@ -360,9 +556,50 @@ def fit_factors_Sinkhorn(datadct, fit_markers=None, arcsinh_cofactor=5000, Nsamp
     return factors
 
 def fit_factor_MeanMatching(datadct, anchor=None, dummy=False):
-    """ Fit factor using mean matching.
-        
-        Clips negative values to zero before calculating the mean, not sure this is the best choice.
+    """Fit one scaling factor per batch by matching the batch means.
+
+    Each factor scales its batch's mean (of the events clipped at 0) to the average of the batch means:
+    ``factor_b = mean_k(m_k) / m_b``. Fast and deterministic, but sensitive to shifts in population composition.
+
+    Parameters
+    ----------
+    datadct : dict of str to numpy.ndarray
+        Events of one marker per batch: 1-D array (or pandas.Series) of intensities on a linear scale (raw or
+        calibrated; not arcsinh-transformed).
+    anchor : str, optional
+        Batch whose factor is set to 1 (all factors are divided by its factor). Default: no anchor, the factors are
+        such that every batch mean becomes the arithmetic mean of the batch means (not a geometric mean of 1).
+    dummy : bool, default False
+        Skip the computation and return 1 for every batch.
+
+    Returns
+    -------
+    pandas.Series
+        Factor per batch (index: the keys of `datadct`). Multiply the linear data of each batch by its factor to
+        standardise it.
+
+    Raises
+    ------
+    KeyError
+        If `anchor` is not a key of `datadct` (raised by pandas).
+
+    Warns
+    -----
+    UserWarning
+        If a factor is not positive and finite (e.g. a batch whose clipped mean is 0).
+
+    See Also
+    --------
+    fit_factor_PercentileMatching : matches a percentile instead of the mean.
+    fit_factor_Sinkhorn : distribution matching; uses this function for ``init="mean"``.
+
+    Notes
+    -----
+    Negative values (e.g. from unmixing) are set to 0 before the mean is taken.
+
+    Examples
+    --------
+    >>> factors = fit_factor_MeanMatching({"a": xa, "b": xb}, anchor="a")
     """
     if dummy:
         return pd.Series(1., index=list(datadct.keys()))
@@ -375,7 +612,47 @@ def fit_factor_MeanMatching(datadct, anchor=None, dummy=False):
     return factors
 
 def fit_factor_PercentileMatching(datadct, percentile=95, anchor=None, dummy=False):
-    """ Fit factor using percentile matching.
+    """Fit one scaling factor per batch by matching a percentile of the batch distributions.
+
+    Each factor scales its batch's `percentile` to the average over batches: ``factor_b = mean_k(q_k) / q_b``.
+    A high percentile matches the positive population of a marker, independent of the negative events.
+
+    Parameters
+    ----------
+    datadct : dict of str to numpy.ndarray
+        Events per batch, array-like of intensities on a linear scale (raw or calibrated; not arcsinh-transformed).
+        Arrays with more than one dimension are flattened, i.e. all their values are pooled.
+    percentile : float, default 95
+        Percentile (0-100) to match. No clipping: it should lie in the positive range of all batches.
+    anchor : str, optional
+        Batch whose factor is set to 1 (all factors are divided by its factor). Default: no anchor, the factors are
+        such that every batch percentile becomes the arithmetic mean of the batch percentiles.
+    dummy : bool, default False
+        Skip the computation and return 1 for every batch.
+
+    Returns
+    -------
+    pandas.Series
+        Factor per batch (index: the keys of `datadct`). Multiply the linear data of each batch by its factor to
+        standardise it.
+
+    Raises
+    ------
+    KeyError
+        If `anchor` is not a key of `datadct` (raised by pandas).
+
+    Warns
+    -----
+    UserWarning
+        If a factor is not positive and finite (e.g. a percentile <= 0); the message includes the factors.
+
+    See Also
+    --------
+    fit_factor_MeanMatching : matches the mean instead.
+
+    Examples
+    --------
+    >>> factors = fit_factor_PercentileMatching({b: df["CD3"].to_numpy() for b, df in unmx_by_batch.items()}, 97)
     """
     if dummy:
         return pd.Series(1., index=list(datadct.keys()))
