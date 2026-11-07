@@ -377,7 +377,7 @@ def fit_factors_Sinkhorn(datadct, fit_markers=None, arcsinh_cofactor=5000, Nsamp
     datadct : dict of str to pandas.DataFrame
         Events per batch, DataFrame of shape (events, stain) with intensities on a linear scale (raw or calibrated,
         unmixed; not arcsinh-transformed), e.g. ``{ad.uns["date"]: ad.obsm["unmx"] for ad in adatas}``. All frames
-        must have the same, unique marker columns; they are aligned to the column order of the first frame (R2d-D1).
+        must have the same, unique marker columns; they are aligned to the column order of the first frame.
         The dict order sets the row order of the result.
     fit_markers : list of str, optional
         Markers that enter the loss. The others keep factor 1 (they are still returned). Names not among the columns
