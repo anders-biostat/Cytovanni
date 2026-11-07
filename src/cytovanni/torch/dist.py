@@ -115,7 +115,7 @@ class CustomTransformedDistribution(TransformedDistribution):
         return log_prob
 
     def log_prob(self, value, *args, **kwargs):
-        """Return the log density at `value`: base log density of the back-transformed value minus log |Jacobian|.
+        """Return the log density at `value`: base log density of the back-transformed value minus log abs. Jacobian.
 
         Same as ``TransformedDistribution.log_prob``, but passes `args` and `kwargs` on to the base distribution's
         ``log_prob``.
