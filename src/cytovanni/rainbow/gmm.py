@@ -64,7 +64,7 @@ def fit_rainbow_GMM(adata, N=None, init_params="kmeans",
         weights_init = np.ones((N))/N
 
         def single_precision(X, N, i):
-            order = np.argsort(X, axis=0).mean(1)
+            order = np.argsort(np.argsort(X, axis=0), axis=0).mean(1)
             low = np.percentile(order, (i)*100/N, axis=0, keepdims=True)
             high = np.percentile(order, (i+1)*100/N, axis=0, keepdims=True)
             mask = (order>=low) & (order<=high)
@@ -111,14 +111,16 @@ def fit_rainbow_GMM(adata, N=None, init_params="kmeans",
     label_shares = c/c.sum()
     if label_shares.min()<1/N/warningthreshold and label_shares.max()>warningthreshold/N:
         if Nretry>0:
-            warnstr = f"GMM rainbow bead class assignment may not have worked properly for sample {adata.uns['name_uid']}, trying again ({Nretry})!"
+            warnstr = f"GMM rainbow bead class assignment may not have worked properly for sample {adata.uns.get('name_uid')}, trying again ({Nretry})!"
             warnings.warn(warnstr, GMMAssignmentWarning)
-            # Reuse random state for predictability, but don't used fixed random state here, otherwise pointless!
-            fit_rainbow_GMM(adata, N=N, init_params=init_params, random_state=random_state, n_init=n_init, max_iter=max_iter,
+            # an int seed would repeat the identical fit, so derive a new deterministic seed for every retry;
+            # None and np.random.RandomState instances give a different fit anyway
+            retry_state = random_state + 1 if isinstance(random_state, (int, np.integer)) else random_state
+            fit_rainbow_GMM(adata, N=N, init_params=init_params, random_state=retry_state, n_init=n_init, max_iter=max_iter,
                     clipminperc=clipminperc, clipmaxperc=clipmaxperc, warningthreshold=warningthreshold, fct_cofactor=fct_cofactor, Nretry=Nretry-1, cofactor=cofactor,
                     order_channels=order_channels)
         else:
-            warnstr = f"GMM rainbow bead class assignment may not have worked properly for sample {adata.uns['name_uid']}!"
+            warnstr = f"GMM rainbow bead class assignment may not have worked properly for sample {adata.uns.get('name_uid')}!"
             warnstr += f"\nSmallest peak class is {u[np.argmin(c)]} with share {label_shares[np.argmin(c)]:.2f}"
             warnstr += f"\nLargest peak class is {u[np.argmax(c)]} with share {label_shares[np.argmax(c)]:.2f}"
             warnings.warn(warnstr, GMMAssignmentWarning)

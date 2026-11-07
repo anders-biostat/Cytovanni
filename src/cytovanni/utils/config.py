@@ -204,7 +204,7 @@ class CytometerConfiguration:
         if len(self.default_scatter_gate_channels)!=2:
             raise DefaultScatterGatingException(f"Default scatter gating choice {self.default_scatter_gate_channels} is invalid, need to be exactly two channels!")
         all_channels = self.channels_scatter + self.channels_fluorescence + self.channels_fluorescence_addHW
-        if not np.all(np.in1d(self.default_scatter_gate_channels, all_channels)):
+        if not np.all(np.isin(self.default_scatter_gate_channels, all_channels)):
             raise DefaultScatterGatingException(f"Default scatter gating choice {self.default_scatter_gate_channels} is not available! Choose two of possibly available channels:\n{all_channels}")
         return self.default_scatter_gate_channels
     

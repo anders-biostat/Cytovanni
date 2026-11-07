@@ -10,6 +10,7 @@ import os
 
 from ..utils import printwtime
 from ..io import writefcs, readfcs_sample
+from ..io.utils import _replace_channel_name
 from ..exceptions import CalibrationModuleWarning, CalibrationModuleException, MissingChannelException, MissingGPUWarning, CalibrationModuleUntrainedParameterWarning
 from .rboe import RainbowBatchOrdinalEncoder
 from .rbim_scatter import RainbowScatterCalibrationModule
@@ -34,6 +35,16 @@ def _plot_rfim_pdf(ax, i, mean, std, shares, islinear, vline=True):
 
 def _geometric_mean(x):
     return np.exp(np.log(x).mean())
+
+def _restrict_to_available(values, adata):
+    """ Restrict a per-channel Series (calibration factors or shifts) to the channels present in adata.var.
+        Warns about the dropped channels, e.g. scatter channels that are missing from the sample.
+    """
+    missing = values.index.difference(adata.var.index)
+    if len(missing)>0:
+        warnings.warn(f"Calibration available for channels {missing.tolist()} that are not in the sample, skipping them.", CalibrationModuleWarning)
+    return values.loc[values.index.intersection(adata.var.index, sort=False)]
+
 
 class RainbowCalibrator():
     REQUIRED_UNS = ["cytometer", "rainbow_batch", "rainbow_type", "uid", "set_hash"]
@@ -118,7 +129,7 @@ class RainbowCalibrator():
         """
         missing = 0
         for ad in adatas:
-            if not np.all(np.in1d(channels, ad.var.index)):
+            if not np.all(np.isin(channels, ad.var.index)):
                 missing += 1
         if missing>0:
             raise MissingChannelException(f"{missing} passed adatas are missing some of the required fluorescence channels {channels}!")
@@ -347,12 +358,12 @@ class RainbowCalibrator():
         
         # optionally add rainbow shift
         if include_shift:
-            shift = self.rfim.get_calibration_rainbow_shift(adata=adata)
+            shift = _restrict_to_available(self.rfim.get_calibration_rainbow_shift(adata=adata), adata)
             index = adata.var.index.get_indexer(shift.index)
             adata.layers[addlayer][:,index] = adata.layers[addlayer][:,index] + shift.to_numpy()[None]
         
         if not only_shift:
-            factor = self.get_calibration_factor(adata=adata)
+            factor = _restrict_to_available(self.get_calibration_factor(adata=adata), adata)
             index = adata.var.index.get_indexer(factor.index)
             adata.layers[addlayer][:,index] = adata.layers[addlayer][:,index] * factor.to_numpy()[None]
     
@@ -364,7 +375,7 @@ class RainbowCalibrator():
         """
         adata.layers[addlayer] = adata.layers["raw"].copy()
         
-        factor = self.get_calibration_factor(adata=adata, rainbow_batch=rainbow_batch)
+        factor = _restrict_to_available(self.get_calibration_factor(adata=adata, rainbow_batch=rainbow_batch), adata)
         index = adata.var.index.get_indexer(factor.index)
         adata.layers[addlayer][:,index] = adata.layers[addlayer][:,index] * factor.to_numpy()[None]
     
@@ -374,7 +385,7 @@ class RainbowCalibrator():
             Defaults to nan if channel was not calibrated.
         """
         adata.var[addkey] = np.nan
-        intfactor = self.get_calibration_factor(adata=adata, rainbow_batch=rainbow_batch)
+        intfactor = _restrict_to_available(self.get_calibration_factor(adata=adata, rainbow_batch=rainbow_batch), adata)
         adata.var.loc[intfactor.index, addkey] = intfactor
 
     def make_calibrated_fcs(self, filepath, filepath_new, cytoconfig, rainbow_batch=None, force=False, gates=[]):
@@ -398,7 +409,9 @@ class RainbowCalibrator():
         metadata = sample.metadata
         data_df = sample.as_dataframe(source="raw")
         pns = data_df.columns.get_level_values(1)
-        data_df.columns = data_df.columns.get_level_values(0)
+        pnn_raw = data_df.columns.get_level_values(0)
+        # work on the canonical channel names of cytoconfig (as readfcs_sample does), write back with the original $PnN names
+        data_df.columns = [_replace_channel_name(c, cytoconfig) for c in pnn_raw]
         adata = readfcs_sample(filepath, cytoconfig)
         
         if len(gates)>0:
@@ -410,9 +423,12 @@ class RainbowCalibrator():
         else:
             factor = self.get_calibration_factor(adata=adata, rainbow_batch=rainbow_batch)
             overlap = data_df.columns.intersection(factor.index)
+            if len(overlap)==0:
+                raise MissingChannelException(f"None of the calibrated channels {factor.index.tolist()} are in {filepath} (channels {data_df.columns.tolist()})!")
             data_df[overlap] = data_df[overlap] * factor.loc[overlap].to_numpy()[None]
             metadata[markkey] = "True"
     
+        data_df.columns = pnn_raw
         writefcs(filepath_new, data_df, sample_id="", add_metadata=metadata, overwrite_pns=True, pns=pns)
 
     def get_calibrated_spectra(self, spectra, rainbow_batch, spectral=False):

@@ -99,7 +99,7 @@ def get_voltages_from_rainbow(cytoconfig, targetconfig, rainbow_path, plot=True)
     """
     N_rainbow_peak = targetconfig.loc["_N_peak", "peak"]
     metainds = ["_N_peak"]
-    targetconfig = targetconfig.iloc[~np.in1d(targetconfig.index, metainds)].copy()
+    targetconfig = targetconfig.iloc[~np.isin(targetconfig.index, metainds)].copy()
 
     adata = readfcs_rainbow_sample(rainbow_path, cytoconfig, N_rainbow_peak, name="Rainbow Sample", warn_spillover=True)
     adata = gate_scatter_bead_sample(adata, plot=plot, plotpath="")

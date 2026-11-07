@@ -28,7 +28,7 @@ def gate_scatter_bead_sample(adata, gatechannels=None, plot=False, plotpath="", 
     """
     if gatechannels is None:
         gatechannels = adata.uns["cytoconfig"].get_default_scatter_gate_channels()
-    if not np.all(np.in1d(gatechannels, adata.var.index.to_numpy())):
+    if not np.all(np.isin(gatechannels, adata.var.index.to_numpy())):
         raise ScatterGatingChannelException(f"Chosen scatter channels to gate on {gatechannels} are not all available! Choose two of available channels:\n{adata.var.index.to_numpy()}")
     if len(gatechannels)!=2:
         raise ScatterGatingChannelException(f"Chosen scatter channels to gate on {gatechannels} are invalid, has to be exactly two!")
