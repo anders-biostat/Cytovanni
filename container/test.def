@@ -1,12 +1,28 @@
 Bootstrap: docker
 From: pytorch/pytorch:2.8.0-cuda12.9-cudnn9-devel
 
+# Test container: installs the package from this repository (with geom, plot and test extras) and runs the test
+# suite, including the GPU tests (run with --nv, see run_test_container.sh). Build from the repository root.
+
+%files
+    pyproject.toml /opt/cytovanni/pyproject.toml
+    README.md /opt/cytovanni/README.md
+    LICENSE /opt/cytovanni/LICENSE
+    src /opt/cytovanni/src
+    tests /opt/cytovanni/tests
+
 %post
-    pip install "cytovanni[geom]"
+    pip install --no-cache-dir uv
+    uv pip install --system "/opt/cytovanni[geom,plot,test]"
+
+%environment
+    export CC=/usr/bin/gcc
+    export CXX=/usr/bin/g++
+    export XDG_CONFIG_HOME=$(mktemp -d)
+    export XDG_CACHE_HOME=$(mktemp -d)
+    export PYTHONNOUSERSITE=1
 
 %runscript
-    python -c "
-import cytovanni; print(cytovanni.__version__)
-import geomloss; print('geomloss ok')
-import pykeops; print('pykeops ok')
-"
+    export HOME=$(mktemp -d)   # pykeops cache
+    cd /opt/cytovanni
+    python -m pytest -n 4 "$@"
