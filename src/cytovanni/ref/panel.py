@@ -91,9 +91,9 @@ class PanelModule(Module):
             return (offset + comp).clamp(0, None)
     
     def apply_component_mask(self, emb):
-        """ Apply component mask to emb of shape (components, ...).
+        """ Apply component mask to emb of shape (components, ...); the mask broadcasts over the other axes.
         """
-        mask = self.param_components_mask.view([len(self.param_components_mask)]+list(emb.shape[1:]))
+        mask = self.param_components_mask.reshape([len(self.param_components_mask)]+[1]*(emb.ndim-1))
         return mask * emb
 
     def get_jacobian_ashunmx_jacrev(self, x, embedding, include_unused=True, arcsinh_cofactor=1500):
@@ -197,6 +197,11 @@ class PanelModule(Module):
             :param gradstep_maxnorm: bool. If True, normalize max change to embedding_step, else mean change.
 
             :param batch_size: int, float. Perform in chunks of size batch_size to limit memory use, no point in going above 1e4.
+
+            returns val (unmixed ArcSinh values), val_std (error, mean change under the embedding step) and
+            R = arcsinh(|val/val_std|/20), each of shape (events, stain).
+            Where the Jacobian of a stain is zero (e.g. events with all-zero intensities), the gradient step has no
+            direction and the error is 0. R is 0 where val == 0 (no signal) and inf where val != 0 but the error is 0.
         """
         x_np_batches = np.array_split(x_np, int(np.ceil(x_np.shape[0] / batch_size)))
         embedding = torch.as_tensor(embedding_np, dtype=torch.float32).to(self.device)
@@ -228,9 +233,11 @@ class PanelModule(Module):
             """ step along gradient, normed to one for most important component
             """
             if gradstep_maxnorm:
-                direction = jacob / jacob.abs().max(-1, keepdims=True).values
+                norm = jacob.abs().max(-1, keepdims=True).values
             else:
-                direction = jacob / jacob.abs().sum(-1, keepdims=True)
+                norm = jacob.abs().sum(-1, keepdims=True)
+            # zero Jacobian: no direction, zero step (instead of 0/0)
+            direction = torch.where(norm>0, jacob / norm, torch.zeros_like(jacob))
             embedding_shift = (direction.movedim(-1,0)[...,None] * torch.tensor([embedding_step,-embedding_step], dtype=torch.float32).to(self.device)[None,None,None])
             embedding_mod = embedding[:,None,None,None] + embedding_shift
             # modified intensities, shape (event, maxcomp, 2, stain)
@@ -254,7 +261,8 @@ class PanelModule(Module):
         del embedding, stainscale # make sure memory is freed
         torch.cuda.empty_cache()
         val, val_std = np.vstack(val), np.vstack(val_std)
-        R = np.arcsinh(np.abs(val/val_std)/20.)
+        # no signal, no resistance: R = 0 where val == 0 (also where val_std == 0, instead of 0/0)
+        R = np.arcsinh(np.divide(np.abs(val), val_std, out=np.zeros_like(val), where=val!=0)/20.)
 
         return val, val_std, R
 
@@ -364,7 +372,7 @@ class PanelModule(Module):
             :param include_unused: bool. Whether to include PCA components that are not used for the panel in the calculation.
         """
         with torch.no_grad():
-            spectra = pd.DataFrame(self(torch.tensor(embedding, dtype=torch.float32).to(self.device)).detach().cpu().numpy(),
+            spectra = pd.DataFrame(self(torch.tensor(embedding, dtype=torch.float32).to(self.device), mask_unused=not include_unused).detach().cpu().numpy(),
                                  index=self.panelconfig.stain_marker_name if label_marker else self.stains, columns=self.channels)
         return spectra
     

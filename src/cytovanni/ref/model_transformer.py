@@ -551,20 +551,25 @@ class SpectralFitTransformer(Module):
                 - stain scaling, pd.Series with index stain_marker_name.
                 - spectra, pd.DataFrame with index channels and columns stain_marker_name.
                 - unmx_int_matrix, pd.DataFrame with index channels, columns stain_marker_name; multiplying raw data (after rainbow calibration) with this matrix yields standardised unmixed marker abundances.
-                - spectra_embedding, np.array of component embedding of spectra.
+                - spectra_embedding, np.array of component embedding of spectra (empty for a FixedPanelModule).
         """
         bidx = self.moe.transform_ad(ad)
+
+        if self.pem.TRAINED_EMBEDDING:
+            spectra_np = self.pem.get_spectra(bidx).detach().cpu().numpy()[0] # (batch, stain, channel)
+            spectra_embedding = self.pem(bidx, mask_unused=True)[:,0].detach().cpu().numpy()
+        else: # FixedPanelModule: one (stain, channel) matrix for all batches, no embedding
+            spectra_np = self.pem.get_spectra(bidx).detach().cpu().numpy()
+            spectra_embedding = np.zeros(0)
 
         channelscale = pd.Series(self.param_channelscale.factor[bidx[self.config["key_scale_channels"]]].detach().cpu().numpy()[0], index=self.channels)
         stainscale = pd.Series(self.param_stainscale.factor[bidx[self.config["key_scale_stains"]]].detach().cpu().numpy()[0],
                                index=self.stain_marker_name if label_include_stain else self.pem.markers)
-        spectra = pd.DataFrame(self.pem.get_spectra(bidx).detach().cpu().numpy()[0].T, index=self.channels,
+        spectra = pd.DataFrame(spectra_np.T, index=self.channels,
                                columns=self.stain_marker_name if label_include_stain else self.pem.markers)
         
         spectra_inv = invert_spectra(spectra.T) # spectra is (channel, stain), invert_spectra takes (stain, channel)
         unmx_int_matrix = channelscale.to_numpy()[:,None] * spectra_inv * stainscale.to_numpy()[None]
-        
-        spectra_embedding = self.pem(bidx, mask_unused=True)[:,0].detach().cpu().numpy()
 
         return channelscale, stainscale, spectra, unmx_int_matrix, spectra_embedding
     
@@ -576,7 +581,7 @@ class SpectralFitTransformer(Module):
                 - adata.varm["sfm_spectra"]: fitted stain spectra, padded by nan for other vars
                 - adata.varm["sfm_standardise_unmx"]: matrix for standardisation and unmixing on calibrated data, adata.to_df(layer="calibrated") @ adata.varm["sfm_standardise_unmx"] yields properly unmixed and calibrated data
                 - adata.varm["rb_sfm_standardise_unmx"]: as above but also including the rainbow calibration factors, adata.to_df(layer="raw") @ adata.varm["rb_sfm_standardise_unmx"] yields properly standardised and calibrated data, only added if adata.var[rbint_key] is present
-                - adata.uns["panel_embedding"]: np.array of component embedding of spectra
+                - adata.uns["panel_embedding"]: np.array of component embedding of spectra (empty for a FixedPanelModule)
         """
         channelscale, stainscale, spectra, unmx_int_matrix, spectra_embedding = self.get_standardisationparams_fromad(adata, label_include_stain=label_include_stain)
 

@@ -92,6 +92,20 @@ A fix can change results relative to one of these and not the other; both are st
 | R2b-G2-13 | `np.log(0)` RuntimeWarning in every bead gate | no (warning noise only) | every scatter bead gate (binned KDE) |
 | R2b-G2-15 | spectrum PCA fitted a zero-variance last component | yes, only stains with <= N spectra | `add_PCA_fit` with n_spectra <= N (default N=5) for some dye |
 | R2b-G2-17 | `readfcs_sample`: missing meta channel gave a bare KeyError | no (error message only) | .fcs without a `channels_meta` channel (e.g. `Time`) |
+| R2b-G2-03 | `SampleOverlapDataset(keys_sample_covariate=...)` KeyError | no (crash -> works) | covariate keys that are not also batch/id/uid keys |
+| R2b-G2-04 | nested imputation with an unknown major batch silently took the first reference | no for valid inputs; such rows now raise instead of getting an arbitrary label | `transform_df` with an unknown minor batch whose major batch has no known minor batch, major key not in `keys_batch` |
+| R2b-G2-06 | `ConnectionSampler.max_anchor_dist` off by one; `SampleOverlapDataset` gets `max_anchor_dist` (default 2) | no via `SampleOverlapDataset` (default 2 = old behaviour, verified identical); yes for direct `ConnectionSampler(max_anchor_dist=k)` callers (now trains k, before k+1) | direct `ConnectionSampler` use with anchors; new warning for reachable batches beyond the limit |
+| R2b-G2-07 | MMD bandwidth estimated on all stains, loss uses only the loss stains | yes: bandwidth (and so the fit) for `ScalingTransformer` with a stain subset + MMD | `DDIST_mode="MMD"`, `ScalingTransformer` with `scale_stains` not all True (joint and `DDIST_separate`) |
+| R2b-G2-11 | `fit_factor_Sinkhorn_LBFGS` removed (diverged) | no (removed; not exported, no callers found) | code importing `cytovanni.ref.factor.fit_factor_Sinkhorn_LBFGS` (ImportError) |
+| R2b-G2-12 | empty batch in the Sinkhorn factor fits: IndexError | no (error message only) | `fit_factor_Sinkhorn`, `fit_factor_Sinkhorn_grouped`, `fit_factors_Sinkhorn` with an empty batch |
+| R2b-G2-14 | zero/NaN event weight sums gave a silent NaN loss | no for valid weights (identical values); invalid ones raise | `GeomSampleLoss`/`MMDLoss` with weights whose sum is <= 0 or not finite |
+| R2b-G2-16 | `get_df_sample_connections` without anchors: AttributeError | no (crash -> works, distances NaN) | `ConnectionSampler(is_anchor=None).get_df_sample_connections()` |
+| R2b-G2-18 | `SpectralFitTransformer` + `FixedPanelModule`: standardisation export crashed | no (crash -> works) | `SpectralFitTransformer` with a `FixedPanelModule` |
+| R2b-G2-19 | `SampleOverlapDataset(key_batch_sample=None)`: KeyError, then no connections | no (crash -> works) | `key_batch_sample=None` |
+| R2b-G2-20 | unmixing error and R NaN for events with a zero Jacobian | yes: NaN -> 0 (error), NaN -> 0 or inf (R), only for those events/stains | `get_unmixing_resistance(_fromad)` on events whose Jacobian row is 0 (e.g. all-zero intensities) |
+| R2b-G2-21 | MMD with automatic bandwidth on identical points: NaN | no for ordinary inputs (identical); NaN -> 0 | `MMDLoss()` (no fixed bandwidth) / `estimate_bandwidth` on all-identical points |
+| R2b-G2-22 | `get_spectra_fromembedding(include_unused=True)` returned masked spectra | yes, `include_unused=True` callers only | `PanelModule.get_spectra_fromembedding(include_unused=True)` |
+| R2b-G2-23 | `apply_component_mask` failed for (components, k>1) | no (crash -> works) | `apply_component_mask` with a (components, k) input, k > 1 |
 
 Entry format: see the review notes (todo/00_CONVENTIONS.md "Fix log" in the review project).
 
@@ -131,7 +145,7 @@ Entry format: see the review notes (todo/00_CONVENTIONS.md "Fix log" in the revi
     `fit_factor_Sinkhorn_LBFGS` changes; LBFGS is largely scale-invariant, so the effect is expected to be small.
 - **Affected analyses:** `fit_factor_Sinkhorn` is used in `processing/refjohanna/lib/refjoh.py:137`,
   `figures/plots_cytonorm/lib/mohref.py:114` and `jobs/workers/S2_save_formats/...`; these are unchanged vs the repro
-  copy. No use of `fit_factor_Sinkhorn_LBFGS` was found.
+  copy. No use of `fit_factor_Sinkhorn_LBFGS` was found. The LBFGS variant was later removed (R2b-G2-11).
 - **Action:** none for reproducibility.
 
 ### R1-gate-layer `FluorescenceMinMaxGate` passes its `layer` argument on
@@ -1006,3 +1020,214 @@ E20 allows a subset of the panel's dyes (`allow_missing=True`).
 - Affected analyses: none (A3 files have Time).
 - Action: nothing.
 - Test: jobs/r2b_verify/v2_all.py G2-17; f2_A.py "G2-17".
+
+### R2b group B (ref, torch)
+- Commit: R2b-B (review/R2b-bugs), 2026-11-07. Checks: jobs/r2b_verify/v2_all.py (NOT REPRODUCED), f2_B.py ALL PASS; jobs/r2_verify/f_ref.py, f_core.py ALL PASS. G2-06 equivalence (new max_anchor_dist k+1 == old k) checked against jobs/r2b_verify/old_ref_data.py.
+
+### R2b-G2-03 `SampleOverlapDataset(keys_sample_covariate=...)` KeyError
+- Commit: R2b-B (review/R2b-bugs), 2026-11-07. Approval: todo/R2b_approval.md item G2-03.
+- Where: ref.data.SampleOverlapDataset.setup (ref/data.py:251, :279).
+- What was wrong: the covariate keys were read from `self.meta`, but not added to the metadata keys loaded from
+  `ad.uns`, so any covariate that was not also a batch, id or uid key raised KeyError.
+- Now: `keys_sample_covariate` are part of the loaded metadata keys.
+- Affected when: covariate keys that are not batch/`key_id`/`key_uid` keys.
+- Effect on results: none (crash -> works).
+- Affected analyses: none. hd7-03 (pipeline) passes `keys_sample_covariate=["ovlp_uid"]`, which is also its `key_id`,
+  so it worked before and is unchanged.
+- Action: nothing.
+- Test: v2_all.py G2-03; f2_B.py G2-03.
+
+### R2b-G2-04 nested imputation with an unknown major batch
+- Commit: R2b-B (review/R2b-bugs), 2026-11-07. Approval: todo/R2b_approval.md item G2-04.
+- Where: ref.moe.MultiOrdinalEncoder.transform_df (ref/moe.py:147-152).
+- What was wrong: a row with an unknown minor batch whose major batch has no known minor batch had all distances
+  `inf`; `argmin` then returned 0, so the row silently got the first reference label (only the `_imputed` flag was set).
+- Now: such rows raise ValueError naming the major values and keys. Rows whose major batch is known are imputed as
+  before.
+- Affected when: only when the major key is not itself in `keys_batch` (otherwise its own encoder already raised).
+- Effect on results: none for valid inputs; such calls now raise instead of returning an arbitrary label.
+- Affected analyses: none (hd7-03/05 have the major key `batch` in `keys_batch`; reproducibility
+  `figures/plots_batchintHD7/lib/parameters.py:43` filters to known labels first).
+- Action: nothing.
+- Test: v2_all.py G2-04 (adapted: ValueError naming the value = fixed); f2_B.py G2-04.
+
+### R2b-G2-06 `ConnectionSampler.max_anchor_dist` off by one
+- Commit: R2b-B (review/R2b-bugs), 2026-11-07. Approval: todo/R2b_approval.md item G2-06 (user decision "Fix meaning,
+  pass 2").
+- Where: ref.data.ConnectionSampler.__init__ (ref/data.py:114), ref.data.SampleOverlapDataset.setup (:286, hard-coded
+  `max_anchor_dist=1`).
+- What was wrong: the growth loop ran `range(1, max_anchor_dist+1)`, so `max_anchor_dist=1` also trained batches at
+  anchor distance 2, against the docstring ("Set to one to only sample connections with anchors"). Batches further away
+  got no connections and no warning.
+- Now: the loop runs `range(1, max_anchor_dist)`: batches up to `max_anchor_dist` connections from an anchor are
+  trained, 1 = only connections with anchor samples; `max_anchor_dist < 1` raises. `SampleOverlapDataset` has a new
+  parameter `max_anchor_dist`, default 2, which reproduces the old hard-coded behaviour. A warning lists batches that
+  are connected to an anchor but beyond the limit (not trained; `find_nontraining_batches`). Docstrings describe the
+  growth rule.
+- Affected when: direct `ConnectionSampler(..., max_anchor_dist=k)` with anchors: now trains distance <= k instead of
+  k+1. Through `SampleOverlapDataset` (default 2): unchanged.
+- Effect on results: none via `SampleOverlapDataset` (verified: identical connection matrices and samples for old
+  `k` vs new `k+1`, k = 1..3, on a chain and 40 random graphs, both `train_higher` values; and old hard-coded 1 vs new
+  default 2 through `SampleOverlapDataset`). New warning only.
+- Affected analyses: none. No direct `ConnectionSampler` use in reproducibility or the pipeline. hd7-03 (anchor batch
+  18-APR-2024, Ref0 in every batch, all other batches at distance 1) and hd7-05 (no anchors) are unaffected by the
+  meaning change; no new warning expected for hd7-03 (not checked on the data).
+- Action: nothing.
+- Test: v2_all.py G2-06; f2_B.py G2-06 (three checks, against jobs/r2b_verify/old_ref_data.py).
+
+### R2b-G2-07 MMD bandwidth on the loss stains
+- Commit: R2b-B (review/R2b-bugs), 2026-11-07. Approval: todo/R2b_approval.md item G2-07 (user decision "Use loss
+  stains").
+- Where: ref.model.OverlapFitModel.estimate_MMD_bandwidth (ref/model.py:197-213).
+- What was wrong: the bandwidth was estimated on all transformed stains, while the loss (`get_DDIST_from_dataset`)
+  only uses `transformer.loss_use_stain_mask`. In the lead check: 6.555 (joint) / 1.573 (per marker) instead of 2.227.
+- Now: estimated on `transformed[:, loss_use_stain_mask]`, in the joint and the `DDIST_separate` branch.
+- Affected when: `DDIST_mode="MMD"` with `ScalingTransformer` and `scale_stains` not all True. `SpectralFitTransformer`
+  (mask all True) and sinkhorn/hausdorff are unchanged (verified: all-True mask gives the old values).
+- Effect on results: changes the MMD bandwidth and therefore the fitted stain factors of such fits (newly fitted
+  models; saved models keep their stored `bandwidth_MMD`).
+- Affected analyses: none found. hd7-05 uses `ScalingTransformer` with sinkhorn; hd7-03 uses MMD with
+  `SpectralFitTransformer` (mask all True).
+- Action: nothing (re-fit only MMD + ScalingTransformer-subset models, none known).
+- Test: v2_all.py G2-07; f2_B.py G2-07.
+
+### R2b-G2-11 `fit_factor_Sinkhorn_LBFGS` removed
+- Commit: R2b-B (review/R2b-bugs), 2026-11-07. Approval: todo/R2b_approval.md item G2-11 (user, verbatim: "Add a
+  comment somewhere that this didn't work well, then remove").
+- Where: ref.factor.fit_factor_Sinkhorn_LBFGS (ref/factor.py:21-114, removed).
+- What was wrong: L-BFGS (lr=1, no line search) on a stochastic closure (the aggregate subsample was redrawn at every
+  closure call) diverged in 2/8 seeds to absurd factors without an error, and crashed in some runs; lr=0.1 + strong
+  Wolfe still crashed 1/4. A fixed subsample per step looked stable in a small test (0/6 failures).
+- Now: removed. The `fit_factor_Sinkhorn` docstring notes that an L-BFGS variant was tried, why it diverged, and
+  refers to this entry. `fit_factor_Sinkhorn` (SGD) covers the use.
+- Affected when: code that imports `fit_factor_Sinkhorn_LBFGS` from `cytovanni.ref.factor` (it was not exported in
+  `ref/__init__`): ImportError.
+- Effect on results: none (no callers).
+- Affected analyses: none found (reproducibility and pipeline use `fit_factor_Sinkhorn`: refjohanna/lib/refjoh.py:137,
+  plots_cytonorm/lib/mohref.py:114, plots_dye/00_prepare_scaling.ipynb). R1-D2 mentions the removed function.
+- Action: nothing.
+- Test: v2_all.py G2-11 (adapted: missing function = fixed); f2_B.py G2-11.
+
+### R2b-G2-12 empty batch in the Sinkhorn factor fits
+- Commit: R2b-B (review/R2b-bugs), 2026-11-07. Approval: todo/R2b_approval.md item G2-12.
+- Where: ref.factor.fit_factor_Sinkhorn (ref/factor.py:116), fit_factor_Sinkhorn_grouped (:204), fit_factors_Sinkhorn
+  (:305).
+- What was wrong: an empty batch reached the sampler and gave an IndexError.
+- Now: input validation (`_check_nonempty`) raises ValueError naming the empty batches (for `_grouped`: the empty
+  (batch, sample) entries), after the `dummy` shortcut.
+- Affected when: a batch (or batch/sample entry) with no events.
+- Effect on results: none (error message only).
+- Affected analyses: none.
+- Action: nothing.
+- Test: v2_all.py G2-12; f2_B.py G2-12.
+
+### R2b-G2-14 non-positive or non-finite event weight sums
+- Commit: R2b-B (review/R2b-bugs), 2026-11-07. Approval: todo/R2b_approval.md item G2-14.
+- Where: torch.geomloss.GeomSampleLoss._normalised_weights (torch/geomloss.py:59-64); torch.mmd.MMDLoss.forward
+  (torch/mmd.py:70-71). New helper torch.utils._check_weight_sums.
+- What was wrong: weights summing to 0 (or containing NaN/inf) were normalised by their sum, giving a silent NaN loss
+  (sinkhorn/hausdorff and MMD).
+- Now: ValueError if any weight sum (per batch row for batched geomloss input) is not positive and finite.
+- Affected when: custom event weights with such sums. `RareMarkerWeights` is clamped to >= 1, so model fits are not
+  affected.
+- Effect on results: none for valid weights (verified identical to the explicit formulas); invalid weights raise.
+  Note: the check reads the sum on the host (one device sync per weighted loss call on GPU).
+- Affected analyses: none.
+- Action: nothing.
+- Test: v2_all.py G2-14 (adapted: ValueError in both losses = fixed); f2_B.py G2-14.
+
+### R2b-G2-16 `get_df_sample_connections` without anchors
+- Commit: R2b-B (review/R2b-bugs), 2026-11-07. Approval: todo/R2b_approval.md item G2-16.
+- Where: ref.data.ConnectionSampler.__init__ no-anchor branch (ref/data.py:96); get_df_sample_connections (:170).
+- What was wrong: `idx_anchor_distance` was only set with anchors, so `get_df_sample_connections` raised
+  AttributeError without them.
+- Now: without anchors `idx_anchor_distance` is a NaN array; the DataFrame has NaN anchor distances. Docstring added.
+- Affected when: `is_anchor=None` + `get_df_sample_connections`.
+- Effect on results: none (crash -> works).
+- Affected analyses: none (hd7-05 uses no anchors but does not call it).
+- Action: nothing.
+- Test: v2_all.py G2-16; f2_B.py G2-16.
+
+### R2b-G2-18 `SpectralFitTransformer` with a `FixedPanelModule`
+- Commit: R2b-B (review/R2b-bugs), 2026-11-07. Approval: todo/R2b_approval.md item G2-18.
+- Where: ref.model_transformer.SpectralFitTransformer.get_standardisationparams_fromad (ref/model_transformer.py:561,
+  :567), used by add_standardisation_parameters.
+- What was wrong: the code assumed batched spectra (batch, stain, channel) and an embedding from the panel module;
+  `FixedPanelModule` returns one (stain, channel) matrix and an empty 1-D embedding, so both methods raised.
+- Now: branch on `pem.TRAINED_EMBEDDING`: fixed panels use the full spectra matrix and an empty embedding
+  (`np.zeros(0)`, also stored as `uns["panel_embedding"]`). The trained-embedding path is unchanged. Docstrings note the
+  empty embedding.
+- Affected when: `SpectralFitTransformer` with `FixedPanelModule`.
+- Effect on results: none (crash -> works; verified spectra, unmixing matrix and varm for 2x3 and 3x3 panels).
+- Affected analyses: none (FixedPanelModule is only used inside ScalingTransformer there).
+- Action: nothing.
+- Test: v2_all.py G2-18; f2_B.py G2-18; f_ref.py B2+A3 (trained path, unchanged).
+
+### R2b-G2-19 `SampleOverlapDataset(key_batch_sample=None)`
+- Commit: R2b-B (review/R2b-bugs), 2026-11-07. Approval: todo/R2b_approval.md item G2-19.
+- Where: ref.data.SampleOverlapDataset.setup (ref/data.py:251, :283-286).
+- What was wrong: `None` was added to the metadata keys (KeyError None); bypassing that, the sample id was passed as
+  the batch index with `block_within_batch=True`, which blocks every same-id connection ("No connections").
+- Now: `None` is left out of the metadata keys; with `None`, `block_within_batch=False` and every sample is its own
+  "batch" (`idx_batch = arange(Nsample)`), so all same-id connections are used and, with anchors, anchor distances
+  count connections between samples. Docstring updated.
+- Affected when: `key_batch_sample=None`.
+- Effect on results: none (crash -> works).
+- Affected analyses: none (all callers pass "batch" or "batchmix").
+- Action: nothing.
+- Test: v2_all.py G2-19; f2_B.py G2-19.
+
+### R2b-G2-20 unmixing error and resistance for a zero Jacobian
+- Commit: R2b-B (review/R2b-bugs), 2026-11-07. Approval: todo/R2b_approval.md item G2-20 (user decision "Error 0, R 0").
+- Where: ref.panel.PanelModule.get_unmixing_resistance (ref/panel.py:230-233, :257); also via
+  get_unmixing_resistance_fromad.
+- What was wrong: with `single_step=False` the gradient direction was 0/0 for a stain whose Jacobian row is zero, so
+  the error was NaN; in both modes R = arcsinh(|val/err|/20) was NaN where val == err == 0 (e.g. all-zero events).
+- Now: zero Jacobian -> zero direction -> error 0. R = 0 where val == 0. Where val != 0 and the error is 0, R = inf
+  (as computed before). Docstring documents the outputs and conventions.
+- Affected when: events/stains with an exactly zero Jacobian row (all-zero intensities in the panel channels).
+  Events with a nonzero Jacobian are bit-identical (verified against the pre-fix formula, both norms).
+- Effect on results: `val_std` (error) NaN -> 0 and R NaN -> 0 for those events; a stain with zero Jacobian but
+  nonzero value: error NaN -> 0, R NaN -> inf.
+- Affected analyses: pipeline hd7-03 calls `get_unmixing_resistance_fromad(..., single_step=False,
+  gradstep_maxnorm=False)` (plots) and `get_unmixing_resistance(..., single_step=False)` storing `val_std` in obsm.
+  Only all-zero events change (NaN -> 0); with measurement noise these should be absent (not checked on the data).
+- Action: nothing unless hd7-03 outputs contain NaN in R/val_std; then re-run those cells.
+- Test: v2_all.py G2-20; f2_B.py G2-20 (two checks).
+
+### R2b-G2-21 MMD automatic bandwidth floor
+- Commit: R2b-B (review/R2b-bugs), 2026-11-07. Approval: todo/R2b_approval.md item G2-21.
+- Where: torch.mmd.RBF.get_bandwidth and RBF.estimate_bandwidth (torch/mmd.py:28-41), so also
+  MMDLoss.estimate_bandwidth and OverlapFitModel.estimate_MMD_bandwidth. New helper torch.mmd._bandwidth_floor.
+- What was wrong: on identical points (all distances 0) the automatic bandwidth was 0 and the kernel 0/0 = NaN.
+- Now: automatic and estimated bandwidths are clamped to sqrt(smallest normal number) of their dtype, at least that of
+  float32 (~1e-19; the kernel multiplies with float32 multipliers, and estimated bandwidths are reused as fixed ones).
+  Fixed bandwidths passed by the user are not changed.
+- Affected when: `MMDLoss()` without a fixed bandwidth, or `estimate_bandwidth`, on all-identical points.
+- Effect on results: none for ordinary inputs (verified identical bandwidth and loss); NaN -> 0 for identical points.
+- Affected analyses: none (OverlapFitModel passes a fixed bandwidth; `figures/plots_distmet/lib/distmet.py:40` uses
+  automatic bandwidth on non-degenerate data).
+- Action: nothing.
+- Test: v2_all.py G2-21; f2_B.py G2-21.
+
+### R2b-G2-22 `get_spectra_fromembedding(include_unused=True)`
+- Commit: R2b-B (review/R2b-bugs), 2026-11-07. Approval: todo/R2b_approval.md item G2-22.
+- Where: ref.panel.PanelModule.get_spectra_fromembedding (ref/panel.py:367).
+- What was wrong: `include_unused` was ignored; the spectra were always computed with unused components masked.
+- Now: `mask_unused=not include_unused` is passed on.
+- Affected when: `include_unused=True`.
+- Effect on results: those callers now get the unmasked spectra (default `False` unchanged).
+- Affected analyses: none (`figures/plots_dye/lib/dye.py:859` uses the default).
+- Action: nothing.
+- Test: v2_all.py G2-22; f2_B.py G2-22.
+
+### R2b-G2-23 `apply_component_mask` broadcasting
+- Commit: R2b-B (review/R2b-bugs), 2026-11-07. Approval: todo/R2b_approval.md item G2-23.
+- Where: ref.panel.PanelModule.apply_component_mask (ref/panel.py:96).
+- What was wrong: the mask was viewed to the full input shape, which fails for (components, k) with k > 1.
+- Now: reshaped to `[n_components] + [1]*(ndim-1)` and broadcast.
+- Affected when: inputs with more than one entry per component.
+- Effect on results: none (crash -> works; (components,) and (components, 1) unchanged).
+- Affected analyses: none (internal `get_L1` uses (components, 1)).
+- Action: nothing.
+- Test: v2_all.py G2-23; f2_B.py G2-23.

@@ -196,6 +196,7 @@ class OverlapFitModel(Module):
     
     def estimate_MMD_bandwidth(self, dataset):
         """ Estimate MMD bandwidth on transformed data across whole dataset, use median.
+            Uses only the stains the loss is computed on (transformer.loss_use_stain_mask).
             With DDIST_separate, the bandwidth is estimated for every marker separately (median over markers and samples).
             
             Not ideal, has to be estimated on untrained model etc.
@@ -204,9 +205,10 @@ class OverlapFitModel(Module):
         """
         with torch.no_grad():
             datas = dataset.sample()["data"]
+            stain_mask = self.transformer.loss_use_stain_mask
             bandwidths = []
             for data in datas:
-                x = self.transformer(data["x"], data["idx_batch"])
+                x = self.transformer(data["x"], data["idx_batch"])[:,stain_mask]
                 if self.DDIST_separate: # loss is applied per marker, so estimate per marker as well
                     bandwidths += [MMDLoss.estimate_bandwidth(x[:,[i]])[None] for i in range(x.shape[-1])]
                 else:
