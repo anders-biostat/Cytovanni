@@ -31,6 +31,7 @@ napoleon_numpy_docstring = True
 napoleon_include_init_with_doc = False
 napoleon_use_rtype = False
 napoleon_use_ivar = True  # "Attributes" sections as field lists (no duplicate object descriptions)
+myst_heading_anchors = 2  # link targets for "##" headings (e.g. conventions.md#batch-keys)
 intersphinx_mapping = {
     "python": ("https://docs.python.org/3", None),
     "numpy": ("https://numpy.org/doc/stable", None),
