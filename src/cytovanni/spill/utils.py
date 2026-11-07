@@ -1,3 +1,4 @@
+"""Collect single-stain controls: find the .fcs files, gate them and write them as .h5ad files with a metadata table."""
 import numpy as np
 import pandas as pd
 import os
@@ -13,7 +14,10 @@ from ..io import readfcs_sample, write_bead_h5ad, read_bead_h5ad
 
 
 def _find_single_stain(single_stain_path, filename_regex, channel, warn_missing=True):
-    """ Find file for specific single stain.
+    """Find the single-stain file matching `filename_regex`; return (file name, antigen) or ("", "").
+
+    The antigen is the stripped first regex group. Raises `SpilloverFitException` if the match is ambiguous; warns
+    (`SpilloverFitWarning`, if `warn_missing`) and returns empty strings if no file matches.
     """
     files = list(filter(lambda x: x.endswith(".fcs"), os.listdir(single_stain_path)))
     matches = [re.findall(filename_regex, filename) for filename in files]
@@ -37,32 +41,55 @@ def _find_single_stain(single_stain_path, filename_regex, channel, warn_missing=
     return file, marker
 
 def _get_AutoSpill_script_path():
-    """ Get path to script file run_AutoSpil.R
-    """
+    """Path of the bundled AutoSpill R script ``AutoSpill/run_AutoSpil.R``."""
     return os.path.join(os.path.dirname(__file__), "AutoSpill", "run_AutoSpil.R")
 
 
 def collect_bead_controls_regularflow(single_stain_path, cytoconfig, collect_data_path, warn_missing=True, drop=[], verbose=True):
-    """ Collect bead single stain controls as produced by FACSDiva.
-        Also does the gating, produces .h5ad files for data and plots for gating.
-    
-        Throws a warning if some channels don't have a single stain associated with them.
-        
-        Expects single stains to conform to the naming as produces by FACSDiva,
-            'Compensation Controls_(antigen ){channel} Stained Control.fcs'
-        where 'antigen' can be empty, and 'channel' should be the channel name without -A.
-        
-        :param single_stain_path: str. Path to the single stain .fcs files.
-        
-        :param cytoconfig: CytometerConfiguration. Cytometer configuration for measurement series.
-        
-        :param collect_data_path: str. Folder where data should be collected.
-        
-        :param warn_missing: bool. Whether to warn in case of missing single stains.
-        
-        :param drop: iterable. Single stains to ignore because they are not beads etc.
-        
-        :param verbose: bool. Whether to show progress bar.
+    """Collect the bead single-stain controls of one conventional-flow measurement as recorded by FACSDiva.
+
+    For every fluorescence channel of `cytoconfig`, finds the single-stain file
+    ``'Compensation Controls_(antigen ){dye} Stained Control.fcs'`` (`dye` is the channel name without ``-A``,
+    `antigen` may be empty), reads it with `cytovanni.io.readfcs_sample`, gates it on bead singlets with
+    `cytovanni.gating.gate_scatter_bead_sample` and writes it as .h5ad. The results are written into
+    `collect_data_path`:
+
+    - ``data/Compensation_Control_{channel}.h5ad``: the gated events (raw intensities in ``layers['raw']``), with
+      ``obs['dye']``, ``obs['channel']``, ``uns['dye']`` and ``uns['channel']`` set. ``uns['channel']`` marks the
+      main channel of the dye for the single-stain fitters (conventional-flow normalisation).
+    - ``gating/scattergate_{dye}.jpg``: plot of the scatter gate.
+    - ``panel_meta.csv``: one row per fluorescence channel (integer index) with columns ``channel``, ``dye``,
+      ``antigen`` (from the file name), ``datafile`` (empty if no single stain was found) and ``set_hash`` (cytometer
+      settings hash, NaN if no file). This is the metadata table `SpilloverMeasurement.from_custom` reads.
+
+    Parameters
+    ----------
+    single_stain_path : str
+        Folder with the single-stain .fcs files.
+    cytoconfig : cytovanni.utils.CytometerConfiguration
+        Cytometer configuration of the measurement.
+    collect_data_path : str
+        Output folder (created if needed).
+    warn_missing : bool, default True
+        Warn (`SpilloverFitWarning`) for every channel without a single stain.
+    drop : list of str, default []
+        Dyes (channel names without ``-A``) to skip, e.g. single stains that were not recorded on beads.
+    verbose : bool, default True
+        Show a progress bar.
+
+    Raises
+    ------
+    SpilloverFitException
+        If the file search for a channel is ambiguous (several matching files).
+
+    Warns
+    -----
+    SpilloverFitWarning
+        If the single stains were recorded at different cytometer settings (different ``set_hash``).
+
+    See Also
+    --------
+    collect_bead_controls_spectralflow : the same for spectral flow, dyes taken from the file names.
     """
     fcs_control = pd.DataFrame([cytoconfig.channels_fluorescence], index=["channel"]).T
     fcs_control["dye"] = fcs_control["channel"].apply(lambda x: x[:-2] if x.endswith("-A") else x)
@@ -105,17 +132,40 @@ def collect_bead_controls_regularflow(single_stain_path, cytoconfig, collect_dat
     fcs_control.to_csv(os.path.join(collect_data_path, "panel_meta.csv"))
 
 def collect_bead_controls_spectralflow(single_stain_path, cytoconfig, collect_data_path, verbose=True, filename_regex=r'Compensation Controls_(.*)\.fcs$'):
-    """ Collect spectral single stain data.
-        
-        :param single_stain_path: str. Path to the single stain .fcs files.
-        
-        :param cytoconfig: CytometerConfiguration. Cytometer configuration for measurement series.
-        
-        :param collect_data_path: str. Folder where data should be collected.
-        
-        :param verbose: bool. Whether to show progress bar.
-        
-        :param filename_regex: str. Regex for single stain file name, should contain one group that matches the dye name.
+    """Collect the bead single-stain controls of one spectral-flow measurement.
+
+    Reads every file in `single_stain_path` that matches `filename_regex` (the dye name is the first regex group),
+    gates it on bead singlets with `cytovanni.gating.gate_scatter_bead_sample` and writes the results into
+    `collect_data_path`:
+
+    - ``data/Compensation_Control_{dye}.h5ad``: the gated events (raw intensities in ``layers['raw']``), with
+      ``obs['dye']`` and ``uns['dye']`` set. No ``uns['channel']`` is set, so the single-stain fitters use the
+      channel with the highest intensity as main channel (spectral-flow normalisation).
+    - ``gating/scattergate_{dye}.jpg``: plot of the scatter gate.
+    - ``panel_meta.csv``: one row per file (integer index, sorted by dye) with columns ``dye``, ``datafile`` and
+      ``set_hash`` (cytometer settings hash).
+
+    Parameters
+    ----------
+    single_stain_path : str
+        Folder with the single-stain .fcs files.
+    cytoconfig : cytovanni.utils.CytometerConfiguration
+        Cytometer configuration of the measurement.
+    collect_data_path : str
+        Output folder (created if needed).
+    verbose : bool, default True
+        Show a progress bar.
+    filename_regex : str, default r'Compensation Controls_(.*)\\.fcs$'
+        Regular expression for the single-stain file names, with one group that matches the dye name.
+
+    Warns
+    -----
+    SpilloverFitWarning
+        If the single stains were recorded at different cytometer settings (different ``set_hash``).
+
+    See Also
+    --------
+    collect_bead_controls_regularflow : the same for conventional flow (FACSDiva file names, one dye per channel).
     """
     files = os.listdir(single_stain_path)
     files = [f for f in files if len(re.findall(filename_regex, f))>0]

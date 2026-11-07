@@ -1,3 +1,8 @@
+"""Single-stain spectra of one measurement (`SpilloverMeasurement`) and of many measurements (`SpilloverCollection`).
+
+Spectra of a measurement are pandas.DataFrame of shape (channel, dye): index the fluorescence channels, columns the
+dyes. The spectra collected per dye across measurements are of shape (measurement, channel).
+"""
 import os
 import pandas as pd
 import numpy as np
@@ -12,28 +17,26 @@ from ..utils import get_cmap, cmap_to_legendhandles
 from .pca import SingleSpectrumPCAFitter
 
 def _find_smallest_h5ad(folder):
+    """Path of the smallest .h5ad file in `folder` (a quick file to read the measurement metadata from)."""
     files = list(filter(lambda x: x.endswith(".h5ad"), os.listdir(folder)))
     files = sorted(files, key=lambda f: os.path.getsize(os.path.join(folder, f)))
     return os.path.join(folder, files[0])
 
 def _ensure_limit_channels(matrix, channels):
-    """ Ensure only entries in channels are kept, fills up missing with nan.
-    """
+    """Restrict the rows of `matrix` to `channels`, in that order; missing channels are filled with NaN."""
     matrix = matrix.loc[matrix.index.intersection(channels)]
     for row in pd.Index(channels).difference(matrix.index):
         matrix.loc[row] = np.nan
     matrix = matrix.loc[channels]
     return matrix
 def _read_matrix_custom(filepath, channels):
-    """ Read result of custom single stain fit.
-    """
+    """Read a spectra .csv of `collect_single_fits` as (channel, dye), rows limited to `channels`, dyes sorted."""
     matrix = pd.read_table(filepath, sep=",", index_col=0)
     matrix = _ensure_limit_channels(matrix, channels)
     matrix = matrix[sorted(matrix.columns)]
     return matrix
 def _read_matrix_autospill(filepath, channels):
-    """ Read result of AutoSpill fit.
-    """
+    """Read an AutoSpill spillover .csv as (channel, dye): transposed, ``-A`` removed from the dyes, dyes sorted."""
     matrix = pd.read_table(filepath, sep=",", index_col=0).T
     matrix.columns = [c[:-2] if c.endswith("-A") else c for c in matrix.columns]
     matrix = _ensure_limit_channels(matrix, channels)
@@ -41,23 +44,50 @@ def _read_matrix_autospill(filepath, channels):
     return matrix
 
 class SpilloverMeasurement():
-    """ Spillover matrices for one single stain measurement.
-        
-        Document how it should look for custom from_ !
+    """Single-stain spectra of one measurement, raw and calibrated to common units.
+
+    Holds one or several spectra matrices of the same single stains (one per fit method), the metadata of the dyes,
+    and their calibrated versions. Usually created with one of the constructors `from_custom` (the package's own
+    single-stain fits), `from_AutoSpill` or `from_csv`; the constructor itself only sets up an empty object.
+
+    Parameters
+    ----------
+    rbint : cytovanni.rainbow.RainbowCalibrator, optional
+        Rainbow calibration; its fluorescence channels are used, and it provides the calibration factor. Required if
+        `rainbow_batch` or `rainbow_batch_adata` is given.
+    is_spectral : bool, default False
+        Normalisation convention for the calibrated spectra: spectral flow (largest entry 1) or conventional flow
+        (the entry that is 1, i.e. the assigned channel, stays 1); see `cytovanni.rainbow.scale_spectra_wfactors`.
+    rainbow_batch : str, optional
+        Rainbow batch of the single-stain recording, for the calibration factor.
+    rainbow_batch_adata : anndata.AnnData, optional
+        Measurement from which the rainbow batch is inferred instead (see
+        `cytovanni.rainbow.RainbowCalibrator.get_calibration_factor`).
+    channels : list of str, optional
+        Fluorescence channels; required if `rbint` is not given.
+
+    Raises
+    ------
+    ValueError
+        If neither `rbint` nor `channels` is given.
+
+    Attributes
+    ----------
+    channels : list of str
+        Fluorescence channels (rows of the spectra).
+    spectra : dict of str to pandas.DataFrame
+        Spectra per fit method, each of shape (channel, dye), on the raw scale of this measurement. Keys:
+        'linear', 'linearos', 'posneg', 'torchos' (`from_custom`), 'autospill', 'autospill_000', 'autospill_posneg'
+        (AutoSpill results) or 'spectra' (`from_csv`).
+    spectra_calibrated : dict of str to pandas.DataFrame
+        The same spectra calibrated with ``calibration_factor`` and normalised again (empty for `from_csv`).
+    calibration_factor : pandas.Series
+        Rainbow calibration factor per channel (only set if a rainbow batch or adata is given).
+    panel_meta : pandas.DataFrame
+        Metadata per dye, index the dye names (columns of the spectra), e.g. ``channel``, ``antigen``,
+        ``set_hash`` and further columns added by the user (``fluorophore``, ``is_bad``, ``positive_peak``, ...).
     """
     def __init__(self, rbint=None, is_spectral=False, rainbow_batch=None, rainbow_batch_adata=None, channels=None):
-        """ 
-            
-            :param rbint: RainbowCalibrator.
-            
-            :param is_spectral: bool. Whether to use spectral convention to normalize single stain spectra.
-            
-            :param rainbow_batch: str. Optional, rainbow batch for calibration factor.
-            
-            :param rainbow_batch_adata: AnnData. Optional, adata from which to infer rainbow batch.
-
-            :param channels: list. Optional, if rbint is not given should contain the fluorescence channels.
-        """
         self.rbint = rbint
         if (rbint is not None) + (channels is not None) ==0:
             raise ValueError("Needs either rbint or channels to be set!")
@@ -73,22 +103,54 @@ class SpilloverMeasurement():
     
     @classmethod
     def from_custom(cls, rbint, custom_data_folder, rainbow_batch=None, abort_inconsistent=True, asp_folder=None, is_spectral=False, clip_negative=True):
-        """ Load fitted spectra from custom spectra fit result.
-            Ensures all single stains were recorded at the same settings.
-            
-            :param rbint: RainbowCalibrator.
-            
-            :param custom_data_folder: str. Folder where the custom fit was done.
-            
-            :param rainbow_batch: str. Optional, rainbow batch for single stain recording, if not given trys to infer it from smallest data .h5ad file.
-            
-            :param abort_inconsistent: str. Whether to abort if inconsistent settings are found, or just throw a warning.
-            
-            :param asp_folder: str. Optional, folder where AutoSpill stored its results.
-            
-            :param is_spectral: bool. Whether spectral flow conventions should be used when normalizing spectra.
-            
-            :param clip_negative: bool. Whether to clip negative spectra entries to zero.
+        """Load the spectra of the package's own single-stain fits of one measurement.
+
+        Expects `custom_data_folder` as produced by `collect_bead_controls_regularflow` (or
+        `collect_bead_controls_spectralflow`), the single-stain fitters and `collect_single_fits`:
+
+        - ``panel_meta.csv``: metadata with columns ``dye`` and ``set_hash`` (plus ``datafile``, which is dropped);
+        - ``spectra_linear.csv``, ``spectra_linearos.csv``, ``spectra_posneg.csv``, ``spectra_torchos.csv``: spectra of
+          the corresponding fit methods, shape (channel, dye); every file present is loaded;
+        - ``data/*.h5ad``: the gated single stains; the smallest is read to infer the rainbow batch if
+          `rainbow_batch` is not given.
+
+        Checks that all single stains were recorded at the same cytometer settings (``set_hash``), checks that every dye
+        has metadata, optionally clips negative entries, and adds the calibrated spectra.
+
+        Parameters
+        ----------
+        rbint : cytovanni.rainbow.RainbowCalibrator
+            Rainbow calibration that covers the single-stain recording.
+        custom_data_folder : str
+            Folder of the measurement (see above).
+        rainbow_batch : str, optional
+            Rainbow batch of the single-stain recording. Default: inferred from the smallest .h5ad file in
+            ``custom_data_folder/data`` (``uns['rainbow_batch']``, else the closest rainbow batch by date, time,
+            cytometer and settings).
+        abort_inconsistent : bool, default True
+            Raise if the single stains were recorded at different settings; otherwise only warn.
+        asp_folder : str, optional
+            Folder with AutoSpill results to load in addition (see `try_load_AutoSpill_spectra`).
+        is_spectral : bool, default False
+            Normalisation convention for the calibrated spectra (spectral or conventional flow).
+        clip_negative : bool, default True
+            Set negative spectrum entries to 0 (before calibration).
+
+        Returns
+        -------
+        SpilloverMeasurement
+
+        Raises
+        ------
+        SpilloverException
+            If the settings are inconsistent and `abort_inconsistent`, or a dye in the spectra has no metadata.
+
+        Warns
+        -----
+        SpilloverWarning
+            If the settings are inconsistent and not `abort_inconsistent`, or no spectra file is found.
+        NegativeSpilloverWarning
+            If negative entries are clipped.
         """
         adata = read_bead_h5ad(_find_smallest_h5ad(os.path.join(custom_data_folder, "data"))) if (rainbow_batch is None) else None
         spm = cls(rbint, is_spectral=is_spectral, rainbow_batch=rainbow_batch, rainbow_batch_adata=adata)
@@ -119,17 +181,35 @@ class SpilloverMeasurement():
     
     @classmethod
     def from_AutoSpill(cls, rbint, asp_folder, rainbow_batch, is_spectral=False, clip_negative=True):
-        """ Load fitted spectra from AutoSpill fit result.
-            
-            :param rbint: RainbowCalibrator.
-            
-            :param asp_folder: str. Folder where AutoSpill stored its results.
-            
-            :param rainbow_batch: str. Rainbow batch for single stain recording.
-            
-            :param is_spectral: bool. Whether spectral flow conventions should be used when normalizing spectra.
-            
-            :param clip_negative: bool. Whether to clip negative spectra entries to zero.
+        """Load the spectra fitted by AutoSpill for one measurement.
+
+        Reads the metadata from ``{asp_folder}/fcs_control.csv`` (as made by `make_AutoSpill_fcs_config`; dye names
+        without ``-A``) and the spillover tables in ``{asp_folder}/table_spillover/`` (see
+        `try_load_AutoSpill_spectra`), checks that every dye has metadata, optionally clips negative entries, and adds
+        the calibrated spectra. Channels that were padded for AutoSpill (antigen ``'_dummy_pad'``) are loaded like the
+        others.
+
+        Parameters
+        ----------
+        rbint : cytovanni.rainbow.RainbowCalibrator
+            Rainbow calibration that covers the single-stain recording.
+        asp_folder : str
+            Folder where AutoSpill stored its results.
+        rainbow_batch : str
+            Rainbow batch of the single-stain recording.
+        is_spectral : bool, default False
+            Normalisation convention for the calibrated spectra (spectral or conventional flow).
+        clip_negative : bool, default True
+            Set negative spectrum entries to 0 (before calibration).
+
+        Returns
+        -------
+        SpilloverMeasurement
+
+        Raises
+        ------
+        SpilloverException
+            If a dye in the spectra has no metadata.
         """
         spm = cls(rbint, is_spectral=is_spectral, rainbow_batch=rainbow_batch)
         spm.asp_folder = asp_folder
@@ -148,16 +228,29 @@ class SpilloverMeasurement():
 
     @classmethod
     def from_csv(cls, file_spectra, file_meta, is_spectral=False, clip_negative=True):
-        """ Load fitted spectra from .csv files.
-            Spectra should have index channels and columns dyes, while metadata should have index dyes.
-            
-            :param file_spectra: str. Path to .csv with the dye spectra.
-            
-            :param file_meta: str. Path to the .csv with the dye metadata.
-            
-            :param is_spectral: bool. Whether spectral flow conventions should be used when normalizing spectra.
-            
-            :param clip_negative: bool. Whether to clip negative spectra entries to zero.
+        """Load already fitted spectra and their metadata from two .csv files, without calibration.
+
+        The spectra are stored under the key ``'spectra'``; their rows define the channels. No calibrated spectra are
+        added and the metadata is not checked against the spectra.
+
+        Parameters
+        ----------
+        file_spectra : str
+            Path to the .csv with the spectra, shape (channel, dye): index the channels, columns the dyes.
+        file_meta : str
+            Path to the .csv with the dye metadata, index the dye names (as the columns of the spectra).
+        is_spectral : bool, default False
+            Normalisation convention (spectral or conventional flow); stored, only used for calibration.
+        clip_negative : bool, default True
+            Set negative spectrum entries to 0.
+
+        Returns
+        -------
+        SpilloverMeasurement
+
+        Examples
+        --------
+        >>> spm = SpilloverMeasurement.from_csv("run1/spectra_calibrated.csv", "run1/panel_meta.csv")
         """
         spectra = pd.read_table(file_spectra, sep=",", index_col=0)
     
@@ -171,7 +264,15 @@ class SpilloverMeasurement():
     
     
     def try_load_AutoSpill_spectra(self, warn_empty=True):
-        """ Try loading AutoSpill spectra from self.asp_folder if present.
+        """Load the AutoSpill spillover tables found in ``{self.asp_folder}/table_spillover/`` into ``self.spectra``.
+
+        Loads ``autospill_spillover.csv`` as 'autospill', ``autospill_spillover_000.csv`` as 'autospill_000' and
+        ``posnegpop_spillover.csv`` as 'autospill_posneg', if present.
+
+        Parameters
+        ----------
+        warn_empty : bool, default True
+            Warn (`SpilloverWarning`) if none of the files is found.
         """
         try_loading = [("autospill_spillover.csv", "autospill"), ("autospill_spillover_000.csv", "autospill_000"), ("posnegpop_spillover.csv", "autospill_posneg")]
         found = 0
@@ -185,7 +286,15 @@ class SpilloverMeasurement():
             warnings.warn(f"Could not find any AutoSpill fits in folder {self.asp_folder}!", SpilloverWarning)
     
     def try_load_custom_spectra(self, warn_empty=True):
-        """ Try loading custom spectra from self.custom_data_folder if present.
+        """Load the spectra files of the package's fits found in ``self.custom_data_folder`` into ``self.spectra``.
+
+        Loads ``spectra_linear.csv``, ``spectra_linearos.csv``, ``spectra_posneg.csv`` and ``spectra_torchos.csv`` as
+        'linear', 'linearos', 'posneg' and 'torchos', if present.
+
+        Parameters
+        ----------
+        warn_empty : bool, default True
+            Warn (`SpilloverWarning`) if none of the files is found.
         """
         try_loading = [("spectra_linear.csv", "linear"), ("spectra_linearos.csv", "linearos"), ("spectra_posneg.csv", "posneg"), ("spectra_torchos.csv", "torchos")]
         found = 0
@@ -198,8 +307,7 @@ class SpilloverMeasurement():
             warnings.warn(f"Could not find any custom fits in folder {self.custom_data_folder}!", SpilloverWarning)
     
     def check_missing_metadata(self):
-        """ Make sure all dyes in self.spectra have metadata.
-        """
+        """Raise `SpilloverException` if a dye in any of ``self.spectra`` has no row in ``self.panel_meta``."""
         present_dyes = set().union(*[set(s.columns) for s in self.spectra.values()])
         metadata_dyes = set(self.panel_meta.index)
         
@@ -207,13 +315,21 @@ class SpilloverMeasurement():
             raise SpilloverException(f"Missing metadata for dyes {list(present_dyes - metadata_dyes)}!")
     
     def add_calibrated_spectra(self):
-        """ Add batch calibrated version of all present spectra.
+        """Calibrate all spectra with ``self.calibration_factor`` into ``self.spectra_calibrated``.
+
+        Every channel is multiplied by its calibration factor and the spectra are normalised again
+        (`cytovanni.rainbow.scale_spectra_wfactors`, convention from ``is_spectral``).
         """
         for key in self.spectra:
             self.spectra_calibrated[key] = scale_spectra_wfactors(self.spectra[key], self.calibration_factor, self.is_spectral)
     
     def clip_negative_spectra(self, warn=True):
-        """ Clip all negative spectra entries to zero.
+        """Set negative entries of all raw and calibrated spectra to 0 (in place).
+
+        Parameters
+        ----------
+        warn : bool, default True
+            Warn (`NegativeSpilloverWarning`) with the number of clipped entries, if any.
         """
         clipped_entries = 0
         n_keys = 0
@@ -234,7 +350,19 @@ class SpilloverMeasurement():
     
     
     def mask_spectra_fromkey(self, key, mask_meta=[]):
-        """ Using key from self.panel_meta, mask all spectra where key is True with nan.
+        """Set the spectra of the dyes flagged in a metadata column to NaN (in place), e.g. single stains that look bad.
+
+        Parameters
+        ----------
+        key : str
+            Column of ``self.panel_meta``; dyes where it is True are masked in all raw and calibrated spectra. The
+            column is converted with ``astype(bool)``, so missing values (NaN) count as True.
+        mask_meta : list of str, default []
+            Columns of ``self.panel_meta`` that are set to NaN for the flagged dyes as well, e.g. ``["positive_peak"]``.
+
+        Examples
+        --------
+        >>> spm.mask_spectra_fromkey("is_bad", mask_meta=["positive_peak"])
         """
         for skey in self.spectra:
             mask = self.panel_meta.loc[self.spectra[skey].columns, key].to_numpy().astype(bool)
@@ -248,6 +376,7 @@ class SpilloverMeasurement():
             self.panel_meta.loc[mask, mkey] = np.nan
 
 def _collect_meta(spillovers, dye, stain, register_on):
+    """Metadata rows of `dye` from every measurement where ``panel_meta.loc[dye, register_on] == stain``."""
     index = []
     metas = []
     for name, sp in spillovers.items():
@@ -257,6 +386,7 @@ def _collect_meta(spillovers, dye, stain, register_on):
     return pd.DataFrame(metas, index=index)
 
 def _collect_spectrum(spillovers, dye, stain, register_on, key, calibrated=False):
+    """Spectra of `dye` for fit method `key` from every matching measurement, shape (measurement, channel)."""
     index = []
     spectra = []
     for name, sp in spillovers.items():
@@ -270,11 +400,14 @@ def _collect_spectrum(spillovers, dye, stain, register_on, key, calibrated=False
     return pd.DataFrame(spectra, index=index)
 
 def _normalize_spectra_set(spectra, norm_channel=None):
-    """ If given, normalizes all spectra of a single dye to one in norm_channel, otherwise in the channel that has the highest mean intensity.
+    """Normalise every spectrum of one dye to 1 in `norm_channel`.
 
-        :param spectra: pd.DataFrame. set of spectra for one dye, index measurement, column channel.
-
-        :param norm_channel: None, str. If given, channel to normalize to one.
+    Parameters
+    ----------
+    spectra : pandas.DataFrame
+        Spectra of one dye, shape (measurement, channel).
+    norm_channel : str, optional
+        Channel set to 1. Default: the channel with the highest mean over the measurements.
     """
     if spectra.shape[0]==0:
         return spectra
@@ -284,6 +417,32 @@ def _normalize_spectra_set(spectra, norm_channel=None):
     return spectra_normed
 
 class SingleStainSpilloverCollection():
+    """Spectra of one dye collected from many measurements, with an optional PCA fit.
+
+    Created by `SpilloverCollection`, one per value of ``panel_meta[register_on]`` ("stain").
+
+    Parameters
+    ----------
+    spillovers : pandas.Series of SpilloverMeasurement
+        The measurements, index the measurement names.
+    dye : str
+        Dye name (column of the measurement spectra) under which the stain is collected.
+    stain : str
+        Value of ``panel_meta[register_on]``; only measurements where the dye has this value are collected.
+    register_on : str, default "dye"
+        Metadata column that defines the stain.
+
+    Attributes
+    ----------
+    meta : pandas.DataFrame
+        Metadata of the dye per measurement, index the measurement names.
+    spectra : dict of str to pandas.DataFrame
+        Raw spectra per fit method, each of shape (measurement, channel).
+    spectra_calibrated : dict of str to pandas.DataFrame
+        Calibrated spectra per fit method, each of shape (measurement, channel).
+    pcafitter : SingleSpectrumPCAFitter
+        Set by `fit_PCA`.
+    """
     def __init__(self, spillovers, dye, stain, register_on="dye"):
         self.spillovers = spillovers
         self.register_on = register_on
@@ -301,9 +460,13 @@ class SingleStainSpilloverCollection():
                                    for key in self.keys}
 
     def normalize_spectra(self, norm_channel=None):
-        """ Normalize all spectra in self.
-            Normalizes each extraction type, calibrated/raw etc. separately.
-            Either norm_channel is set to one, or the channel with the highest average intensity.
+        """Normalise all spectra, every fit method and raw/calibrated separately.
+
+        Parameters
+        ----------
+        norm_channel : str, optional
+            Channel set to 1 in every spectrum. Default: the channel with the highest mean intensity (determined
+            separately per fit method and for raw and calibrated spectra).
         """
         self.spectra = {k:_normalize_spectra_set(v, norm_channel=norm_channel)
                                        for k, v in self.spectra.items()}
@@ -311,12 +474,37 @@ class SingleStainSpilloverCollection():
                                        for k, v in self.spectra_calibrated.items()}
     
     def fit_PCA(self, method, calibrated=True):
+        """Fit a `SingleSpectrumPCAFitter` (at most 5 components) to the spectra of one fit method.
+
+        Parameters
+        ----------
+        method : str
+            Fit method (key of ``spectra``), e.g. 'linearos'.
+        calibrated : bool, default True
+            Use the calibrated spectra.
+        """
         self.pcafitter = SingleSpectrumPCAFitter(self.spectra_calibrated[method] if calibrated else self.spectra[method], N=5, name=self.stain)
         self.pca_method = method
         self.pca_calibrated = calibrated
     
     def export_pca(self, pc):
-        """ Export PCA data for panel pc.
+        """Export the PCA fit for `PanelConfiguration.collect_PCA_data`.
+
+        Components are named ``'{stain}_PC{i}'``, i counting from 0.
+
+        Parameters
+        ----------
+        pc : PanelConfiguration
+            Panel; its ``components`` select which components of this stain are used.
+
+        Returns
+        -------
+        dict
+            Keys ``embedding`` (DataFrame (measurement, component)), ``components`` (DataFrame (component, channel), L2
+            norm 1), ``offset`` (mean spectrum, DataFrame (1, channel), index the stain), ``components_stain`` (Series:
+            stain per component), ``components_use`` (list of the component names used by the panel),
+            ``explained_variance`` (Series per component), ``explained_variance_channelratio`` (DataFrame (component,
+            channel)) and ``spectra`` (the spectra used in the fit, DataFrame (measurement, channel)).
         """
         fitter = self.pcafitter
         spectra = pd.DataFrame(fitter.spectra, index=fitter.obs, columns=fitter.channels)
@@ -335,8 +523,21 @@ class SingleStainSpilloverCollection():
                 "explained_variance":explained_variance, "explained_variance_channelratio":explained_variance_channelratio, "spectra":spectra}
     
     def plot_spill_correlations_pcafit(self, variance_cutoff=1e-6, Npc=None, figsize=(13,7)):
-        """ Plot correlations of spectra, along with share of explained variance for PCs.
-            Only show channels with variance above 'variance_cutoff', and at most Npc PCs.
+        """Plot the correlations of the spectra between channels, the variance per channel and its share per component.
+
+        Left: correlation across measurements between the spectrum entries of every pair of channels (clustered);
+        centre: variance per channel; right: share of the variance of every channel explained by each component and
+        their sum. Uses the spectra of the PCA fit (`fit_PCA` first). Warns (`SpilloverWarning`) and plots nothing
+        for a dummy PCA fit.
+
+        Parameters
+        ----------
+        variance_cutoff : float, default 1e-6
+            Only show channels with variance above this (at least the two with the largest variance).
+        Npc : int, optional
+            Show at most this many components. Default: all.
+        figsize : tuple of float, default (13, 7)
+            Figure size.
         """
         if self.pcafitter.is_dummy:
             warnings.warn(f"{self.stain} has trivial PCA fit, omitting plotting!", SpilloverWarning)
@@ -402,13 +603,35 @@ class SingleStainSpilloverCollection():
 
 
 class SpilloverCollection():
+    """Single-stain spectra of many measurements, collected per stain, with PCA fits of the spectra of every stain.
+
+    A stain is a value of the metadata column `register_on` (e.g. the dye, or a ``fluorophore`` column that tells apart
+    different products recorded in the same channel). Every stain is collected under the dye name (spectrum column)
+    of its first occurrence: in each measurement, only the dye with that name is used, and only if its `register_on`
+    value is that stain.
+
+    Parameters
+    ----------
+    spillovers : pandas.Series of SpilloverMeasurement
+        The measurements, index the measurement names (e.g. the single-stain runs).
+    register_on : str, default "dye"
+        Column of the ``panel_meta`` of the measurements that defines the stains. Within every measurement, each value
+        may belong to at most one dye.
+
+    Attributes
+    ----------
+    available_keys : pandas.Series
+        Stains (values), sorted, with the dye name they are collected under as index.
+    single_stains : dict of str to SingleStainSpilloverCollection
+        Collection per stain; also accessible as ``collection[stain]``.
+
+    Examples
+    --------
+    >>> spcollection = SpilloverCollection(pd.Series(spillovers, index=runs), register_on="dye")
+    >>> spcollection.normalize_spectra(key_dye_channel)
+    >>> spcollection.add_PCA_fit("linearos", calibrated=True)
+    """
     def __init__(self, spillovers, register_on="dye"):
-        """ 
-            
-            :param spillovers: pd.Series. Series of SpilloverMeasurement objects, with index the name of the measurement.
-            
-            :param register_on: str. SpilloverMeasurement spectra should have column names for spectra that fit to panel_meta, collect data separated by the corresponding entry in panel_meta[register_on]. Needs to be unique to at most one spectrum within every measurement.
-        """
         self.spillovers = spillovers
         self.register_on = register_on
         
@@ -421,10 +644,14 @@ class SpilloverCollection():
         return self.single_stains[key]
 
     def normalize_spectra(self, dye_channel_key=None):
-        """ Normalize all contained spectra.
-            Either takes the channel to be normed to one from dye_channel_key, or uses the channel with the highest average intensity for every dye.
+        """Normalise all spectra of every stain (see `SingleStainSpilloverCollection.normalize_spectra`).
 
-            :param dye_channel_key: pd.Series. Optional, pd.Series with index dye name and entry channel which should be normalized to one for that dye.
+        Parameters
+        ----------
+        dye_channel_key : pandas.Series, optional
+            Channel to set to 1 per stain: index the stains (values of `register_on`), values the channels. Stains
+            missing from it get a warning and use the channel with the highest mean intensity, as all stains do if it is
+            not given.
         """
         for key in self.available_keys:
             norm_channel = None
@@ -436,8 +663,9 @@ class SpilloverCollection():
             self[key].normalize_spectra(norm_channel)
     
     def plot_peak_position(self):
-        """ For all single stain fits, plot position of positive peak.
-            Requires "positive_peak" to be present in metadata.
+        """Plot the position of the positive peak of every single stain, per stain (log scale).
+
+        Requires the metadata column ``positive_peak`` (see `collect_peakpos_fromposneg`).
         """
         fig, ax = plt.subplots(1,1,figsize=(10,5/20*len(self.available_keys)))
         for key in self.available_keys:
@@ -448,15 +676,18 @@ class SpilloverCollection():
         plt.xlabel("Positive Peak Intensity")
     
     def plot_spectrum(self, stain, method, hue, calibrated=False):
-        """ Plot all single stain spectra for the same stain.
-            
-            :param stain: str. Stain to plot, value of register_on.
-            
-            :param method: str. Fit method from which to get the spectra, e.g. 'posneg' etc.
-            
-            :param hue: str. Categorical metadata by which to color the plot.
-            
-            :param calibrated: bool. Whether to use the calibrated spectra.
+        """Plot all spectra of one stain, one line per measurement, channels sorted by mean value (log scale).
+
+        Parameters
+        ----------
+        stain : str
+            Stain to plot (value of `register_on`).
+        method : str
+            Fit method of the spectra, e.g. 'linearos'.
+        hue : str
+            Categorical metadata column by which to colour the measurements, e.g. 'antigen'.
+        calibrated : bool, default False
+            Use the calibrated spectra.
         """
         sp = self[stain]
         spectra = sp.spectra_calibrated[method] if calibrated else sp.spectra[method]
@@ -480,19 +711,24 @@ class SpilloverCollection():
         ax.set_title(stain, size=20)
     
     def plot_spectrum_correlation_single(self, stain, method, c1, c2, hue, calibrated=False):
-        """ Plot all single stain spectra for the same stain, values in two channels against each other.
-            
-            :param stain: str. Stain to plot, value of register_on.
-            
-            :param method: str. Fit method from which to get the spectra, e.g. 'posneg' etc.
-            
-            :param c1: str. Channel on the x axis.
-            
-            :param x2: str. Channel on the y axis.
-            
-            :param hue: str. Categorical metadata by which to color the plot.
-            
-            :param calibrated: bool. Whether to use the calibrated spectra.
+        """Plot the spectrum entries of one stain in two channels against each other, one point per measurement.
+
+        The title shows the Pearson correlation.
+
+        Parameters
+        ----------
+        stain : str
+            Stain to plot (value of `register_on`).
+        method : str
+            Fit method of the spectra, e.g. 'linearos'.
+        c1 : str
+            Channel on the x axis.
+        c2 : str
+            Channel on the y axis.
+        hue : str
+            Metadata column by which to colour the points.
+        calibrated : bool, default False
+            Use the calibrated spectra.
         """
         sp = self[stain]
         spectra = sp.spectra_calibrated[method] if calibrated else sp.spectra[method]
@@ -508,8 +744,23 @@ class SpilloverCollection():
         ax.set_ylabel(c2, size=15)
     
     def count_channels_above_cutoff(self, method="linearos", cutoff=.01, calibrated=False):
-        """ For every dye, count the number of channels in which the spillover is larger than cutoff
-            for at least one spectrum measurement.
+        """Count per stain the channels whose spillover exceeds `cutoff` in at least one measurement.
+
+        Entries that are exactly 1 (the normalisation channel) are not counted.
+
+        Parameters
+        ----------
+        method : str, default "linearos"
+            Fit method of the spectra.
+        cutoff : float, default 0.01
+            Threshold on the spectrum entries (normalised spectra).
+        calibrated : bool, default False
+            Use the calibrated spectra.
+
+        Returns
+        -------
+        pandas.Series
+            Number of channels per stain.
         """
         def get_single(key):
             spectrum = self[key].spectra_calibrated[method] if calibrated else self[key].spectra[method]
@@ -517,8 +768,21 @@ class SpilloverCollection():
         return pd.Series([get_single(key) for key in self.available_keys], index=self.available_keys)
     
     def count_channels_range_above_cutoff(self, method="linearos", cutoff=.01, calibrated=False):
-        """ For every dye, count the number of channels in which the possible spillover range
-            is larger than cutoff.
+        """Count per stain the channels whose spillover range (max - min over measurements) exceeds `cutoff`.
+
+        Parameters
+        ----------
+        method : str, default "linearos"
+            Fit method of the spectra.
+        cutoff : float, default 0.01
+            Threshold on the range of the spectrum entries (normalised spectra).
+        calibrated : bool, default False
+            Use the calibrated spectra.
+
+        Returns
+        -------
+        pandas.Series
+            Number of channels per stain.
         """
         def get_single(key):
             spectrum = self[key].spectra_calibrated[method] if calibrated else self[key].spectra[method]
@@ -526,7 +790,16 @@ class SpilloverCollection():
         return pd.Series([get_single(key) for key in self.available_keys], index=self.available_keys)
 
     def add_PCA_fit(self, method="linearos", calibrated=False):
-        """ Add PCA fit for every single stain.
+        """Fit a PCA (at most 5 components) to the spectra of every stain, see `SingleStainSpilloverCollection.fit_PCA`.
+
+        Normalise the spectra first (`normalize_spectra`).
+
+        Parameters
+        ----------
+        method : str, default "linearos"
+            Fit method of the spectra.
+        calibrated : bool, default False
+            Use the calibrated spectra.
         """
         for sp in self.single_stains.values():
             sp.fit_PCA(method, calibrated=calibrated)
@@ -534,7 +807,12 @@ class SpilloverCollection():
         self.pca_calibrated = calibrated
     
     def plot_total_variance(self, channel_max=False):
-        """ Plot total variance of spectra per dye.
+        """Plot the total variance of the spectra per stain (log scale); requires `add_PCA_fit`.
+
+        Parameters
+        ----------
+        channel_max : bool, default False
+            Plot the largest variance of a single channel instead of the total over channels.
         """
         total_var = pd.Series(self.single_stains).apply(lambda x: x.pcafitter.max_channel_variance if channel_max else x.pcafitter.total_variance)
         
@@ -546,7 +824,11 @@ class SpilloverCollection():
         ax.set_ylabel("")
     
     def plot_explained_variance(self):
-        """ Plot explained variance per component and dye.
+        """Plot the explained variance of every PCA component per stain (log scale); requires `add_PCA_fit`.
+
+        Returns
+        -------
+        matplotlib.axes.Axes
         """
         total_var = pd.Series(self.single_stains).apply(lambda x: x.pcafitter.total_variance)
         exp_var = [s.pcafitter.explained_variance for s in pd.Series(self.single_stains)]
@@ -566,8 +848,19 @@ class SpilloverCollection():
         return ax
     
     def plot_explained_variance_panel(self, pc):
-        """ Plot explained variance per component and dye.
-            Limited to dyes used in the panel pc, and marking the used components.
+        """Plot the explained variance of every PCA component for the stains of a panel, used components outlined.
+
+        Like `plot_explained_variance`, restricted to the stains of `pc` and labelled with ``pc.stain_marker_name``;
+        requires `add_PCA_fit`.
+
+        Parameters
+        ----------
+        pc : PanelConfiguration
+            Panel; its stains must be stains of the collection.
+
+        Returns
+        -------
+        matplotlib.axes.Axes
         """
         total_var = pd.Series(self.single_stains).loc[pc.stains].apply(lambda x: x.pcafitter.total_variance)
         exp_var = [s.pcafitter.explained_variance for s in pd.Series(self.single_stains).loc[pc.stains]]

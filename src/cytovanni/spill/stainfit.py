@@ -1,3 +1,10 @@
+"""Fit the spectrum of one dye from a single-stain control, with several methods, and collect the fits per method.
+
+All fitters work on the raw intensities (``adata.layers['raw']``) of a gated single-stain .h5ad as written by
+`collect_bead_controls_regularflow` / `collect_bead_controls_spectralflow` and read with
+`cytovanni.io.read_bead_h5ad`. The spectrum is a slope per fluorescence channel relative to the main channel of the
+dye (slope 1 in the main channel), plus an intercept per channel.
+"""
 import statsmodels.api as sm
 from statsmodels.tools.tools import add_constant
 from scipy.optimize import curve_fit
@@ -20,14 +27,31 @@ from ..exceptions import SpilloverFitWarning
 from ..utils import unrolled_subplots, get_cmap, cmap_to_legendhandles
 
 def _find_max_channel(ad):
-    """ Simple version of finding main channel, improve?
-    """
+    """Main channel of a single stain: the fluorescence channel with the highest 95th percentile of raw intensity."""
     return ad.uns["cytoconfig"].channels_fluorescence[np.argmax(np.percentile(ad[:,ad.uns["cytoconfig"].channels_fluorescence].layers["raw"],
                                                                              95, axis=0))]
 
 class SingleStainSpectrumFitBase():
-    """ If 'channel' is in adata.uns and a valid channel, assumes regular flow.
-        Otherwise assume spectral flow and fit/normalize to highest channel.
+    """Base class of the single-stain spectrum fitters: data checks, main channel, plotting.
+
+    The main channel (``stain``) is ``adata.uns['channel']`` if that is set and a channel of `adata` (conventional
+    flow, set by `collect_bead_controls_regularflow`); otherwise the fluorescence channel with the highest 95th
+    percentile of the raw intensity (spectral flow). The spectrum is expressed relative to this channel.
+
+    On construction, events above the linear range are removed (`assure_linearity`). The data are kept as a gated copy
+    in ``self.adata``; the input `adata` is not changed.
+
+    Parameters
+    ----------
+    adata : anndata.AnnData
+        Gated single-stain events with raw intensities in ``layers['raw']``, ``uns['cytoconfig']``
+        (`cytovanni.utils.CytometerConfiguration`; its ``channels_fluorescence`` are fitted and its
+        ``max_linear_range`` is the linear limit), ``uns['dye']`` and optionally ``uns['channel']``.
+    linearity_tolerance_factor : float, default 2.0
+        Events with any fluorescence channel above ``linearity_tolerance_factor * max_linear_range`` (raw) are
+        dropped.
+    asinh_cofactor : float, default 1500
+        Cofactor (raw intensity units) of the arcsinh transform; only used by `PosNegSingleStainSpectrumFit`.
     """
     WARN_SHARE = .01
     def __init__(self, adata, linearity_tolerance_factor=2., asinh_cofactor=1500):
@@ -42,7 +66,11 @@ class SingleStainSpectrumFitBase():
         self.assure_linearity()
         
     def assure_linearity(self):
-        """ Make sure used data is within linear range etc.
+        """Drop events outside the tolerated linear range (in place on ``self.adata``).
+
+        Events with any fluorescence channel above ``linearity_tolerance_factor * max_linear_range`` are removed. Events
+        between ``max_linear_range`` and that limit are kept. Warns (`SpilloverFitWarning`) if more than 1%
+        (``WARN_SHARE``) of the events have a channel above ``max_linear_range``.
         """
         mask_linear = ~np.any(self.adata[:,self.channels].layers["raw"]>self.max_linear_range, axis=1)
         mask_linear_wtol = ~np.any(self.adata[:,self.channels].layers["raw"]>self.linearity_tolerance_factor*self.max_linear_range, axis=1)
@@ -57,14 +85,23 @@ class SingleStainSpectrumFitBase():
         self.adata = self.adata[mask_linear_wtol].copy()
     
     def get_spectrum(self):
-        """ Return fitted spectrum.
-        """
+        """Return the fitted spectrum: pandas.DataFrame of shape (channel, 1), the slopes, column named by the dye."""
         spectrum = self.spectrum[["slope"]]
         spectrum.columns = [self.dye]
         return spectrum
 
     def plot(self, folder="", s=.1):
-        """ Plot fit across all channels.
+        """Plot every fluorescence channel against the main channel, with the fitted line and the compensated data.
+
+        Each panel shows the raw data, the fitted line ``slope * x + intercept``, the compensated values
+        ``y - slope * x`` and the intercept.
+
+        Parameters
+        ----------
+        folder : str, default ""
+            If given, save the figure as ``{folder}/{PLOTFOLDERNAME}/{dye}.jpg`` (folder created if needed), close it.
+        s : float, default 0.1
+            Marker size of the scatter plots.
         """
 
         fig, ax = unrolled_subplots(len(self.channels), Ncol=5, elsize=(8,5))
@@ -95,7 +132,31 @@ class SingleStainSpectrumFitBase():
 
 
 class LinearSingleStainSpectrumFit(SingleStainSpectrumFitBase):
-    """ Like AutoSpill, fits a robust linear model to the data.
+    """Fit the spectrum of a single stain with a linear regression of every channel on the main channel.
+
+    Each fluorescence channel is regressed on the main channel (raw intensities), by default with a robust linear
+    model (``statsmodels.RLM``, Huber weights), like AutoSpill. The fit runs on construction unless `fit` is False.
+    Written by `write` to the folder ``fit_linear``.
+
+    Parameters
+    ----------
+    adata : anndata.AnnData
+        Gated single-stain events, see `SingleStainSpectrumFitBase`.
+    robust : bool, default True
+        Use ``statsmodels.RLM``; otherwise ordinary least squares (``numpy.polyfit``, or ``scipy.optimize.curve_fit``
+        without intercept).
+    intercept : bool, default True
+        Fit an intercept per channel; otherwise the intercept is 0.
+    fit : bool, default True
+        Run `fit` on construction.
+    **kwargs
+        Passed to `SingleStainSpectrumFitBase` (`linearity_tolerance_factor`, `asinh_cofactor`).
+
+    Attributes
+    ----------
+    spectrum : pandas.DataFrame
+        Shape (channel, 3), columns ``intercept`` (raw units), ``slope`` (relative to the main channel, 1 there) and
+        ``r`` (Pearson correlation with the main channel). Set by `fit`.
     """
     PLOTFOLDERNAME = "plot_fit_linear"
     WRITEFOLDERNAME = "fit_linear"
@@ -108,7 +169,19 @@ class LinearSingleStainSpectrumFit(SingleStainSpectrumFitBase):
         if fit: self.fit()
     
     def fit_single_channel(self, channel, stain=None):
-        """ Fit slope for single channel.
+        """Fit one channel against the main channel (or against `stain`).
+
+        Parameters
+        ----------
+        channel : str
+            Channel to regress.
+        stain : str, optional
+            Channel to regress on. Default: the main channel.
+
+        Returns
+        -------
+        list of float
+            ``[intercept, slope, r]``; ``[0, 1, 1]`` if `channel` equals `stain`.
         """
         if stain is None: stain = self.stain
         if channel==stain: # Don't fit main channel, normalised anyway.
@@ -128,21 +201,27 @@ class LinearSingleStainSpectrumFit(SingleStainSpectrumFitBase):
                 return [0.] + fit + [np.corrcoef(x, y)[0,1]]
     
     def fit(self):
-        """ Fit full spectrum
-        """
+        """Fit all fluorescence channels and set ``self.spectrum``."""
         self.spectrum = pd.DataFrame(np.nan, index=self.channels, columns=["intercept", "slope", "r"])
         for channel in self.channels:
             self.spectrum.loc[channel] = self.fit_single_channel(channel)
 
     def write(self, folder):
-        """ Write fit into folder.
+        """Write ``self.spectrum`` as ``{folder}/{WRITEFOLDERNAME}/{dye}.csv`` (folder created if needed).
+
+        `collect_single_fits` collects these files into one spectra matrix.
         """
         Path(os.path.dirname(os.path.join(folder, self.WRITEFOLDERNAME, ""))).mkdir(parents=True, exist_ok=True) # ensure path exists
         self.spectrum.to_csv(os.path.join(folder, self.WRITEFOLDERNAME, f"{self.dye}.csv"))
     
     
     def fit_NxN(self):
-        """ Fit all channels against each other, may take a bit for spectral data.
+        """Fit every channel against every other channel; slow for many channels (spectral flow).
+
+        Requires `fit` first. Sets pandas.DataFrame attributes of shape (channel, channel), entry ``[j, i]`` for channel
+        j against channel i: ``NxN_slope`` and ``NxN_intercept`` (regression of j on i), ``NxN_slope_T`` and
+        ``NxN_intercept_T`` (regression of i on j, inverted to a line of j against i), ``NxN_slope_imp`` and
+        ``NxN_intercept_imp`` (the line implied by the fitted spectrum).
         """
         self.NxN_intercept = pd.DataFrame(np.nan, index=self.channels, columns=self.channels)
         self.NxN_slope = pd.DataFrame(np.nan, index=self.channels, columns=self.channels)
@@ -165,7 +244,20 @@ class LinearSingleStainSpectrumFit(SingleStainSpectrumFitBase):
                                           index=self.channels, columns=self.channels)
     
     def plot_NxN(self, savepath="", clipNchannel=None, channels=None):
-        """ Plot fit across all channel combinations in NxN raster.
+        """Plot every pair of channels with the three lines of `fit_NxN`.
+
+        Requires `fit_NxN` first.
+
+        Parameters
+        ----------
+        savepath : str, default ""
+            If given, save the figure there and close it.
+        clipNchannel : int, optional
+            Only plot the first `clipNchannel` fluorescence channels. Ignored if `channels` is given.
+        channels : list of str, optional
+            Channels to plot. Default: all fluorescence channels (or the first `clipNchannel`). The data and lines drawn
+            are those of the first ``len(channels)`` fluorescence channels, so this only gives the right plot for a
+            leading subset of the fluorescence channels.
         """
         if channels is None:
             channels = self.channels if clipNchannel is None else self.channels[:clipNchannel]
@@ -213,7 +305,21 @@ class LinearSingleStainSpectrumFit(SingleStainSpectrumFitBase):
             plt.close()
 
 class OutliersafeLinearSingleStainSpectrumFit(LinearSingleStainSpectrumFit):
-    """ Fit LinearSingleStainSpectrumFit, remove outliers based on residuals, fit again.
+    """`LinearSingleStainSpectrumFit` after removing outlier events with a local outlier factor.
+
+    Before the fit, removes events that ``sklearn.neighbors.LocalOutlierFactor`` flags as outliers either in the
+    other fluorescence channels (z-scored with the mean and standard deviation of the data clipped to their 5th-95th
+    percentiles) or in the main channel alone (`filter_outlier`). Warns (`SpilloverFitWarning`) if more than 4%
+    (``WARN_OUTLIER_SHARE``) of the events are removed. Written by `write` to the folder ``fit_linearos``.
+
+    Parameters
+    ----------
+    adata : anndata.AnnData
+        Gated single-stain events, see `SingleStainSpectrumFitBase`.
+    neighbors_factor : int, default 100
+        The local outlier factor uses ``max(N_events // neighbors_factor, 5)`` neighbours.
+    **kwargs
+        Passed to `LinearSingleStainSpectrumFit` (`robust`, `intercept`) and `SingleStainSpectrumFitBase`.
     """
     PLOTFOLDERNAME = "plot_fit_linearos"
     WRITEFOLDERNAME = "fit_linearos"
@@ -226,13 +332,11 @@ class OutliersafeLinearSingleStainSpectrumFit(LinearSingleStainSpectrumFit):
         self.fit()
     
     def _lof_n_neighbors(self):
-        """ Number of neighbours for LocalOutlierFactor: N_events // neighbors_factor, at least 5.
-        """
+        """Number of neighbours for LocalOutlierFactor: N_events // neighbors_factor, at least 5."""
         return max(self.adata.shape[0]//self.neighbors_factor, 5)
     
     def filter_outlier(self):
-        """ Filter outliers based on sklearn LocalOutlierFactor on z-normed data, as well as only on the main channel.
-        """
+        """Remove outlier events from ``self.adata`` (in place), see the class docstring."""
         x = self.adata[:,[self.stain]].layers["raw"]
         y = self.adata[:,self.channels].layers["raw"]
         y = y[:,np.arange(y.shape[1])!=self.channels.index(self.stain)]
@@ -249,8 +353,10 @@ class OutliersafeLinearSingleStainSpectrumFit(LinearSingleStainSpectrumFit):
         self.adata = self.adata[mask].copy()
     
     def filter_outlier_residuals(self):
-        """ Filter outliers based on residuals and sklearn LocalOutlierFactor.
-            Bad idea, artificially nice if it only keeps the outliers on the fitted line!
+        """Remove events whose residuals to the current fit are outliers (local outlier factor); not used by the class.
+
+        Requires ``self.spectrum``. Filtering on the residuals keeps the events close to the fitted line, so a fit
+        repeated afterwards looks better than it is; `filter_outlier` is used instead.
         """
         x = self.adata[:,[self.stain]].layers["raw"]
         y = self.adata[:,self.channels].layers["raw"]
@@ -267,15 +373,34 @@ class OutliersafeLinearSingleStainSpectrumFit(LinearSingleStainSpectrumFit):
 
 
 class TorchSpectrumFitter(Module):
-    """ Fit single stain spectrum using gradient descent.
-        Assumes every event can be characterized by a single number that represents the staining intensity.
-        Spectrum is assumed to be strictly positive, the staining intensity as well.
-        
-        Spectrum initialisation does not affect the result. (?)
-        Staining intensity needs to be encoded as log to train properly.
-        
-        Better encoding for staining! Currently can't really switch the sign!
-        Better offset fitting, currently not quite stable!
+    """Fit a single-stain spectrum by gradient descent on a one-factor model of every event.
+
+    Models every event as ``data[e, c] ~ staining[e] * spectrum[c] + offset[c]``: one staining intensity per event,
+    a spectrum and an offset per channel, all fitted jointly. The spectrum is encoded as ``exp`` of its parameter
+    (strictly positive); the staining and the offset as ``sinh`` of their parameters (any sign). The spectrum and the
+    staining are only determined up to a common factor; `OutliersafeTorchSingleStainSpectrumFit` normalises the
+    spectrum to the main channel.
+
+    Initialisation: staining ``arcsinh`` of the data in the channel with the highest mean, spectrum and offset from
+    a line fit of every channel against that channel (``numpy.polyfit``).
+
+    Parameters
+    ----------
+    data : numpy.ndarray
+        Raw intensities, shape (events, channel).
+    channels : list of str
+        Channel names of the columns of `data`.
+    device : str, default "cpu"
+        Torch device.
+    criterion : {'mse', 'L1'}, default 'mse'
+        Loss between the data and the reconstruction (``torch.nn.MSELoss`` or ``torch.nn.L1Loss``), on the raw scale.
+    debug : bool, default False
+        Show a progress bar in `fit` and record the spectrum and offset every 4 steps (for `plot_parameters`).
+
+    Raises
+    ------
+    ValueError
+        If `criterion` is not 'mse' or 'L1'.
     """
     def __init__(self, data, channels, device="cpu", criterion="mse", debug=False):
         super().__init__()
@@ -308,8 +433,7 @@ class TorchSpectrumFitter(Module):
         self.init_polyfit()
     
     def init_polyfit(self):
-        """ Fit simple line and use parameters as initialization.
-        """
+        """Initialise spectrum and offset from a line fit of every channel against the channel with the highest mean."""
         slope, intercept = np.polyfit(self.data_input[:,self.data_input.mean(0).argmax()], self.data_input, 1)
         
         self.spectrum_log = Parameter(torch.tensor(np.log(np.clip(slope, 1e-14, None)), dtype=torch.float32, device=self.device), requires_grad=True)
@@ -317,33 +441,45 @@ class TorchSpectrumFitter(Module):
     
     @property
     def spectrum(self):
-        """ Spectrum, exp of parameter for range (0,inf).
-        """
+        """Spectrum, torch.Tensor of shape (channel,): ``exp`` of the parameter, strictly positive (not normalised)."""
         return self.spectrum_log.exp() #(self.spectrum_log-self.spectrum_log.max()).exp()
     
     @property
     def offset(self):
-        """ Offset value, simple sinh of parameter for range (inf,inf).
-        """
+        """Offset per channel (raw units), torch.Tensor of shape (channel,): ``sinh`` of the parameter, any sign."""
         return (self.offset_asinh).sinh()
     
     @property
     def staining(self):
-        """ Staining value, simple exp of parameter for range (0,inf).
-        """
+        """Staining intensity per event, torch.Tensor of shape (events,): ``sinh`` of the parameter, any sign."""
         return self.staining_log.sinh()
     
     @property
     def reconstruction(self, subset=slice(None)):
-        """ Staining value times spectrum, plus some offset.
-        """
+        """Reconstructed data ``staining * spectrum + offset``, torch.Tensor of shape (events, channel)."""
         return self.staining[:, None] * self.spectrum[None, :] + self.offset[None, :]
     
     def get_loss(self):
+        """Loss (`criterion`) between the data and the reconstruction, a scalar torch.Tensor."""
         return self.criterion(self.data, self.reconstruction).mean()
     
     def fit(self, Niter=5000, lr=1e-3, lr_offset=1e-2,  warmup_offset=0):
-        """ Fit all parameters of model.
+        """Fit all parameters, using all events in every step.
+
+        Staining and spectrum are fitted with Adam, the offset with RMSprop (momentum 0.4). No convergence check:
+        inspect `plot_loss`. The loss of every step is appended to ``self.losshistory``.
+
+        Parameters
+        ----------
+        Niter : int, default 5000
+            Number of steps.
+        lr : float, default 1e-3
+            Adam learning rate for the staining and spectrum parameters.
+        lr_offset : float, default 1e-2
+            RMSprop learning rate for the offset parameter.
+        warmup_offset : int, default 0
+            If > 0, the offset learning rate rises linearly from ``lr_offset / warmup_offset`` to `lr_offset` over the
+            first `warmup_offset` steps.
         """
         self.losshistory = []
         if self.debug:
@@ -371,14 +507,14 @@ class TorchSpectrumFitter(Module):
                 self.history_offset.append(self.offset.detach().cpu().numpy())
     
     def plot_loss(self):
-        """ Plot loss.
-        """
+        """Plot the loss per step (log scale)."""
         plt.plot(self.losshistory)
         plt.yscale("log")
         plt.xlabel("Step")
         plt.ylabel("Loss")
     
     def plot_parameters(self):
+        """Plot the spectrum and the offset during the fit; requires ``debug=True``."""
         fig, ax = plt.subplots(1, 2, figsize=(15,5))
         ax[0].plot(np.arange(len(self.history_spectrum))[:,None]*4, np.asarray(self.history_spectrum))
         ax[0].set_yscale("log")
@@ -387,7 +523,16 @@ class TorchSpectrumFitter(Module):
         ax[1].set_title("Offset")
     
     def plot_NxN(self, savepath="", clipNchannel=None, channels=None):
-        """ Plot fit across all channel combinations in NxN raster.
+        """Plot every pair of channels with the reconstructed line.
+
+        Parameters
+        ----------
+        savepath : str, default ""
+            If given, save the figure there and close it.
+        clipNchannel : int, optional
+            Only plot the first `clipNchannel` channels. Ignored if `channels` is given.
+        channels : list of str, optional
+            Channels to plot. Default: all channels (or the first `clipNchannel`).
         """
         if channels is None:
             channels = self.channels if clipNchannel is None else self.channels[:clipNchannel]
@@ -419,6 +564,7 @@ class TorchSpectrumFitter(Module):
             plt.close()
     
     def plot_reconstruction_error(self):
+        """Plot histograms of the reconstruction error (data minus reconstruction, raw units) per channel."""
         fig, ax = plt.subplots(figsize=(10,5))
         error = (self.data- self.reconstruction).detach().cpu().numpy()
         mean, std = error.mean(), error.std()
@@ -429,8 +575,28 @@ class TorchSpectrumFitter(Module):
         plt.yscale("log")
 
 class OutliersafeTorchSingleStainSpectrumFit(OutliersafeLinearSingleStainSpectrumFit):
-    """ OutliersafeLinearSingleStainSpectrumFit but simultaneous line fit using gradient descent.
-        Add warning if running on CPU?
+    """`OutliersafeLinearSingleStainSpectrumFit` with a joint fit of all channels by gradient descent.
+
+    After the outlier removal of `OutliersafeLinearSingleStainSpectrumFit`, fits all fluorescence channels jointly
+    with `TorchSpectrumFitter` (default settings: 5000 steps, MSE loss on the raw scale) instead of one regression per
+    channel. The spectrum is normalised to 1 in the main channel; the intercepts are those of every channel against
+    the main channel implied by the fitted offsets. Written by `write` to the folder ``fit_torchos``.
+
+    Parameters
+    ----------
+    *args
+        Passed to `OutliersafeLinearSingleStainSpectrumFit` (`adata`, ...).
+    device : str, default "cuda:0"
+        Torch device; the CPU is used (without warning) if CUDA is not available.
+    **kwargs
+        Passed to `OutliersafeLinearSingleStainSpectrumFit`.
+
+    Attributes
+    ----------
+    spectrum : pandas.DataFrame
+        Shape (channel, 2), columns ``slope`` and ``intercept`` (no ``r``).
+    tsfitter : TorchSpectrumFitter
+        The fitted model.
     """
     PLOTFOLDERNAME = "plot_fit_torchos"
     WRITEFOLDERNAME = "fit_torchos"
@@ -440,6 +606,7 @@ class OutliersafeTorchSingleStainSpectrumFit(OutliersafeLinearSingleStainSpectru
         super().__init__(*args, **kwargs)
     
     def fit(self):
+        """Fit the spectrum with `TorchSpectrumFitter` and set ``self.spectrum`` (slope and intercept per channel)."""
         self.spectrum = pd.DataFrame(np.nan, index=self.channels, columns=["slope"])
         self.tsfitter = TorchSpectrumFitter(self.adata[:,self.channels].layers["raw"], self.channels, device=self.device)
         self.tsfitter.fit()
@@ -452,7 +619,27 @@ class OutliersafeTorchSingleStainSpectrumFit(OutliersafeLinearSingleStainSpectru
     
 
 class PosNegSingleStainSpectrumFit(SingleStainSpectrumFitBase):
-    """ Fit positive/negative with GMM, use medians to get spectra.
+    """Fit the spectrum of a single stain from the medians of the positive and the negative population.
+
+    A two-component Gaussian mixture on ``arcsinh(x / asinh_cofactor)`` of the main channel splits the events into
+    negative and positive (the component with the higher mean). The slope of every channel is the difference of the
+    positive and negative medians (raw), divided by that difference in the main channel; the intercept is
+    ``median_negative - slope * median_negative[main channel]``. The fit runs on construction; the mixture has no fixed
+    random state. Written by `write` to the folder ``fit_posneg``.
+
+    Parameters
+    ----------
+    adata : anndata.AnnData
+        Gated single-stain events, see `SingleStainSpectrumFitBase`.
+    **kwargs
+        Passed to `SingleStainSpectrumFitBase` (`linearity_tolerance_factor`, `asinh_cofactor`).
+
+    Attributes
+    ----------
+    spectrum : pandas.DataFrame
+        Shape (channel, 4), columns ``median_positive``, ``median_negative`` (raw), ``slope`` and ``intercept``.
+    gmm : sklearn.mixture.GaussianMixture
+        The fitted mixture. ``self.adata.obs['is_positive']`` holds the assignment of every event.
     """
     PLOTFOLDERNAME = "plot_fit_posneg"
     WRITEFOLDERNAME = "fit_posneg"
@@ -463,8 +650,7 @@ class PosNegSingleStainSpectrumFit(SingleStainSpectrumFitBase):
         self.fit()
     
     def fit(self):
-        """ Simple slope fit from medians of positive/negative.
-        """
+        """Split the events into positive and negative and set ``self.spectrum``, see the class docstring."""
         self.gmm = GaussianMixture(2)
         x = np.arcsinh(self.adata[:,self.stain].layers["raw"][:,0].copy() / self.asinh_cofactor)[:,None]
         label = self.gmm.fit_predict(x)
@@ -482,14 +668,36 @@ class PosNegSingleStainSpectrumFit(SingleStainSpectrumFitBase):
         self.spectrum["intercept"] = self.spectrum["median_negative"] - self.spectrum["slope"] * self.spectrum.loc[self.stain, "median_negative"]
 
     def write(self, folder):
-        """ Write fit into folder.
+        """Write ``self.spectrum`` as ``{folder}/{WRITEFOLDERNAME}/{dye}.csv`` (folder created if needed).
+
+        `collect_single_fits` collects these files into one spectra matrix; `collect_peakpos_fromposneg` reads the
+        positive medians.
         """
         Path(os.path.dirname(os.path.join(folder, self.WRITEFOLDERNAME, ""))).mkdir(parents=True, exist_ok=True) # ensure path exists
         self.spectrum.to_csv(os.path.join(folder, self.WRITEFOLDERNAME, f"{self.dye}.csv"))
 
 
 def collect_single_fits(folder, inname, outname):
-    """ Collect single fits as saved by .write of SpectrumFit into one spectra matrix.
+    """Collect the single-stain fits of one method, as written by the fitters' ``write``, into one spectra matrix.
+
+    Reads every ``{folder}/{inname}/{dye}.csv`` and writes the slopes as ``{folder}/{outname}``.
+    `SpilloverMeasurement.from_custom` reads the files ``spectra_linear.csv``, ``spectra_linearos.csv``,
+    ``spectra_posneg.csv`` and ``spectra_torchos.csv``, so use these as `outname` for the folders ``fit_linear``,
+    ``fit_linearos``, ``fit_posneg`` and ``fit_torchos``.
+
+    Parameters
+    ----------
+    folder : str
+        Folder of the measurement (the `collect_data_path` of the collect functions).
+    inname : str
+        Subfolder with the single fits, e.g. ``"fit_linearos"``.
+    outname : str
+        File name of the output .csv, e.g. ``"spectra_linearos.csv"``: shape (channel, dye), columns the dyes (file
+        names without .csv) in sorted order.
+
+    Examples
+    --------
+    >>> collect_single_fits(collect_data_path, "fit_linearos", "spectra_linearos.csv")
     """
     files = list(filter(lambda x: x.endswith(".csv"), os.listdir(os.path.join(folder, inname, ""))))
     dyes = [file[:-4] for file in files]
@@ -501,7 +709,16 @@ def collect_single_fits(folder, inname, outname):
     spectra.to_csv(os.path.join(folder, outname))
 
 def collect_peakpos_fromposneg(folder):
-    """ Collects position of positive peak from posneg fit, add to panel_meta.csv
+    """Add the positive peak position of every dye, from the `PosNegSingleStainSpectrumFit` fits, to panel_meta.csv.
+
+    Reads ``{folder}/fit_posneg/{dye}.csv`` and writes the largest positive median over all channels (raw, rounded to
+    an integer; normally the main channel) as column ``positive_peak`` into ``{folder}/panel_meta.csv`` (NaN for dyes
+    without a fit). `SpilloverCollection.plot_peak_position` uses this column.
+
+    Parameters
+    ----------
+    folder : str
+        Folder of the measurement, with ``panel_meta.csv`` and ``fit_posneg/``.
     """
     meta = pd.read_table(os.path.join(folder, "panel_meta.csv"), sep=",", index_col=0)
     index = meta.index
