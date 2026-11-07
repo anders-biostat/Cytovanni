@@ -106,6 +106,9 @@ A fix can change results relative to one of these and not the other; both are st
 | R2b-G2-21 | MMD with automatic bandwidth on identical points: NaN | no for ordinary inputs (identical); NaN -> 0 | `MMDLoss()` (no fixed bandwidth) / `estimate_bandwidth` on all-identical points |
 | R2b-G2-22 | `get_spectra_fromembedding(include_unused=True)` returned masked spectra | yes, `include_unused=True` callers only | `PanelModule.get_spectra_fromembedding(include_unused=True)` |
 | R2b-G2-23 | `apply_component_mask` failed for (components, k>1) | no (crash -> works) | `apply_component_mask` with a (components, k) input, k > 1 |
+| R2c-H1 | positive CVs: a single value <= 0 made the CV NaN | yes: NaN -> CV over the positive values | `get_positive_paired_CV(_alongdiag)`, `get_positive_single_CV` with a value <= 0 (e.g. a share of 0) |
+| R2c-H2 | `get_positive_single_CV` used ddof=0 | yes, slightly larger: log-variance x n/(n-1) | every `get_positive_single_CV` call (small n most) |
+| R2c-H3 | CV functions: NaN without warning; paired varcorr clamped silently | no (values identical; warnings added) | NaN results (< 2 usable values, along-diagonal variance < 0); `get_asinh_paired_CV_varcorr` clamp |
 
 Entry format: see the review notes (todo/00_CONVENTIONS.md "Fix log" in the review project).
 
@@ -287,8 +290,9 @@ merged.
 - **Effect on results:** for such samples the retries now try different initialisations, so the final labels can
   differ (before, the last identical fit was kept with a warning).
 - **Affected analyses:** `processing/refmohammed/lib/refmoh.py:64,66` (`random_state=seed`, int): changes only for
-  samples that showed the "trying again" warning. `processing/instrument_rainbow/lib/pipeline.py:53` passes a
-  `RandomState` instance: unchanged.
+  samples that showed the "trying again" warning. `figures/plots_rainbow/01_gating_gmm.ipynb` calls
+  `fit_rainbow_GMM(adata, random_state=0)` (int seed; added 2026-11-07, R2c): affected only if a retry was triggered
+  there. `processing/instrument_rainbow/lib/pipeline.py:53` passes a `RandomState` instance: unchanged.
 - **Action:** check the refmohammed logs for "GMM rainbow bead class assignment may not have worked"; re-run those
   samples if present. **Test:** v_all.py E7.
 
@@ -600,10 +604,16 @@ E20 allows a subset of the panel's dyes (`allow_missing=True`).
 - Effect on results: changes outputs for those fits: the DDIST loss values and therefore fitted transformer parameters
   (relative weight of the sinkhorn term changes by ~N-fold; check: unweighted 0.1306, sum-N weights now 0.1306 instead of
   70.94). Same vs publish and vs repro copy (identical code there).
-- Affected analyses: none found in cytovanni_reproducibility (no `markerweight`, `RareMarkerWeights`, `GeomSampleLoss` or
-  `DDIST_mode` use in processing/ or figures/). Saved OverlapFitModels fitted with markerweight + sinkhorn/hausdorff carry
-  the old behaviour.
-- Action: re-fit models trained with markerweight + sinkhorn/hausdorff, if any.
+- Affected analyses (corrected 2026-11-07, R2c; the first search covered only cytovanni_reproducibility, which loads the
+  HD7 models but does not fit them): the HD7 Identity models of the paper, fitted in ~/hd7_myeloma/cytovanni/pipeline:
+  - hd7-03-spectra-integration.ipynb, Identity refined spectral fit: `RareMarkerWeights` [("PE (BD)", 5e3, 5),
+    ("BV750", 5e3, 5), ("BV605", 9e3, 5)], sinkhorn (with `UnmxErrorExclusionMultiplier`).
+  - hd7-05-additional-scale.ipynb, Identity post fit: CD34 (5e3, x5), CD56 (9e3, x5), `DDIST_separate=True` (batched
+    (B, N) weight path).
+  These are the Identity Cytovanni layers in batchint_data (normal, normal_post, onlyref_post, ...). TCell fits use no
+  weights (not affected). Loading the saved models is unaffected; a refit with the fixed package will not reproduce them.
+  No other `markerweight` / `GeomSampleLoss` use in cytovanni_reproducibility processing/ or figures/.
+- Action: decide refit vs keep the saved models and document in Methods (user, 2026-11-07: "settle #1 at the end").
 - Test: jobs/r2_verify/v_all.py A5; jobs/r2_verify/f_core.py "A5".
 
 ### R2-D5 `CustomMultivariateNormal.rsample` ignored `sample_shape`
@@ -1231,3 +1241,53 @@ E20 allows a subset of the panel's dyes (`allow_missing=True`).
 - Affected analyses: none (internal `get_L1` uses (components, 1)).
 - Action: nothing.
 - Test: v2_all.py G2-23; f2_B.py G2-23.
+
+## R2c (items from the reproducibility review, branch review/R2c-evl; approvals in todo/R2c_approval.md)
+
+### R2c-H1 positive CVs NaN for a single value <= 0
+- Commit: R2c-evl (review/R2c-evl), 2026-11-07. Approval: todo/R2c_approval.md item H1 (option a).
+- Where: utils.evl.get_positive_paired_CV, get_positive_paired_CV_alongdiag, get_positive_single_CV.
+- What was wrong: only non-finite values were masked, before `np.log`; a 0 became -inf and made the whole CV NaN.
+- Now: values <= 0 are dropped with the non-finite ones (pairs: if either value is <= 0); fewer than 2 remaining values
+  give NaN with a CytovanniWarning.
+- Affected when: inputs containing values <= 0 (shares of 0 for rare cell types).
+- Effect on results: those CVs change from NaN to the CV over the positive values; all-positive inputs are identical.
+- Affected analyses (cytovanni_reproducibility): figures/plots_liechti/lib/liechti.py:218, 298, 299, 309
+  (intermediate/liechti_share_metrics.csv: 2 cell types were NaN, ICS:P784:F gd T IL-17+ and TNK:P10:F NKT
+  CD4+CCR5-; no visible effect in the figures); figures/plots_batchintHD7/lib/cv.py:222, 224, 260 and
+  composition.py:46, 47, 57 (share CVs; only cell types with a share of 0 in some sample);
+  processing/batchint_data/lib/validation.py:556 (its own `np.isfinite(x*y).sum() >= 2` guard does not catch zeros).
+- Action: re-run the share-CV tables if NaN entries mattered; otherwise nothing.
+- Test: jobs/r2c_check/v_evl.py "H1".
+
+### R2c-H2 `get_positive_single_CV` used the population variance
+- Commit: R2c-evl, 2026-11-07. Approval: todo/R2c_approval.md item H2 (option a).
+- Where: utils.evl.get_positive_single_CV.
+- What was wrong: `x.var()` (ddof=0), while the asinh single CVs use ddof=1 (and the paired ones `np.cov`, ddof=1).
+- Now: `x.var(ddof=1)`.
+- Affected when: every call.
+- Effect on results: the log-variance grows by n/(n-1), the CV by about sqrt(n/(n-1)) (n=10: +5%, n=50: +1%).
+- Affected analyses: figures/plots_liechti/lib/liechti.py:218, 309; figures/plots_batchintHD7/lib/cv.py:260;
+  composition.py:57 (reference-sample share CVs).
+- Action: re-run those tables/figures for the final version (small change).
+- Test: jobs/r2c_check/v_evl.py "H2".
+
+### R2c-H3 CV functions: warnings for NaN, paired varcorr clamp; linearisation and cofactor documented
+- Commit: R2c-evl, 2026-11-07. Approval: todo/R2c_approval.md items H3, H4.
+- Where: all CV functions in utils/evl.py.
+- What was wrong: NaN results (along-diagonal variance < 0; fewer than 2 usable values) came without a warning;
+  `get_asinh_paired_CV_varcorr` clamped a negative corrected variance to 0 silently (the single variant warns, R2-E16).
+- Now: every NaN result comes with a CytovanniWarning naming the reason; the paired varcorr clamp warns. Docstrings
+  state the global linearisation (factor in [1, sqrt 2]) and that below the cofactor the value is SD/f by design (H4).
+- Affected when: those cases only.
+- Effect on results: none (values identical, verified on clean inputs for all asinh functions and the positive paired ones).
+- Affected analyses: none (warnings only).
+- Action: nothing.
+- Test: jobs/r2c_check/v_evl.py "H3".
+
+### R2c-H5 mean norm of `ExtendableParameter` documented
+- Commit: R2c-evl, 2026-11-07. Approval: todo/R2c_approval.md item H5 (document only).
+- Where: torch.parameter.ExtendableParameter docstring (`axis_norm`).
+- Now: states that entries without training data enter the mean, so the absolute zero point depends on them.
+- Effect on results: none (docstring). HD7 models checked: no such entries (jobs/r2c_check/h5_*.py).
+

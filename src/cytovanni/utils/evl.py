@@ -3,6 +3,17 @@ import warnings
 
 from ..exceptions import CytovanniWarning
 
+def _nan_with_warning(fname, reason):
+    """ Return NaN with a CytovanniWarning naming the function and the reason. """
+    warnings.warn(f"{fname}: {reason}, returning NaN.", CytovanniWarning, stacklevel=3)
+    return np.nan
+
+def _positive_pairs(x, y):
+    """ Pairs where both values are finite and > 0 (the log is undefined otherwise). """
+    x, y = np.asarray(x, dtype=float), np.asarray(y, dtype=float)
+    mask = np.isfinite(x) & np.isfinite(y) & (x>0) & (y>0)
+    return x[mask], y[mask]
+
 def symmetric_correlation(x, y):
     """ Symmetric correlation coefficient, i.e. correlation of [x,y] and [y,x].
     """
@@ -16,7 +27,8 @@ def get_positive_paired_CV(x, y):
     """ Get CV of strictly positive data, appropriate for e.g. (strictly positive) proportions or standard deviations.
         Uses symmetric data, i.e. [x,y] is compared with [y,x].
         Works by going to log scale, calculating the standard deviation around the diagonal, and translating into a CV.
-        Returns nan for data <=0
+        Pairs with a value <= 0 or a non-finite value are dropped. Returns NaN (with a CytovanniWarning) if fewer than
+        2 pairs remain.
 
         Test with:
             import scipy.stats
@@ -27,9 +39,9 @@ def get_positive_paired_CV(x, y):
             print("Simple CV", scipy.stats.variation(np.exp(-3+noisex))) # naive CV along only one direction
             print("Paired CV", get_positive_paired_CV(np.exp(log_shares+noisex), np.exp(log_shares+noisey))) # CV using paired measurements along a large range
     """
-    x, y = np.array(x), np.array(y)
-    mask = np.isfinite(x) & np.isfinite(y)
-    x, y = x[mask], y[mask]
+    x, y = _positive_pairs(x, y)
+    if len(x) < 2:
+        return _nan_with_warning("get_positive_paired_CV", f"{len(x)} usable pairs (finite, > 0)")
     x, y = np.log(x), np.log(y)
     x, y = np.hstack([x, y]), np.hstack([y, x])
     
@@ -45,6 +57,8 @@ def get_positive_paired_CV_alongdiag(x, y):
         Because x and y share the same underlying signal, cov(x,y) = σ²_signal, which enters the along-diagonal projection twice,
         giving var_along = 2σ²_signal + σ²_noise. The perpendicular projection cancels the covariance term, giving var_perp = σ²_noise.
         Therefore σ²_signal = (var_along - var_perp) / 2.
+        Pairs with a value <= 0 or a non-finite value are dropped. Returns NaN (with a CytovanniWarning) if fewer than
+        2 pairs remain or if var_along < var_perp (the noise exceeds the spread of the samples).
 
         Test with:
             import scipy.stats
@@ -55,9 +69,9 @@ def get_positive_paired_CV_alongdiag(x, y):
             print("True underlying CV", get_positive_single_CV(np.exp(log_shares)))
             print("Estimated underlying CV", get_positive_paired_CV_alongdiag(np.exp(log_shares+noisex), np.exp(log_shares+noisey)))
     """
-    x, y = np.array(x), np.array(y)
-    mask = np.isfinite(x) & np.isfinite(y)
-    x, y = x[mask], y[mask]
+    x, y = _positive_pairs(x, y)
+    if len(x) < 2:
+        return _nan_with_warning("get_positive_paired_CV_alongdiag", f"{len(x)} usable pairs (finite, > 0)")
     x, y = np.log(x), np.log(y)
     x, y = np.hstack([x, y]), np.hstack([y, x])
 
@@ -70,14 +84,15 @@ def get_positive_paired_CV_alongdiag(x, y):
     # combined
     variance = (variance_along - variance_ortho)/2
     if variance<0:
-        return np.nan
+        return _nan_with_warning("get_positive_paired_CV_alongdiag", f"variance along the diagonal is below the orthogonal one ({variance:.3g} < 0)")
     CV = np.sqrt(np.exp(variance)-1)
     return CV
 
 def get_positive_single_CV(x):
     """ Get CV of strictly positive data, appropriate for e.g. (strictly positive) proportions or standard deviations.
         Works on standard deviation after log for stability, otherwise the same as simple CV.
-        Returns nan for data <=0
+        Values <= 0 or non-finite are dropped. Uses the sample variance (ddof=1), as the asinh variants.
+        Returns NaN (with a CytovanniWarning) if fewer than 2 values remain.
 
         Test with:
             import scipy.stats
@@ -87,10 +102,12 @@ def get_positive_single_CV(x):
             print("Simple CV", scipy.stats.variation(np.exp(noise))) # naive CV
             print("Stable CV", get_positive_single_CV(np.exp(noise))) # more stable CV
     """
-    x = np.array(x)
-    x = x[np.isfinite(x)]
+    x = np.asarray(x, dtype=float)
+    x = x[np.isfinite(x) & (x>0)]
+    if len(x) < 2:
+        return _nan_with_warning("get_positive_single_CV", f"{len(x)} usable values (finite, > 0)")
     x = np.log(x)
-    variance = x.var()
+    variance = x.var(ddof=1)
     CV = np.sqrt(np.exp(variance)-1) # just std + O(std**2)
     return CV
 
@@ -104,6 +121,18 @@ def get_asinh_paired_CV(x_asinh, y_asinh, f):
         and translates into CV in such a way that it actually is the CV for x>>f.
         For x<f, not actually the CV, but a Gaussian on the asinh-transformed scale that is shifted around yields a roughly constant value,
         that matches the CV if it is shifted to high values.
+
+        Intentional, by design: below the cofactor the value is the additive standard deviation divided by f, not a
+        relative CV (a CV of peaks near zero or negative is meaningless). For the same relative noise, the value
+        therefore grows with the intensity as long as it is below f, and depends on the choice of f there.
+
+        Linearisation: the variance is taken in asinh space over all pairs; the translation to the linear scale uses one
+        point, the pooled mean m (z0 = f*sinh(m)), with the factor sqrt(z0**2+f**2)/max(|z0|, f). That factor lies in
+        [1, sqrt(2)], so a single global point instead of one per pair changes the result by at most a factor sqrt(2)
+        (worst case: pooled mean near f while the pairs lie far above/below it); for pooled means far above or below
+        f it is ~1.
+
+        Non-finite pairs are dropped. Returns NaN (with a CytovanniWarning) if fewer than 2 pairs remain.
         
         chatGPT:
         Much simpler global-linearized noise estimator for arcsinh-transformed replicates.
@@ -128,6 +157,8 @@ def get_asinh_paired_CV(x_asinh, y_asinh, f):
     y = np.asarray(y_asinh)
     mask = np.isfinite(x) & np.isfinite(y)
     x, y = x[mask], y[mask]
+    if len(x) < 2:
+        return _nan_with_warning("get_asinh_paired_CV", f"{len(x)} finite pairs")
     
     # symmetrical pairing
     s1 = np.hstack([x, y])
@@ -149,7 +180,9 @@ def get_asinh_paired_CV(x_asinh, y_asinh, f):
     return std_z / denom
 
 def get_asinh_paired_CV_alongdiag(x_asinh, y_asinh, f):
-    """ get_asinh_paired_CV along the diagonal, with the same correction as in get_positive_paired_CV_alongdiag
+    """ get_asinh_paired_CV along the diagonal, with the same correction as in get_positive_paired_CV_alongdiag.
+        Same cofactor behaviour and global linearisation as get_asinh_paired_CV (see there).
+        Returns NaN (with a CytovanniWarning) if fewer than 2 finite pairs remain or if var_along < var_perp.
 
         Test with:
             import scipy.stats
@@ -166,6 +199,8 @@ def get_asinh_paired_CV_alongdiag(x_asinh, y_asinh, f):
     y = np.asarray(y_asinh)
     mask = np.isfinite(x) & np.isfinite(y)
     x, y = x[mask], y[mask]
+    if len(x) < 2:
+        return _nan_with_warning("get_asinh_paired_CV_alongdiag", f"{len(x)} finite pairs")
     
     # symmetrical pairing
     s1 = np.hstack([x, y])
@@ -181,7 +216,7 @@ def get_asinh_paired_CV_alongdiag(x_asinh, y_asinh, f):
     var_s = (variance_along - variance_ortho)/2
 
     if var_s<0:
-        return np.nan
+        return _nan_with_warning("get_asinh_paired_CV_alongdiag", f"variance along the diagonal is below the orthogonal one ({var_s:.3g} < 0)")
     
     # global mean and derivative
     m_global = np.mean(s1)
@@ -196,6 +231,8 @@ def get_asinh_paired_CV_alongdiag(x_asinh, y_asinh, f):
 
 def get_asinh_single_CV(x_asinh, f):
     """ Same as get_asinh_paired_CV, but using only one x and getting variation around mean.
+        Same cofactor behaviour and global linearisation as get_asinh_paired_CV (see there).
+        Returns NaN (with a CytovanniWarning) if fewer than 2 finite values remain.
     
         Test with:
             import scipy.stats
@@ -211,6 +248,8 @@ def get_asinh_single_CV(x_asinh, f):
 
     x = np.asarray(x_asinh)
     x = x[np.isfinite(x)]
+    if len(x) < 2:
+        return _nan_with_warning("get_asinh_single_CV", f"{len(x)} finite values")
 
     # global mean in asinh space
     m_global = np.mean(x)
@@ -239,6 +278,8 @@ def get_asinh_single_CV(x_asinh, f):
 def get_asinh_paired_CV_varcorr(x_asinh, y_asinh, x_asinh_err, y_asinh_err, f):
     """ Same as get_asinh_paired_CV, but with additional correction.
         If both x and y have inherent error, subtract this variance from observed to get corrected values.
+        If the mean error variance exceeds the observed variance, the corrected variance is clamped to 0 (with a
+        CytovanniWarning), so the result is 0. Returns NaN (with a CytovanniWarning) if fewer than 2 usable pairs remain.
     """
     x = np.asarray(x_asinh)
     y = np.asarray(y_asinh)
@@ -246,6 +287,8 @@ def get_asinh_paired_CV_varcorr(x_asinh, y_asinh, x_asinh_err, y_asinh_err, f):
     y_err = np.asarray(y_asinh_err)
     mask = np.isfinite(x) & np.isfinite(y) & np.isfinite(x_err) & np.isfinite(y_err) & (x_err>0) & (y_err>0)
     x, y, x_err, y_err = x[mask], y[mask], x_err[mask], y_err[mask]
+    if len(x) < 2:
+        return _nan_with_warning("get_asinh_paired_CV_varcorr", f"{len(x)} usable pairs (finite, error > 0)")
     
     # symmetrical pairing
     s1 = np.hstack([x, y])
@@ -257,7 +300,10 @@ def get_asinh_paired_CV_varcorr(x_asinh, y_asinh, x_asinh_err, y_asinh_err, f):
 
     # error variance
     var_s_err = .5 * np.mean(x_err**2 + y_err**2)
-    var_s_corrected = max(var_s - var_s_err, 0)
+    var_s_corrected = var_s - var_s_err
+    if var_s_corrected < 0: # error variance exceeds the observed variance: no measurable spread
+        warnings.warn(f"get_asinh_paired_CV_varcorr: corrected variance is negative ({var_s_corrected:.3g}), clamped to 0 (CV 0).", CytovanniWarning)
+        var_s_corrected = 0.
     
     # global mean and derivative
     m_global = np.mean(s1)
@@ -280,6 +326,8 @@ def get_asinh_single_CV_varcorr(x_asinh, x_asinh_err, f):
     x_err = np.asarray(x_asinh_err)
     mask = np.isfinite(x) & np.isfinite(x_err) & (x_err>0)
     x, x_err = x[mask], x_err[mask]
+    if len(x) < 2:
+        return _nan_with_warning("get_asinh_single_CV_varcorr", f"{len(x)} usable values (finite, error > 0)")
 
     # global mean in asinh space
     m_global = np.mean(x)
