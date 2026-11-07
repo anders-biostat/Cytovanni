@@ -5,7 +5,6 @@ from torch.nn import Module, Parameter, ParameterDict
 import warnings
 import matplotlib.pyplot as plt
 import seaborn as sns
-from tqdm import tqdm
 
 from ..utils import silent_log
 from ..torch import ExtendableParameter
@@ -45,11 +44,11 @@ class RainbowScatterCalibrationModule(Module):
         if scatter_calibration is None:
             scatter_calibration = adatas[0].uns["cytoconfig"].get_default_scatter_calibration()
         else:
-            scatter_calibration = adatas[0].uns["cytoconfig"].check_scatter_calibration(scatter_calibrate)
+            adatas[0].uns["cytoconfig"].check_scatter_calibration(scatter_calibration)
         
         channels = np.asarray(list(scatter_calibration.keys()))
         for ad in adatas:
-            missing = list(channels[~np.in1d(channels, ad.var.index)])
+            missing = list(channels[~np.isin(channels, ad.var.index)])
             if len(missing)>0:
                 raise MissingChannelException(f"Channels {missing} are required to fit the rainbow scatter calibration, but not present in adata!")
         
@@ -130,41 +129,61 @@ class RainbowScatterCalibrationModule(Module):
         
         self.has_training_data = True
     
+    def get_prediction(self):
+        """ Predicted log median per training sample and channel: bead type position plus batch shift.
+        """
+        return self.param_logposition()[self.data_type_idx] + self.param_logshift()[self.data_batch_idx]
+    
     def get_loss(self, weighted=True):
         """ Get loss. Simply the mean squared error between medians in batch and prediction, weighted by sqrt(N).
         """
-        prediction = self.param_logposition()[self.data_type_idx] + self.param_logshift()[self.data_batch_idx]
-        diff = (prediction - self.data_logmedian).square()
+        diff = (self.get_prediction() - self.data_logmedian).square()
         loss = ((self.data_sqrtN[:,None] if weighted else 1.) * diff).mean()
         return loss
     
-    def fit(self, Niter=3000, lr=5e-3, showprogress=False, minloss=1e-8):
-        """ Fit self.
+    def fit(self):
+        """ Fit self by solving the weighted least squares problem of get_loss in closed form.
             Automatically freezes all parameters afterwards.
             
-            :param Niter: int. Number of iterations.
+            The prediction is affine in the trainable entries of both ExtendableParameters (position plus batch shift,
+            the shift mean-normed over param_mask_meannorm, frozen entries constant), and the channels are independent,
+            so the exact solution is one weighted linear least squares solve per channel. Among the solutions (the
+            problem is degenerate, e.g. a common shift of all normed batch shifts), the one closest to the current
+            values is chosen, which is the point that gradient descent from these values converges to.
             
-            :param lr: float. Learning rate.
-            
-            :param showprogress: bool. Whether to show progress bar for fit.
-            
-            :param minloss: float. Minimal loss at which to stop fitting for numerical reasons.
+            self.losshistory holds the loss before and after the fit.
         """
         if not self.has_training_data:
             raise CalibrationModuleException("RainbowScatterCalibrationModule needs training data for the fit!")
+        if not torch.isfinite(self.data_logmedian).all():
+            raise CalibrationModuleException("Non-finite medians in the training data of RainbowScatterCalibrationModule!")
         
-        optimizer = torch.optim.SGD(self.parameters(), lr=lr, momentum=.5)
-        self.losshistory = []
-
-        fshow = tqdm if showprogress else (lambda x, **kwargs: x)
-        for i in fshow(range(Niter), mininterval=1):
-            optimizer.zero_grad()
-            loss = self.get_loss()
-            loss.backward()
-            optimizer.step()
-            self.losshistory.append({"mse":loss.item()})
-            if loss.item()<minloss:
-                break
+        self.losshistory = [{"mse":self.get_loss().item()}]
+        
+        pos, shift = self.param_logposition, self.param_logshift
+        tidx, bidx = self.data_type_idx.numpy(), self.data_batch_idx.numpy()
+        sqrtw = self.data_sqrtN.sqrt().numpy().astype(np.float64)
+        with torch.no_grad():
+            residual = (self.get_prediction() - self.data_logmedian).numpy().astype(np.float64)
+        mask_pos = pos.param_mask_trainable.data.numpy()!=0
+        mask_shift = shift.param_mask_trainable.data.numpy()!=0
+        meannorm = shift.param_mask_meannorm.data.numpy()
+        delta_pos, delta_shift = np.zeros(mask_pos.shape), np.zeros(mask_shift.shape)
+        # channels are independent; columns: trainable type positions, trainable (raw, before mean norm) batch shifts
+        for c in range(residual.shape[1]):
+            types, batches = np.where(mask_pos[:,c])[0], np.where(mask_shift[:,c])[0]
+            if len(types)+len(batches)==0:
+                continue
+            J_pos = (tidx[:,None]==types[None]).astype(np.float64)
+            J_shift = (bidx[:,None]==batches[None]) - meannorm[batches,c][None] / meannorm[:,c].sum()
+            J = np.concatenate([J_pos, J_shift], axis=1) * sqrtw[:,None]
+            delta = np.linalg.lstsq(J, -sqrtw * residual[:,c], rcond=None)[0]
+            delta_pos[types,c], delta_shift[batches,c] = delta[:len(types)], delta[len(types):]
+        if not (np.all(np.isfinite(delta_pos)) and np.all(np.isfinite(delta_shift))):
+            raise CalibrationModuleException("RainbowScatterCalibrationModule fit gave non-finite parameters!")
+        for param, delta in [(pos, delta_pos), (shift, delta_shift)]:
+            param.param_trainable.data += torch.as_tensor(delta, dtype=torch.float32)
+        self.losshistory.append({"mse":self.get_loss().item()})
         
         self.is_trained = True
         self.freeze()
@@ -180,13 +199,14 @@ class RainbowScatterCalibrationModule(Module):
         fig, ax = plt.subplots(1,1+Nc,figsize=(6*(1+Nc),5))
         
         history = pd.DataFrame(self.losshistory)
-        ax[0].plot(history["mse"], label="MSE")
+        ax[0].plot(history["mse"], marker="o", label="MSE")
         ax[0].set_yscale("log")
-        ax[0].set_xlabel("Optimizer Step", size=15)
+        ax[0].set_xticks([0, 1], ["initial", "fitted"])
+        ax[0].set_xlabel("Fit", size=15)
         ax[0].set_ylabel("Losses", size=15)
         ax[0].legend(prop={'size': 15})
         
-        prediction = (self.param_logposition()[self.data_type_idx] + self.param_logshift()[self.data_batch_idx]).detach().exp().numpy()
+        prediction = self.get_prediction().detach().exp().numpy()
         real = self.data_logmedian.exp().numpy()
         for tp in self.data_type_idx.unique():
             mask = self.data_type_idx==tp
@@ -221,7 +241,7 @@ class RainbowScatterCalibrationModule(Module):
             # if there are overlapping batches for the new type with the old trained ones, everything works
             if len(batch_overlap)==0:
                 # Otherwise check that there are already trained types in the new data that have some batch overlap with the new types
-                otheroverlap = (np.in1d(df["rainbow_type"], initial_types) & np.in1d(df["rainbow_batch"], batches)).sum()
+                otheroverlap = (np.isin(df["rainbow_type"], initial_types) & np.isin(df["rainbow_batch"], batches)).sum()
                 if otheroverlap==0:
                     new_orphan_types.append(tp)
         if len(new_orphan_types)>0:

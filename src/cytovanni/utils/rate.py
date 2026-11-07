@@ -2,7 +2,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 class EventRateEstimator():
-    """ Estimates overall event rate from event times.
+    r""" Estimates overall event rate from event times.
         
         Events come from a Poisson point process (with a maximal rate due to doublet generation etc.),
         so the time differences follow an exponential distribution with:

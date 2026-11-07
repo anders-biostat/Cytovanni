@@ -47,7 +47,7 @@ def apply_unmixing_inv(inv_spectra, x):
         :param x: pd.DataFrame. DataFrame where the columns match the channel names in the spectra, and the index labels different events.
     """
     if not isinstance(inv_spectra, pd.DataFrame):
-        raise ValueError(f"Pass spectra as pandas DataFrame! Passed type is {type(spectra)}.")
+        raise ValueError(f"Pass inverted spectra as pandas DataFrame! Passed type is {type(inv_spectra)}.")
     if not isinstance(x, pd.DataFrame):
         raise ValueError(f"Pass fluorescence data as pandas DataFrame! Passed type is {type(x)}.")
     return x[inv_spectra.index] @ inv_spectra
@@ -71,7 +71,7 @@ def apply_unmixing_lstsq(spectra, x):
     return pd.DataFrame(unmx, index=x.index, columns=spectra.index)
 
 
-def add_adata_unmixed(adata, spectra, addkey="unmx", layer="raw", add_arcsinh=True, arcsinh_cofactor=1500):
+def add_adata_unmixed(adata, spectra, addkey="unmx", layer="calibrated", add_arcsinh=True, arcsinh_cofactor=1500):
     """ Add unmixed data to adata.obsm, using single stains in spectra.
         Mixed fluorescence intensity is taken from layer.
         
@@ -81,13 +81,13 @@ def add_adata_unmixed(adata, spectra, addkey="unmx", layer="raw", add_arcsinh=Tr
         
         :param addkey: str. Unmixed data is added to adata.obsm[addkey].
         
-        :param layer: str. Raw data is taken from adata.layer[layer].
+        :param layer: str. Mixed (per-channel) data is taken from adata.layers[layer]. Default "calibrated".
         
         :param add_arcsinh: bool. If True, also add arcsinh transformed data to adata.obsm['addkey'_arcsinh].
         
         :param arcsinh_cofactor: float. Cofactor for ArcSinh.
     """
-    x = adata[:,spectra.columns].to_df(layer="calibrated")
+    x = adata[:,spectra.columns].to_df(layer=layer)
     adata.obsm[addkey] = apply_unmixing_inv(invert_spectra(spectra), x)
     if add_arcsinh:
         adata.obsm[addkey+"_arcsinh"] = apply_arcsinh(adata.obsm[addkey], cofactor=arcsinh_cofactor)

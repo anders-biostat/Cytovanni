@@ -14,7 +14,7 @@ from .unmx import invert_spectra, apply_unmixing_inv, apply_unmixing_lstsq
 from .unmx import add_adata_unmixed
 from .unmx import unmixed_cluster_means
 
-from .config import CytometerConfiguration
+from .config import CytometerConfiguration, register_hash_function
 from .config import CytometerConfiguration_A3, CytometerConfiguration_A3small, CytometerConfiguration_S6, CytometerConfiguration_S8
 from .config import CytometerConfiguration_FACSAriaIII, CytometerConfiguration_FACSAriaIII_v2
 from .config import CytometerConfiguration_FACSAriaFusion, CytometerConfiguration_FACSAriaFusion_v2

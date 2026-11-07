@@ -18,7 +18,7 @@ license = { file = "LICENSE" }
 requires-python = ">=3.10"
 dependencies = [
     "numpy",
-    "pandas",
+    "pandas<3",  # pandas 3 (copy-on-write) not yet tested, see FIXLOG R2-C15
     "torch",
     "anndata",
     "flowkit",
@@ -28,6 +28,8 @@ dependencies = [
     "seaborn",
     "scipy",
     "scikit-learn",
+    "joblib",
+    "tzdata",  # zoneinfo data for CytometerConfiguration.timezone, see FIXLOG R2-F1
     "statsmodels",
     "tqdm",
     "Pillow",

@@ -14,7 +14,5 @@ def read_bead_h5ad(filepath):
         Process cytometry configuration.
     """
     adata = anndata.read_h5ad(filepath)
-    cytoconfig = CytometerConfiguration([])
-    cytoconfig.import_exported(adata.uns["cytoconfig"])
-    adata.uns["cytoconfig"] = cytoconfig
+    adata.uns["cytoconfig"] = CytometerConfiguration.from_exported(adata.uns["cytoconfig"])
     return adata

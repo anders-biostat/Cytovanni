@@ -1,6 +1,7 @@
 import numpy as np
 import pandas as pd
 import torch
+import warnings
 from torch.nn import Module, Parameter, ParameterDict
 import matplotlib
 import matplotlib.pyplot as plt
@@ -149,6 +150,8 @@ class ScaleFactor(Module):
             sl = (slice(None) if bidx is None else bidx,
                   slice(None) if cidx is None else cidx)
         self.parameter.add_to_fixed(values, sl=sl)
+        if self.max_abs_value is not None and (self.parameter().detach().abs() > self.max_abs_value).any():
+            warnings.warn(f"Log scale exceeds max_abs_value={self.max_abs_value} after adding values, it is clipped!", OverlapStandardisationWarning)
     
     def forward(self):
         if self.max_abs_value is None:
@@ -558,7 +561,7 @@ class SpectralFitTransformer(Module):
         spectra = pd.DataFrame(self.pem.get_spectra(bidx).detach().cpu().numpy()[0].T, index=self.channels,
                                columns=self.stain_marker_name if label_include_stain else self.pem.markers)
         
-        spectra_inv = invert_spectra(spectra).T
+        spectra_inv = invert_spectra(spectra.T) # spectra is (channel, stain), invert_spectra takes (stain, channel)
         unmx_int_matrix = channelscale.to_numpy()[:,None] * spectra_inv * stainscale.to_numpy()[None]
         
         spectra_embedding = self.pem(bidx, mask_unused=True)[:,0].detach().cpu().numpy()
@@ -580,11 +583,8 @@ class SpectralFitTransformer(Module):
         adata.var["sfm_calibration_factor"] = np.nan
         adata.var.loc[channelscale.index, "sfm_calibration_factor"] = channelscale
 
-        for c in adata.var.index[~np.isin(adata.var.index,spectra.index)]:
-            spectra.loc[c] = np.nan
-            unmx_int_matrix.loc[c] = 0.
-        adata.varm["sfm_spectra"] = spectra.loc[adata.var.index]
-        adata.varm["sfm_standardise_unmx"] = unmx_int_matrix.loc[adata.var.index]
+        adata.varm["sfm_spectra"] = spectra.reindex(adata.var.index)
+        adata.varm["sfm_standardise_unmx"] = unmx_int_matrix.reindex(adata.var.index, fill_value=0.)
         if rbint_key in adata.var:
             adata.varm["rb_sfm_standardise_unmx"] = adata.var[rbint_key].fillna(0).to_numpy()[:,None] * adata.varm["sfm_standardise_unmx"]
 
@@ -618,7 +618,7 @@ class ScalingTransformer(Module):
         if np.any(self.config["scale_stains"]):
             self.plot_auxloss_dct.update({"l1_stainlogscale":  "L1 Stain Scale"})
         else:
-            warnings.warn("ScalingTransformer has no stains that get scaled! Creating the model still works, but fitting will not!")
+            warnings.warn("ScalingTransformer has no stains that get scaled! Creating the model still works, but fitting will not!", OverlapStandardisationWarning)
         
         self.paramhistory = {"stainlogscale":[]}
         
@@ -641,12 +641,10 @@ class ScalingTransformer(Module):
             E.g. {"a":0} sets scaling to one for batch 0 in "a". 
         """
         if self.config["key_scale_stains"] in anchor_bidx:
-            #self.param_stainscale.anchor_bidx(anchor_bidx[self.config["key_scale_stains"]])
-            try:
-                idx = int(anchor_bidx[self.config["key_scale_stains"]])
-                self.anchor_idx = [idx]
-            except:
-                raise ValueError(f"Trying to anchor {anchor_bidx[self.config['key_scale_stains']]}, but this transformer only supports anchoring a single batch!")
+            idx = np.atleast_1d(anchor_bidx[self.config["key_scale_stains"]])
+            if idx.shape!=(1,) or not np.issubdtype(idx.dtype, np.integer):
+                raise ValueError(f"Trying to anchor {anchor_bidx[self.config['key_scale_stains']]}, but this transformer only supports anchoring a single batch index (int or list of one int)!")
+            self.anchor_idx = [int(idx[0])]
 
     def add_stain_logscale_toself(self, logscale):
         """ Add different stain logscale to self.
@@ -688,7 +686,7 @@ class ScalingTransformer(Module):
             
             :param max_abslogstain: None, float. If not None, log of stain scale factor is clipped to +- this.
             
-            :params anchor_bidx: dict. Anchor all batch indices in dict to not be trainable. E.g. {"a":[0,1]} disables training for all parameters associated with indices [0,1] in batch "a"; also passes this through to pem.
+            :params anchor_bidx: dict. Anchor the stain scaling to one batch, e.g. {"batch":0} or {"batch":[0]} scales all stains relative to batch index 0 of key_scale_stains. Only a single batch can be anchored.
         """
         pem = FixedPanelModule.from_data(panel_spectra)
         
@@ -855,7 +853,7 @@ class ScalingTransformer(Module):
         spectra = pd.DataFrame(self.pem.get_spectra(bidx).detach().cpu().numpy().T, index=self.channels,
                                columns=self.stain_marker_name if label_include_stain else self.pem.markers)
         
-        spectra_inv = invert_spectra(spectra).T
+        spectra_inv = invert_spectra(spectra.T) # spectra is (channel, stain), invert_spectra takes (stain, channel)
         unmx_int_matrix = spectra_inv * stainscale.to_numpy()[None]
         
         return stainscale, spectra, unmx_int_matrix
@@ -869,12 +867,9 @@ class ScalingTransformer(Module):
         """
         stainscale, spectra, unmx_int_matrix = self.get_standardisationparams_fromad(adata, label_include_stain=label_include_stain)
 
-        for c in adata.var.index[~np.isin(adata.var.index, spectra.index)]:
-            spectra.loc[c] = np.nan
-            unmx_int_matrix.loc[c] = 0.
-        adata.varm["sfm_spectra"] = spectra.loc[adata.var.index]
-        adata.varm["sfm_standardise_unmx"] = unmx_int_matrix.loc[adata.var.index]
+        adata.varm["sfm_spectra"] = spectra.reindex(adata.var.index)
+        adata.varm["sfm_standardise_unmx"] = unmx_int_matrix.reindex(adata.var.index, fill_value=0.)
 
-        #stainscale_ext = pd.DataFrame(np.repeat([stainscale],adata.shape[1], axis=0), columns=stainscale.index, index=adata.var.index)
-        adata.var["sfm_stain_factor"] = stainscale
+        stainscale_ext = pd.DataFrame(np.repeat([stainscale],adata.shape[1], axis=0), columns=stainscale.index, index=adata.var.index)
+        adata.varm["sfm_stain_factor"] = stainscale_ext
 

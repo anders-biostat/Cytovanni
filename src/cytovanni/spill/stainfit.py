@@ -14,6 +14,7 @@ from pathlib import Path
 import torch
 from torch.nn import Module, Parameter
 import torch.nn.functional as F
+from tqdm import tqdm
 
 from ..exceptions import SpilloverFitWarning
 from ..utils import unrolled_subplots, get_cmap, cmap_to_legendhandles
@@ -224,6 +225,11 @@ class OutliersafeLinearSingleStainSpectrumFit(LinearSingleStainSpectrumFit):
         self.filter_outlier()
         self.fit()
     
+    def _lof_n_neighbors(self):
+        """ Number of neighbours for LocalOutlierFactor: N_events // neighbors_factor, at least 5.
+        """
+        return max(self.adata.shape[0]//self.neighbors_factor, 5)
+    
     def filter_outlier(self):
         """ Filter outliers based on sklearn LocalOutlierFactor on z-normed data, as well as only on the main channel.
         """
@@ -234,9 +240,9 @@ class OutliersafeLinearSingleStainSpectrumFit(LinearSingleStainSpectrumFit):
         mean, std = y_clipped.mean(0, keepdims=True), y_clipped.std(0, keepdims=True)
         y = (y - mean) / std
         
-        lof = LocalOutlierFactor(n_neighbors=self.adata.shape[0]//self.neighbors_factor)
+        lof = LocalOutlierFactor(n_neighbors=self._lof_n_neighbors())
         mask = lof.fit_predict(y)==1
-        lof = LocalOutlierFactor(n_neighbors=self.adata.shape[0]//self.neighbors_factor)
+        lof = LocalOutlierFactor(n_neighbors=self._lof_n_neighbors())
         mask = mask & (lof.fit_predict(x)==1)
         if mask.mean()<1-self.WARN_OUTLIER_SHARE:
             warnings.warn(f"Detected outlier fraction is {1-mask.mean():.3f} for {self.dye}!", SpilloverFitWarning)
@@ -252,7 +258,7 @@ class OutliersafeLinearSingleStainSpectrumFit(LinearSingleStainSpectrumFit):
         residuals = residuals[:,np.arange(residuals.shape[1])!=self.channels.index(self.stain)]
         residuals = (residuals - residuals.mean(0, keepdims=True)) / residuals.std(0, keepdims=True)
         
-        lof = LocalOutlierFactor(n_neighbors=self.adata.shape[0]//self.neighbors_factor)
+        lof = LocalOutlierFactor(n_neighbors=self._lof_n_neighbors())
         mask = lof.fit_predict(residuals)==1
         if mask.mean()<1-self.WARN_OUTLIER_SHARE:
             warnings.warn(f"Detected outlier fraction is {1-mask.mean():.3f} for {self.dye}!", SpilloverFitWarning)
@@ -438,7 +444,11 @@ class OutliersafeTorchSingleStainSpectrumFit(OutliersafeLinearSingleStainSpectru
         self.tsfitter = TorchSpectrumFitter(self.adata[:,self.channels].layers["raw"], self.channels, device=self.device)
         self.tsfitter.fit()
         spectrum = self.tsfitter.spectrum.detach().cpu().numpy()
-        self.spectrum["slope"] = spectrum/spectrum[self.channels.index(self.stain)]
+        offset = self.tsfitter.offset.detach().cpu().numpy()
+        istain = self.channels.index(self.stain)
+        self.spectrum["slope"] = spectrum/spectrum[istain]
+        # intercept of each channel against the stain channel (as in the other fits): offset_c - slope_c * offset_stain
+        self.spectrum["intercept"] = offset - self.spectrum["slope"].to_numpy() * offset[istain]
     
 
 class PosNegSingleStainSpectrumFit(SingleStainSpectrumFitBase):

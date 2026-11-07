@@ -28,22 +28,37 @@ class GeomSampleLoss(Module):
         if mode=="sinkhorn":
             self.loss = geomloss.SamplesLoss(loss="sinkhorn", p=2, blur=blur, reach=reach, scaling=scaling, backend="tensorized")
         elif mode=="hausdorff":
+            try: # submodule, not loaded by `import geomloss`; moved to geomloss._legacy in geomloss 0.3
+                from geomloss.kernel_samples import gaussian_kernel
+            except ImportError:
+                from geomloss._legacy.kernel_samples import gaussian_kernel
             # not sure why this needs a kernel and sinkhorn doesn't, just use Gaussian
-            self.loss = geomloss.SamplesLoss(loss="hausdorff", p=2, blur=blur, reach=reach, scaling=scaling, backend="tensorized", kernel=geomloss.kernel_samples.gaussian_kernel)
+            self.loss = geomloss.SamplesLoss(loss="hausdorff", p=2, blur=blur, reach=reach, scaling=scaling, backend="tensorized", kernel=gaussian_kernel)
         else:
-            raise NotImplemented(f"GeomSampleLoss {mode} is not available!")
+            raise NotImplementedError(f"GeomSampleLoss {mode} is not available!")
         
         
 
     def forward(self, X, Y, wx=None, wy=None):
-        """ SampleLoss.forward has weird syntax.
+        """ Loss between the point clouds X (N, D) and Y (M, D) (or batched, (B, N, D)), optionally with per-event weights.
 
-            Weights should be normalized to one, but this is not enforced here!
-            Make sure you check this beforehand wherever the weights come form.
+            geomloss with finite `reach` is unbalanced, so the total mass matters. Each weight vector is therefore
+            normalised to sum 1 here (e.g. RareMarkerWeights sums to N, which is right for MMD but not for this loss).
+            A missing side (None) gets uniform weights 1/N; with both None this is the unweighted loss.
+
+            :param wx: tensor (N,) (batched: (B, N)) or None. Non-negative weights of X.
+            :param wy: tensor (M,) (batched: (B, M)) or None. Non-negative weights of Y.
         """
-        if wx is None or wy is None:
+        if wx is None and wy is None:
             return self.loss(X, Y)
-        else:
-            return self.loss(wx, X, wy, Y)
-                
-            
+        wx = self._normalised_weights(wx, X)
+        wy = self._normalised_weights(wy, Y)
+        return self.loss(wx, X, wy, Y)
+
+    @staticmethod
+    def _normalised_weights(w, X):
+        """ Weights normalised to sum 1 over the events (last axis; also for batched input X (B, N, D), w (B, N)). """
+        if w is None:
+            return torch.full(X.shape[:-1], 1. / X.shape[-2], dtype=X.dtype, device=X.device)
+        w = w.to(dtype=X.dtype)
+        return w / w.sum(dim=-1, keepdim=True)

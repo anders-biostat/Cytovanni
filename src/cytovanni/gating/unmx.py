@@ -20,6 +20,13 @@ class CutoffUnmxGate():
             return x>=self.xcutoff
         else:
             return x<=self.xcutoff
+
+    def apply_df(self, df):
+        """ Apply the gate to a DataFrame of unmixed data (what ad.obsm[key] holds, columns are markers).
+            Returns a boolean array.
+        """
+        x = df[self.x].to_numpy()
+        return x>=self.xcutoff if self.above else x<=self.xcutoff
     
     def plot_adata(self, adata, ax=None, **kwargs):
         if ax is None:
@@ -49,6 +56,12 @@ class UnmxMinGate():
         if addkey:
             ad.obs[addkey] = mask
         return mask
+
+    def apply_df(self, df):
+        """ Apply the gate to a DataFrame of unmixed data (what ad.obsm[key_unmx] holds, columns are markers).
+            Returns a boolean array.
+        """
+        return np.any(np.asarray(df)>self.cutoff, axis=1)
     
     def plot_adata(self, adata, ax=None, **kwargs):
         if ax is None:

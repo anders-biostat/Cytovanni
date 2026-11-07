@@ -200,21 +200,24 @@ def _pad_masks(mask_list):
 
 def calculate_batched_eccentricity_angle(mask_list, pixel_aspect_ratio=S8_PIXEL_HEIGHT_RATIO):
     """
-    Fast vectorized version - processes coordinates, not full grids.
+    Fast vectorized version of calculate_single_eccentricity_angle for a list of masks; gives the same results.
     
     Parameters:
-    mask_list: list of boolean masks
+    mask_list: list of 2D boolean masks, same width, heights may differ
+    
+    Returns arrays (eccentricity, angle), NaN where a mask touches its own boundary (cell cut off).
     """
+    heights = np.asarray([m.shape[0] for m in mask_list])
     masks = _pad_masks(mask_list)
     
     n_masks = masks.shape[0]
     eccentricities = np.full(n_masks, np.nan)
     angles = np.full(n_masks, np.nan)
     
-    # Check boundaries
+    # Check boundaries; the bottom edge is each mask's own last row, not the last row of the padded array
     touches_boundary = (
         masks[:, 0, :].any(axis=1) | 
-        masks[:, -1, :].any(axis=1) | 
+        masks[np.arange(n_masks), heights-1, :].any(axis=1) | 
         masks[:, :, 0].any(axis=1) | 
         masks[:, :, -1].any(axis=1)
     )
@@ -270,6 +273,18 @@ def calculate_batched_eccentricity_angle(mask_list, pixel_aspect_ratio=S8_PIXEL_
     return eccentricities, angles
 
 def add_S8_singlet_maskfeatures(ad, imgcont, pixel_aspect_ratio=S8_PIXEL_HEIGHT_RATIO):
+    """ Add size and shape features of singlet cells (S8 image segmentation) to ad.obs: 'cell_crosssection',
+        'cell_volume', 'cell_diameter', 'cell_surface', 'cell_eccentricity', 'cell_deformangle' (NaN unless
+        ad.obs['seg_cell_count']==1; eccentricity/angle also NaN for cells cut off at the image boundary).
+
+        :param ad: AnnData. S8 events with ad.obs['seg_cell_totsize'] and ad.obs['seg_cell_count'].
+
+        :param imgcont: image container, duck-typed and not part of this package: any object with
+            load_masks_batched(index) returning a list of 2D boolean cell masks in the order of index, such as the
+            ImageContainer of arges (cytovanni.arges.imgh5 in the full version).
+
+        :param pixel_aspect_ratio: float. Pixel height/width, see calculate_single_eccentricity_angle.
+    """
     ad.obs["cell_crosssection"] = ad.obs["seg_cell_totsize"] * S8_PIXEL_AREA
     ad.obs.loc[ad.obs["seg_cell_count"]!=1, "cell_crosssection"] = np.nan # mask everything except singlets
     

@@ -8,7 +8,9 @@ import anndata
 import dateutil.parser
 import warnings
 import hashlib
+from zoneinfo import ZoneInfo
 
+from ..utils.config import DEFAULT_TIMEZONE
 from ..exceptions import ChannelMismatchException, RainbowSpilloverWarning, ChannelMismatchWarning
 
 def _access_lowercase_df(df, keys):
@@ -141,10 +143,19 @@ def readfcs_autospectral_spill(filepath):
         return None
 
 
+def _fcs_utc(date, btim, timezone):
+    """ Seconds since the epoch (true UTC) of the .fcs $DATE and $BTIM, which are local time of the instrument.
+        They are interpreted in `timezone` (IANA name), independent of the time zone of the reading machine.
+    """
+    dt = dateutil.parser.parse(date+"-"+btim)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=ZoneInfo(timezone))
+    return dt.timestamp()
+
 def _replace_channel_name(channel, cytoconfig):
     return cytoconfig.replace_channelname_dict[channel] if channel in cytoconfig.replace_channelname_dict else channel
 
-def readfcs_sample(filepath, cytoconfig, metadct={}, gates=[], print_gates=False, warn_spillover=False, warn_spillover_message="Non-trivial spillover matrix!", fct_fix_df=lambda df: df, allow_missing_scatter=True):
+def readfcs_sample(filepath, cytoconfig, metadct=None, gates=None, print_gates=False, warn_spillover=False, warn_spillover_message="Non-trivial spillover matrix!", fct_fix_df=lambda df: df, allow_missing_scatter=True):
     """ Read a single sample from an .fcs file into an AnnData object.
         Based on FlowKit so we don't need to maintain reading code.
         
@@ -163,7 +174,13 @@ def readfcs_sample(filepath, cytoconfig, metadct={}, gates=[], print_gates=False
         :param fct_fix_df: function.
 
         :param allow_missing_scatter: bool. If True, only warn if scatter channels are missing instead of throwing an error.
+
+        adata.uns['UTC'] is the start of the recording ($DATE, $BTIM) in seconds since the epoch, with the .fcs time
+        read as local time in cytoconfig.timezone; adata.uns['uid'] is '<cytometer>-<int(UTC)>' (or a hash of the
+        file path if the time is not available).
     """
+    metadct = {} if metadct is None else metadct
+    gates = [] if gates is None else gates
     sample = fk.Sample(filepath, preprocess=False)
     sample.channels["pnn"] = _access_lowercase_df_single(sample.channels, "pnn").apply(lambda channel: _replace_channel_name(channel, cytoconfig))
     
@@ -226,7 +243,7 @@ def readfcs_sample(filepath, cytoconfig, metadct={}, gates=[], print_gates=False
         except Exception:
             adata.uns["date"] = sample.metadata["date"]
         try: # Try getting UTC
-            adata.uns["UTC"] = dateutil.parser.parse(sample.metadata["date"]+"-"+sample.metadata["btim"]).timestamp()
+            adata.uns["UTC"] = _fcs_utc(sample.metadata["date"], sample.metadata["btim"], cytoconfig.timezone)
         except Exception:
             adata.uns["UTC"] = np.nan
     else:
@@ -254,22 +271,31 @@ def readfcs_sample(filepath, cytoconfig, metadct={}, gates=[], print_gates=False
     return adata
 
 
-def read_fcs_timestamp(filepath):
+def read_fcs_timestamp(filepath, timezone=DEFAULT_TIMEZONE):
     """ Read date and recording time from .fcs file if available.
+
+        :param timezone: str. IANA time zone of the instrument clock, used to convert $DATE/$BTIM to 'UTC'
+            (seconds since the epoch), see CytometerConfiguration.timezone.
     """
     data = flowio.FlowData(filepath, only_text=True)
     date = data.text["date"] if "date" in data.text else ""
     btim = data.text["btim"] if "btim" in data.text else np.nan
     etim = data.text["etim"] if "etim" in data.text else np.nan
-    utc = dateutil.parser.parse(date+"-"+btim).timestamp() if (date and btim==btim) else np.nan
+    utc = _fcs_utc(date, btim, timezone) if (date and btim==btim) else np.nan
     return pd.Series([date, btim, etim, utc], index=["date", "begin_record", "end_record", "UTC"])
 
-def read_folder_timestamps(folder, cytoconfig=None):
+def read_folder_timestamps(folder, cytoconfig=None, timezone=None):
     """ Read date and recording time for all .fcs files in folder.
         If cytoconfig is given, also reads the settings hash.
+
+        :param timezone: str. Optional, IANA time zone of the instrument clock. Defaults to cytoconfig.timezone if
+            cytoconfig is given, else 'Europe/Berlin'.
     """
+    if timezone is None:
+        timezone = cytoconfig.timezone if cytoconfig is not None else DEFAULT_TIMEZONE
     files = list(filter(lambda x: x.endswith(".fcs"), os.listdir(folder)))
-    tps = pd.DataFrame([read_fcs_timestamp(os.path.join(folder, file)) for file in files], index=files)
+    tps = pd.DataFrame([read_fcs_timestamp(os.path.join(folder, file), timezone=timezone) for file in files], index=files,
+                       columns=["date", "begin_record", "end_record", "UTC"])
     if cytoconfig is not None:
         def safe_hash(file):
             try:
@@ -294,7 +320,7 @@ def fix_A3_HW_bug(df):
     return df
 
 
-def writefcs(filepath, data_df, sample_id="", add_metadata={}, overwrite_pns=True, pns=None):
+def writefcs(filepath, data_df, sample_id="", add_metadata=None, overwrite_pns=True, pns=None):
     """ Export pd.DataFrame as .fcs file. Automatically creates the necessary folder structure.
 
         :param filepath: str. Path to newly created file, should end in .fcs.
@@ -307,7 +333,7 @@ def writefcs(filepath, data_df, sample_id="", add_metadata={}, overwrite_pns=Tru
     Path(os.path.dirname(filepath)).mkdir(parents=True, exist_ok=True)
     
     sample = fk.Sample(data_df, sample_id=sample_id)
-    sample.metadata.update(add_metadata)
+    sample.metadata.update({} if add_metadata is None else add_metadata)
     if overwrite_pns:
         sample.pns_labels = sample.pnn_labels if pns is None else pns
     sample.export(filepath, source="raw", include_metadata=True)
@@ -318,9 +344,9 @@ def fix_sample_bug(filepath, filepath_new, fct_bugfix, delete_spill=True):
     data_df.columns = data_df.columns.get_level_values(0)
     data_df = fct_bugfix(data_df)
     add_metadata = sample.metadata
-    if delete_spill:
-        if "spill" in add_metadata:
-            del add_metadata["spill"]
+    if delete_spill: # flowkit stores $SPILL as 'spill' and $SPILLOVER as 'spillover'
+        for key in ["spill", "spillover"]:
+            add_metadata.pop(key, None)
     writefcs(filepath_new, data_df, sample_id="", add_metadata=add_metadata, overwrite_pns=False)
 
 def readfcs_dataframe(filepath):

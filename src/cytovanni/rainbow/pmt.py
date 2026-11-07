@@ -18,28 +18,46 @@ class PMTExponentFitter():
         else:
             return np.ones_like(self.df_voltage[channel])
     
-    def fit_single(self, channel, plot=False):
+    def _xdata(self, channel, drop_invalid=True):
+        """ Log voltage and log laser intensity (shape (2, N)) and logshift of channel, optionally restricted to valid rows.
+        """
         logshift, voltage, intensity = self.df_logshift[channel], self.df_voltage[channel], self.get_intensity(channel)
-        mask = (logshift==logshift) & (voltage>0) & (intensity>0)
-        logshift, voltage, intensity = logshift[mask], voltage[mask], intensity[mask]
-        xdata = np.log(np.stack([voltage, intensity]))
-        ydata = logshift
+        if drop_invalid:
+            mask = (logshift==logshift) & (voltage>0) & (intensity>0)
+            logshift, voltage, intensity = logshift[mask], voltage[mask], intensity[mask]
+            return np.log(np.stack([voltage, intensity])), logshift
+        return silent_log(np.stack([voltage, intensity])), logshift
+    
+    def _slope_LAS(self, slope_LAS):
+        """ Laser exponent used by the model: fitted, or fixed to 1 if not fit_laser_exponent.
+        """
+        return slope_LAS if self.fit_laser_exponent else 1.
+    
+    def _combinex(self, xdata, intercept, slope_PMT, slope_LAS):
+        """ Model without intercept: log voltage * PMT exponent + log intensity * laser exponent.
+        """
+        return xdata[0] * slope_PMT + xdata[1] * self._slope_LAS(slope_LAS)
+    
+    def fit_single(self, channel, plot=False):
+        """ Fit logshift = intercept + exponent_PMT * log(voltage) + exponent_LAS * log(intensity) for one channel.
+            Returns [intercept, exponent_PMT, exponent_LAS], all nan if the channel has fewer than two distinct voltages.
+            exponent_LAS stays at its start value 1 if not fit_laser_exponent.
+        """
+        xdata, ydata = self._xdata(channel)
         
-        if np.unique(voltage).shape[0]<=1:
+        if np.unique(xdata[0]).shape[0]<=1:
             printwtime(f"Not enough different values to fit exponent for channel {channel}!")
-            return [0.,1.]
+            return [np.nan, np.nan, np.nan]
 
         def fitfunct(xdata, intercept, slope_PMT, slope_LAS):
-            """ param [intercept, slope_PMT, slope_LAS]
-            """
-            return xdata[0] * slope_PMT + intercept + xdata[1] * (slope_LAS if self.fit_laser_exponent else 1.)
-        def combinexfct(xdata, intercept, slope_PMT, slope_LAS):
-            return xdata[0] * slope_PMT + xdata[1] * slope_LAS
+            return intercept + self._combinex(xdata, intercept, slope_PMT, slope_LAS)
 
         params = scipy.optimize.curve_fit(fitfunct, xdata, ydata, p0=[0,10,1])[0]
+        if not self.fit_laser_exponent:
+            params[2] = 1.
 
         if plot:
-            sns.regplot(x=combinexfct(xdata, *params), y=ydata)
+            sns.regplot(x=self._combinex(xdata, *params), y=ydata)
             plt.xlabel("logshift")
             plt.show()
 
@@ -50,21 +68,14 @@ class PMTExponentFitter():
         self.parameters = pd.DataFrame(np.asarray(params), columns=["intercept","exponent_PMT","exponent_LAS"], index=self.channels)
     
     def plot_exponents(self):
-        sns.scatterplot(x=self.parameters["exponent"], y=self.parameters["exponent"].index)
+        sns.scatterplot(x=self.parameters["exponent_PMT"], y=self.parameters["exponent_PMT"].index)
         plt.xlabel("PMT Scaling Exponent")
         plt.ylabel("Detector Channel")
     
     def plot_fit(self):
-        def combinexfct(xdata, intercept, slope_PMT, slope_LAS):
-            return xdata[0] * slope_PMT + xdata[1] * slope_LAS
         def plot_single(ax, channel):
-            logshift, voltage, intensity = self.df_logshift[channel], self.df_voltage[channel], self.get_intensity(channel)
-            mask = (logshift==logshift) & (voltage>0) & (intensity>0)
-            logshift, voltage, intensity = logshift[mask], voltage[mask], intensity[mask]
-            xdata = np.log(np.stack([voltage, intensity]))
-            ydata = logshift
-            
-            x, y = combinexfct(xdata, *self.parameters.loc[channel]), ydata
+            xdata, ydata = self._xdata(channel)
+            x, y = self._combinex(xdata, *self.parameters.loc[channel]), ydata
             sns.regplot(x=x, y=y, ax=ax)
             
             r2 = np.corrcoef(x,y)[0,1]**2
@@ -81,16 +92,13 @@ class PMTExponentFitter():
             plot_single(ax_, channel)
     
     def get_theoretical_shift(self):
-        def combinexfct(xdata, intercept, slope):
-            return xdata[0] + xdata[1] / slope
+        """ Logshift predicted by the fitted model (intercept included) for every sample and channel, shape of df_logshift.
+            nan where voltage or intensity is not positive.
+        """
         def get_single(channel):
-            logshift, voltage, intensity = self.df_logshift[channel], self.df_voltage[channel], self.get_intensity(channel)
-            #mask = (logshift==logshift) & (voltage>0) & (intensity>0)
-            #logshift, voltage, intensity = logshift[mask], voltage[mask], intensity[mask]
-            xdata = silent_log(np.stack([voltage, intensity]))
-
-            x = combinexfct(xdata, *self.parameters.loc[channel])
-            return x
+            xdata, _ = self._xdata(channel, drop_invalid=False)
+            intercept = self.parameters.loc[channel, "intercept"]
+            return intercept + self._combinex(xdata, *self.parameters.loc[channel])
 
         theoshift = np.asarray([get_single(c) for c in self.channels]).T
         theoshift[np.isinf(theoshift)] = np.nan

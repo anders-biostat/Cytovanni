@@ -103,6 +103,7 @@ class ExtendableParameter(Module):
         self.param_trainable.requires_grad_(requires_grad and self.allow_grad)
         if self.axis_norm is not None:
             self.param_mask_meannorm.requires_grad_(False)
+        return self
     
     def extend(self, inds, keep_prior_trainable_structure=False):
         """ Extends self to contain all indices in inds, initialized as at the beginning.

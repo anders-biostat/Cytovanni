@@ -1,5 +1,4 @@
 import torch
-from torch.cuda.amp import custom_bwd, custom_fwd
 import gc
 
 def _ensure_real_nll(nll):
@@ -13,17 +12,13 @@ class DifferentiableClamp(torch.autograd.Function):
     But in the backward pass its gradient is 1 everywhere, as if instead of clamp one had used the identity function.
     
     Taken from https://discuss.pytorch.org/t/exluding-torch-clamp-from-backpropagation-as-tf-stop-gradient-in-tensorflow/52404/6
-    
-    FutureWarning: `torch.cuda.amp.custom_fwd(args...)` is deprecated. Please use `torch.amp.custom_fwd(args..., device_type='cuda')` instead.
     """
     
     @staticmethod
-    #@custom_fwd
     def forward(ctx, input, min, max):
         return input.clamp(min=min, max=max)
     
     @staticmethod
-    #@custom_bwd
     def backward(ctx, grad_output):
         return grad_output.clone(), None, None
 

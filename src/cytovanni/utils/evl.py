@@ -1,4 +1,7 @@
 import numpy as np
+import warnings
+
+from ..exceptions import CytovanniWarning
 
 def symmetric_correlation(x, y):
     """ Symmetric correlation coefficient, i.e. correlation of [x,y] and [y,x].
@@ -268,7 +271,9 @@ def get_asinh_paired_CV_varcorr(x_asinh, y_asinh, x_asinh_err, y_asinh_err, f):
     return std_z / denom
 
 def get_asinh_single_CV_varcorr(x_asinh, x_asinh_err, f):
-    """ get_asinh_single_CV with variance correction as in get_asinh_paired_CV_varcorr
+    """ get_asinh_single_CV with variance correction as in get_asinh_paired_CV_varcorr.
+        If the mean error variance exceeds the observed variance, the corrected variance is clamped to 0 (with a
+        CytovanniWarning), so the result is 0 instead of NaN.
     """
 
     x = np.asarray(x_asinh)
@@ -288,6 +293,9 @@ def get_asinh_single_CV_varcorr(x_asinh, x_asinh_err, f):
     # variance in asinh space
     var_s = x.var(ddof=1)
     var_s_corrected = var_s - np.mean(x_err**2)
+    if var_s_corrected < 0: # error variance exceeds the observed variance: no measurable spread
+        warnings.warn(f"get_asinh_single_CV_varcorr: corrected variance is negative ({var_s_corrected:.3g}), clamped to 0 (CV 0).", CytovanniWarning)
+        var_s_corrected = 0.
 
     # delta-method
     var_z = (dzds**2) * var_s_corrected

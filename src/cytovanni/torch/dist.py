@@ -46,7 +46,8 @@ class CustomMultivariateNormal(Distribution):
         return -0.5 * (self._event_shape[0] * math.log(2 * math.pi) + M) +0.5 * self.precision_logdet
 
     def rsample(self, sample_shape=torch.Size()):
-        eps = _standard_normal(self.loc.shape, dtype=self.loc.dtype, device=self.loc.device)
+        shape = self._extended_shape(sample_shape)
+        eps = _standard_normal(shape, dtype=self.loc.dtype, device=self.loc.device)
         return self.loc + _batch_mv(self._unbroadcasted_scale_tril, eps)
 
 class CustomTransformedDistribution(TransformedDistribution):

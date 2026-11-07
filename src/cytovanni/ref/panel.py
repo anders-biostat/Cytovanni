@@ -39,7 +39,7 @@ class PanelModule(Module):
         pm.param_offset = Parameter(torch.tensor(pm.panelconfig.pca_offset.to_numpy(), dtype=torch.float32), requires_grad=False)
         
         # principal components (stain, channel, component)
-        param_components = np.zeros((len(pm.channels), len(pm.channels), len(pm.components)))
+        param_components = np.zeros((len(pm.stains), len(pm.channels), len(pm.components)))
         stainind = pm.panelconfig.pca_offset.index.get_indexer(pm.panelconfig.pca_components_stain)
         param_components[stainind, :, np.arange(stainind.shape[0])] = pm.panelconfig.pca_components.to_numpy()
         pm.param_components = Parameter(torch.tensor(param_components, dtype=torch.float32), requires_grad=False)
@@ -73,6 +73,7 @@ class PanelModule(Module):
         self.param_offset.requires_grad_(False)
         self.param_components.requires_grad_(False)
         self.param_components_mask.requires_grad_(False)
+        return self
     
     def forward(self, x_embedding, clamp_differentiable=True, mask_unused=True):
         """ Transform embedding into spectra matrix.
@@ -215,7 +216,7 @@ class PanelModule(Module):
             arN = torch.arange(N)[:,None].to(self.device).expand(N, Nstain)
             # get modified embedding
             embedding_mod = embedding[:,None,None,None].repeat(1,N,Nstain,2)
-            embedding_mod[ind_maxcomp.flatten(), arN.flatten(), arNstain.flatten(),:] = (torch.ones((Nstain*N,2)) * torch.tensor([[embedding_step,-embedding_step]], dtype=torch.float32)).to(self.device)
+            embedding_mod[ind_maxcomp.flatten(), arN.flatten(), arNstain.flatten(),:] += (torch.ones((Nstain*N,2)) * torch.tensor([[embedding_step,-embedding_step]], dtype=torch.float32)).to(self.device)
             # modified intensities, shape (event, maxcomp, 2, stain)
             val_mod = self.apply_ashunmx(x[:,None,None,:], embedding_mod, stainscale=stainscale[:,None,None,:] if stainscale is not None else None,
                                            include_unused=include_unused, arcsinh_cofactor=arcsinh_cofactor)
@@ -609,6 +610,7 @@ class PanelEmbeddingModule(Module):
             self.param_embedding[key].requires_grad_(requires_grad)
         for key in self.param_embedding_mask:
             self.param_embedding_mask[key].requires_grad_(False)
+        return self
     
     def get_embedding_part(self, key, masked=True):
         """ Get part of embedding for specific batch key.
@@ -750,9 +752,10 @@ class FixedPanelModule(Module):
         return pem
     
     def requires_grad_(self, requires_grad=True):
-        """ 
+        """ Fixed spectra, never trainable.
         """
-        pem.param_spectra.requires_grad_(False)
+        self.param_spectra.requires_grad_(False)
+        return self
     
     def anchor_batches(self, anchor_bidx):
         """ Only here for compatibility reasons.

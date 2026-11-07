@@ -60,7 +60,7 @@ class RareMarkerWeights(Module):
             
             self.group_stain_idx = Parameter(torch.tensor([list(transformer.stains).index(c[0]) for c in groups], dtype=torch.long), requires_grad=False)
             self.group_arange = Parameter(torch.arange(len(groups), dtype=torch.long), requires_grad=False)
-            self.group_weight = Parameter(torch.tensor([c[2] for c in groups], dtype=torch.long), requires_grad=False)
+            self.group_weight = Parameter(torch.tensor([c[2] for c in groups], dtype=torch.float32), requires_grad=False)
             group_value = torch.zeros((len(groups), len(transformer.stains)), dtype=torch.float32)
             group_value[self.group_arange, self.group_stain_idx] = torch.tensor([c[1] for c in groups], dtype=torch.float32)
             self.group_value = Parameter(group_value, requires_grad=False)
@@ -70,10 +70,12 @@ class RareMarkerWeights(Module):
     def requires_grad_(self, requires_grad=False):
         """ Set requires_grad properly on all parameters.
         """
+        if self.is_dummy: return self
         self.group_stain_idx.requires_grad_(False)
         self.group_arange.requires_grad_(False)
         self.group_weight.requires_grad_(False)
         self.group_value.requires_grad_(False)
+        return self
     
     def forward(self, x, idx_batch, samp_cov):
         """ Take data that was standardised by transformer, return weighting for every event.

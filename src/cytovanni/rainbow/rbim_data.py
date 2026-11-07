@@ -24,14 +24,21 @@ class DataLoader():
     def __len__(self):
         return len(self.sample_indices)
 
-def _intype_GMM_crosstab_shares(index, label):
-    """ Effectively the same as doing pd.crosstab(index, label), but much faster.
+def _intype_GMM_crosstab_shares(index, label, N_sample, N_peak):
+    """ Share of every peak label within every sample, like pd.crosstab(index, label, normalize="index"), but much faster.
+        
+        :param index: torch.Tensor. Sample index of every bead, in range(N_sample).
+        
+        :param label: torch.Tensor. Peak label of every bead, in range(N_peak).
+        
+        Returns tensor of shape (N_sample, N_peak). Samples without beads get uniform shares 1/N_peak.
     """
-    count = torch.zeros((index.max()+1, label.max()+1), dtype=torch.float32)
+    count = torch.zeros((N_sample, N_peak), dtype=torch.float32)
     for lb in torch.unique(label):
         u, c = torch.unique(index[label==lb], return_counts=True)
         count[u,lb] = c.to(torch.float32)
-    return count / count.sum(-1, keepdims=True)
+    total = count.sum(-1, keepdims=True)
+    return torch.where(total>0, count / total.clamp(min=1.), torch.full_like(count, 1./N_peak))
 
 class Sampler():
     """ Sampler to get subsample indices.
@@ -89,10 +96,12 @@ class Sampler():
         if not split:
             return inds
         
-        groupinds = self.indices_group[inds]
-        splitpos = torch.where(groupinds[1:] != groupinds[:-1])[0]+1
-        splitinds = torch.tensor_split(inds, splitpos)
-        return splitinds, groupinds[torch.cat([splitpos-1, torch.tensor([-1])])]
+        # both permutations return the groups in order, min(Nsubsample, group size) indices each;
+        # empty groups are left out, as are their group numbers
+        counts = [min(len(x), self.Nsubsample) for x in self.indices_list]
+        splitinds = torch.split(inds, counts)
+        nonempty = [g for g, c in enumerate(counts) if c>0]
+        return tuple(splitinds[g] for g in nonempty), torch.tensor(nonempty, dtype=torch.int64)
 
 class RainbowFluorescenceGMMCalibrationDataset():
     """ Dataset for rainbow channel GMM calibration.
@@ -148,8 +157,8 @@ class RainbowFluorescenceGMMCalibrationDataset():
         """
         for tp in np.unique([ad.uns["rainbow_type"] for ad in adatas]):
             uN = np.unique([ad.uns["GMM_means"].shape[0] for ad in adatas if ad.uns["rainbow_type"]==tp])
-            if len(uN)>1 or (uN[0]==prior[tp] if tp in prior else False):
-                CalibrationModuleException(f"Number of rainbow peaks not consistent for rainbow type {tp}!")
+            if len(uN)>1 or (uN[0]!=prior[tp] if tp in prior else False):
+                raise CalibrationModuleException(f"Number of rainbow peaks not consistent for rainbow type {tp}!")
     
     @classmethod
     def get_type_Npeak(cls, adatas):
@@ -233,7 +242,8 @@ class RainbowFluorescenceGMMCalibrationDataset():
         
         # Stuff to initialise means in the module
         self.peak_shares = {tp: _intype_GMM_crosstab_shares(self.data_intype_index[tp][self.data_usemask[tp]],
-                                                            self.data_GMM_index[tp][self.data_usemask[tp]]) for tp in self.present_types}
+                                                            self.data_GMM_index[tp][self.data_usemask[tp]],
+                                                            len(self.adatas_tp[tp]), self.peak_usemask[tp].shape[1]) for tp in self.present_types}
         self.peak_shares_uididx = {tp: torch.tensor(self.rboe.oes["uid"].transform([ad.uns["uid"] for ad in adatas]), dtype=torch.long)
                                    for tp, adatas in self.adatas_tp.items()}
         self.peak_shares_batchidx = {tp: torch.tensor(self.rboe.oes["rainbow_batch"].transform([ad.uns["rainbow_batch"] for ad in adatas]), dtype=torch.long)

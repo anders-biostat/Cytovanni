@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 import warnings
 
-from ..exceptions import CalibrationModuleWarning, CalibrationModuleException
+from ..exceptions import CalibrationModuleWarning, CalibrationModuleException, SpilloverWarning
 
 def scale_spectra_wfactors(spectra, factors, spectral=False):
     """ Scale spectra with calibration factors.
@@ -50,12 +50,14 @@ def scale_spectra_wfactors(spectra, factors, spectral=False):
 def extract_logfactor_laserfactor(logfactors, fixed_components=True):
     """ Take fitted logfactors for every channel, pd.DataFrame of shape (batch, channel).
         
-        If not fixed_components, fits a common factor principal component;
-        the common factor is normalized such that the slope of common factor
-        and the individual channel factors should be approximately one.
+        Both variants decompose logfactors[batch, channel] = common[batch] * component[channel] + residuals[batch, channel].
         
-        If fixed_components, fits a least-squares factor where the component
-        is simply set to one for all channels.
+        If fixed_components, the component is one for all channels, so the common factor is the least squares
+        (= mean over channels) factor of every batch.
+        
+        If not fixed_components, the component is the first principal component, rescaled to mean one over the channels
+        (which also fixes its sign), and the common factor is the mean over channels of the PCA reconstruction (offset
+        included). For a constant component this is identical to fixed_components=True.
         
         Returns common factor and residuals
     """
@@ -70,8 +72,13 @@ def extract_logfactor_laserfactor(logfactors, fixed_components=True):
         from sklearn.decomposition import PCA
         pca = PCA(1)
         Y = pca.fit_transform(logfactors[~mask_nan])
-        common_logfactor_ = pd.Series((Y * np.abs(pca.components_).mean())[:,0], index=logfactors.index[~mask_nan])
-        residuals_ = logfactors[~mask_nan] - Y @ pca.components_
+        component_mean = pca.components_.mean()
+        if np.abs(component_mean) < 1e-3*np.abs(pca.components_).max():
+            raise CalibrationModuleException("First principal component of the logfactors has no common direction across channels, cannot extract a common factor!")
+        component = pca.components_[0] / component_mean
+        common = pca.mean_.mean() + Y[:,0] * component_mean
+        common_logfactor_ = pd.Series(common, index=logfactors.index[~mask_nan])
+        residuals_ = logfactors[~mask_nan] - common[:,None] * component[None]
 
     common_logfactor = pd.Series(np.full((logfactors.shape[0],), np.nan), index=logfactors.index)
     common_logfactor.loc[common_logfactor_.index] = common_logfactor_

@@ -23,12 +23,17 @@ def _sum_loss_separate_markers(fct, x, y, wx, wy):
     wy_ = wy.expand((y.shape[-1], ) + wy.shape).contiguous() if wy is not None else None
     return fct(x_, y_, wx_, wy_).sum(0)
 
+def _sum_loss_separate_markers_loop(fct, x, y, wx, wy):
+    """ Same as _sum_loss_separate_markers, for losses that cannot be batched over markers (MMDLoss).
+    """
+    return sum(fct(x[:,[i]], y[:,[i]], wx, wy) for i in range(x.shape[-1]))
+
 class OverlapFitModel(Module):
     """ Module that does the overlap fit standardisation.
         Automatically runs on the device that dataset sends its data to.
         
     """
-    def __init__(self, moe, transformer, dataset=None, dataset_test=None, markerweight=None, checkpoint_DDIST=True, bandwidth_MMD=None, DDIST_mode="sinnkhorn", DDIST_kwargs={}, DDIST_separate=False, eval_only=False):
+    def __init__(self, moe, transformer, dataset=None, dataset_test=None, markerweight=None, checkpoint_DDIST=True, bandwidth_MMD=None, DDIST_mode="sinkhorn", DDIST_kwargs={}, DDIST_separate=False, eval_only=False):
         """ 
             
             :param moe: MultiOrdinalEncoder. Batch encoder for all relevant batch keys.
@@ -70,14 +75,7 @@ class OverlapFitModel(Module):
         self.DDIST_separate = DDIST_separate
         
         if not eval_only:
-            if self.DDIST_mode=="MMD":
-                self.ddist_fct = MMDLoss(bandwidth=self.bandwidth_MMD, **self.DDIST_kwargs)
-            else:
-                self.ddist_fct = GeomSampleLoss(self.DDIST_mode, **self.DDIST_kwargs)
-            if self.DDIST_separate:
-                self.ddist = lambda *args: _sum_loss_separate_markers(self.ddist_fct, *args)
-            else:
-                self.ddist = lambda *args: self.ddist_fct(*args)
+            self.setup_ddist()
         
         self.losshistory = {"train":[], "test":[], "train_DDIST_mat":[], "test_DDIST_mat":[]}
         self.plot_loss_dct = {"ddist":"DDIST"}
@@ -110,6 +108,21 @@ class OverlapFitModel(Module):
         
         return sfm
     
+    def setup_ddist(self, device=None):
+        """ (Re-)create the distribution distance loss self.ddist from DDIST_mode, DDIST_kwargs, bandwidth_MMD and DDIST_separate.
+        """
+        if self.DDIST_mode=="MMD":
+            self.ddist_fct = MMDLoss(bandwidth=self.bandwidth_MMD, **self.DDIST_kwargs)
+        else:
+            self.ddist_fct = GeomSampleLoss(self.DDIST_mode, **self.DDIST_kwargs)
+        if device is not None:
+            self.ddist_fct = self.ddist_fct.to(device)
+        if self.DDIST_separate:
+            fct_separate = _sum_loss_separate_markers_loop if self.DDIST_mode=="MMD" else _sum_loss_separate_markers
+            self.ddist = lambda *args: fct_separate(self.ddist_fct, *args)
+        else:
+            self.ddist = lambda *args: self.ddist_fct(*args)
+    
     def export(self, include_history=True):
         """ Export self to dict.
         """
@@ -123,6 +136,7 @@ class OverlapFitModel(Module):
         exportdct["bandwidth_MMD"] = self.bandwidth_MMD
         exportdct["DDIST_mode"] = self.DDIST_mode
         exportdct["DDIST_kwargs"] = self.DDIST_kwargs
+        exportdct["DDIST_separate"] = self.DDIST_separate
         if include_history:
             exportdct["losshistory"] = self.losshistory
         return exportdct
@@ -156,7 +170,8 @@ class OverlapFitModel(Module):
         markerweight = cls_markerweight.from_exported(exported["markerweight"], transformer)
         
         sfm = cls(moe, transformer, markerweight=markerweight, checkpoint_DDIST=exported["checkpoint_DDIST"], bandwidth_MMD=exported["bandwidth_MMD"],
-                  DDIST_mode=exported["DDIST_mode"], DDIST_kwargs=exported["DDIST_kwargs"], eval_only=eval_only)
+                  DDIST_mode=exported["DDIST_mode"], DDIST_kwargs=exported["DDIST_kwargs"], DDIST_separate=exported["DDIST_separate"],
+                  eval_only=eval_only)
         if "losshistory" in exported:
             sfm.losshistory = exported["losshistory"]
         
@@ -181,6 +196,7 @@ class OverlapFitModel(Module):
     
     def estimate_MMD_bandwidth(self, dataset):
         """ Estimate MMD bandwidth on transformed data across whole dataset, use median.
+            With DDIST_separate, the bandwidth is estimated for every marker separately (median over markers and samples).
             
             Not ideal, has to be estimated on untrained model etc.
             But probably still preferrable to varying bandwidth for every comparison,
@@ -190,7 +206,11 @@ class OverlapFitModel(Module):
             datas = dataset.sample()["data"]
             bandwidths = []
             for data in datas:
-                bandwidths.append(MMDLoss.estimate_bandwidth(self.transformer(data["x"], data["idx_batch"]))[None])
+                x = self.transformer(data["x"], data["idx_batch"])
+                if self.DDIST_separate: # loss is applied per marker, so estimate per marker as well
+                    bandwidths += [MMDLoss.estimate_bandwidth(x[:,[i]])[None] for i in range(x.shape[-1])]
+                else:
+                    bandwidths.append(MMDLoss.estimate_bandwidth(x)[None])
             torch.cuda.empty_cache()
             return torch.cat(bandwidths).cpu().median().item()
     
@@ -203,7 +223,7 @@ class OverlapFitModel(Module):
         if self.DDIST_mode=="MMD":
             self.to(dataset.device)
             self.bandwidth_MMD = self.estimate_MMD_bandwidth(dataset)
-            self.ddist = MMDLoss(bandwidth=self.bandwidth_MMD, **self.DDIST_kwargs).to(dataset.device)
+            self.setup_ddist(device=dataset.device)
         
     
     def get_DDIST_single(self, x, y, wx=None, wy=None, trainx=True, trainy=True):
@@ -353,15 +373,19 @@ class OverlapFitModel(Module):
             if add_arcsinh:
                 ad.obsm[addkey+"_arcsinh"] = apply_arcsinh(ad.obsm[addkey], cofactor=arcsinh_cofactor)
 
-    def incorporate_stain_scaling(self, sfm_other, cls_transformer=None, cls_markerweight=None):
+    def incorporate_stain_scaling(self, sfm_other, cls_transformer=None, cls_markerweight=None, cls_smp=None):
         """ Incorporate the stain scaling from sfm_other into self.
-            Generates a copy of self to avoid accidentally running it multiple times.
+            Generates a copy of self (of the same class) to avoid accidentally running it multiple times.
+            If the transformer clips its stain scaling (max_abslogstain), the combined scaling is clipped as well,
+            an OverlapStandardisationWarning is raised in that case.
             
             :param cls_transformer: class. If using custom transformer that is not implemented by me, pass the class here to instantiate from exported properly!
             
             :param cls_markerweight: class. If using custom marker weight that is not implemented by me, pass the class here to instantiate from exported properly!
+            
+            :param cls_smp: class. Custom scale multiplier class, passed on to from_exported.
         """
-        self_new = OverlapFitModel.from_exported(self.export(), cls_transformer=cls_transformer, cls_markerweight=cls_markerweight)
+        self_new = type(self).from_exported(self.export(), cls_transformer=cls_transformer, cls_markerweight=cls_markerweight, cls_smp=cls_smp)
         self_new.transformer.add_stain_logscale_toself(sfm_other.transformer.learned_stainlogscale)
         return self_new
 
