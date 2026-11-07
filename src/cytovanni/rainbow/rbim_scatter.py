@@ -230,23 +230,11 @@ class RainbowScatterCalibrationModule(Module):
             :param df: pd.DataFrame. New metadata with which to extend rboe.
             
             :param adatas: iterable. New data to continue training on.
+
+            Raises CalibrationModuleException if a new rainbow type has no overlap with the trained data
+            (RainbowBatchOrdinalEncoder.check_orphan_types).
         """
-        initial_types, initial_batches = self.rboe.oes["rainbow_type"].labels, self.rboe.oes["rainbow_batch"].labels
-        
-        # for every new added type, ensure that there is some batch overlap so it can be properly calibrated
-        new_orphan_types = []
-        for tp in set(df["rainbow_type"].unique())-set(initial_types):
-            batches = df.loc[df["rainbow_type"]==tp, "rainbow_batch"].unique()
-            batch_overlap = set(batches) & set(initial_batches)
-            # if there are overlapping batches for the new type with the old trained ones, everything works
-            if len(batch_overlap)==0:
-                # Otherwise check that there are already trained types in the new data that have some batch overlap with the new types
-                otheroverlap = (np.isin(df["rainbow_type"], initial_types) & np.isin(df["rainbow_batch"], batches)).sum()
-                if otheroverlap==0:
-                    new_orphan_types.append(tp)
-        if len(new_orphan_types)>0:
-            raise CalibrationModuleException(f"Newly added rainbow types {new_orphan_types} have no overlap with previously trained on data! Final calibration for these types will not be consistent with the others, aborting.")
-        
+        self.rboe.check_orphan_types(df)
         extend_inds = self.rboe.extend(df)
         self.param_logposition.extend(extend_inds["rainbow_type"])
         self.param_logshift.extend(extend_inds["rainbow_batch"])

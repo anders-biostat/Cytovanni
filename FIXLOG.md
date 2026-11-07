@@ -83,6 +83,15 @@ A fix can change results relative to one of these and not the other; both are st
 | R2-F2 | config export keeps class, hash function, timezone, subclass extras | no for existing files; files written now re-create the subclass | `to_dictionary`/`write_json`/`write_*_h5ad` + import; configs with a custom `fct_hash_settings` now raise on import unless registered |
 | R2-D4 | batched eccentricity used the padded height for the bottom-edge test | yes: eccentricity/deform angle of cells cut off at their own bottom edge -> NaN (as the single version) | `add_S8_singlet_maskfeatures` / `calculate_batched_eccentricity_angle` with masks of different heights (arges image containers) |
 | R2-F3 | `add_S8_singlet_maskfeatures` kept, duck-typed `imgcont` documented | no (docstring) | arges/lucy: see todo/ARGES_LUCY.md |
+| R2b-G2-01 | `get_rainbow_peak_parameters` / `plot_rainbow_with_PDF` crashed after a GPU fit | no (crash -> works) | `RainbowCalibrator` fitted with `gpu=True` (the default), not reloaded |
+| R2b-G2-02 | config read from .h5ad kept ndarrays, `write_json` failed | no (crash -> works) | `write_json` / json export of a config read back from .h5ad |
+| R2b-G2-05 | `extend_fit` silently calibrated orphan new rainbow types | no for valid extensions; orphan cases now raise instead of arbitrary factors | `extend_fit` with a new rainbow type measured only in new batches without a known type |
+| R2b-G2-08 | `LineGate` kept side depended on the p1/p2 order | yes, gates with p1.x > p2.x | `LineGate` with p1[0] > p2[0] (vertical lines now raise) |
+| R2b-G2-09 | `fit_rainbow_GMM` ignored empty GMM components | rarely: samples with an empty component get retries/a warning | a GMM component without beads |
+| R2b-G2-10 | dataset with `warn_missing=False` lacked `df_channel_train` | no (latent crash -> works) | `RainbowFluorescenceGMMCalibrationDataset(warn_missing=False)` passed to the trainer |
+| R2b-G2-13 | `np.log(0)` RuntimeWarning in every bead gate | no (warning noise only) | every scatter bead gate (binned KDE) |
+| R2b-G2-15 | spectrum PCA fitted a zero-variance last component | yes, only stains with <= N spectra | `add_PCA_fit` with n_spectra <= N (default N=5) for some dye |
+| R2b-G2-17 | `readfcs_sample`: missing meta channel gave a bare KeyError | no (error message only) | .fcs without a `channels_meta` channel (e.g. `Time`) |
 
 Entry format: see the review notes (todo/00_CONVENTIONS.md "Fix log" in the review project).
 
@@ -846,3 +855,154 @@ E20 allows a subset of the panel's dyes (`allow_missing=True`).
   (0.3.x, which the container installs).
 - Effect on results: none (crash -> works). Affected analyses: none (hausdorff not used).
 - Test: jobs/r2_verify/f_core.py G1.
+
+## R2b (round-2 bug fixes, branch review/R2b-bugs; approvals and decisions in todo/R2b_approval.md)
+
+### R2b group A (rainbow, gating, io, spill, config)
+- Commit: R2b-A (review/R2b-bugs), 2026-11-07. Checks: jobs/r2b_verify/v2_all.py + v2_gpu.py (NOT REPRODUCED), f2_A.py ALL PASS; jobs/r2_verify/f_rainbow.py, f_spill.py ALL PASS (f_spill C14 expectation adapted to G2-15).
+
+### R2b-G2-01 `get_rainbow_peak_parameters` / `plot_rainbow_with_PDF` crash after a GPU fit
+- Commit: R2b-A (review/R2b-bugs), 2026-11-07. Approval: todo/R2b_approval.md item G2-01.
+- Where: rainbow.rbim.RainbowCalibrator.get_rainbow_peak_parameters (rainbow/rbim.py:331), used by
+  plot_rainbow_with_PDF (:468).
+- What was wrong: the helper dataset was always built on the CPU, while `fit_fluorescence(gpu=True)` leaves `rfim` on
+  cuda, so the parameter lookup raised a cuda/cpu RuntimeError.
+- Now: the dataset is built on the device of `rfim` (`next(self.rfim.parameters()).device`); outputs stay numpy on the CPU.
+- Affected when: a `RainbowCalibrator` fitted on the GPU and used in the same session (models loaded with `from_saved`
+  are on the CPU and worked).
+- Effect on results: none (crash -> works). GPU values equal the values after `from_saved` (f2_A.py).
+- Affected analyses: cytovanni_reproducibility processing/gosling/lib/gosling.py:427 works around it (moves rfim to CPU
+  before :475); comparison.py:228 and figures/plots_rainbow/00_prepare_A3.ipynb use `from_saved` models. The workaround
+  can stay or be dropped. Pipeline: none found.
+- Action: nothing.
+- Test: jobs/r2b_verify/v2_gpu.py G2-01 (--gpu); f2_A.py "G2-01".
+
+### R2b-G2-02 configuration read from .h5ad cannot be written to json
+- Commit: R2b-A (review/R2b-bugs), 2026-11-07. Approval: todo/R2b_approval.md item G2-02.
+- Where: utils.config.CytometerConfiguration.import_exported (utils/config.py:244-265).
+- What was wrong: .h5ad returns lists inside `laserdict` / `default_scatter_calibrate` as numpy arrays; only top-level
+  list keys and `_export_extras` arrays were converted, so `write_json` raised TypeError (R2-F2 was incomplete).
+- Now: the exported dict is converted recursively to builtins (new `_to_builtin`: ndarray -> list, numpy scalar ->
+  Python scalar, also inside dicts/lists/tuples) before the attributes are set; the separate ndarray branch for
+  `_export_extras` was removed (covered).
+- Affected when: a configuration that went through .h5ad (`read_rainbow_h5ad`, AnnData `uns["cytoconfig"]`) and is then
+  exported to json, or compared with `==` on these attributes.
+- Effect on results: none (crash -> works). The restored attributes are lists instead of arrays; the export equals the
+  original's.
+- Affected analyses: none found (no `write_json` / `from_exported` use in cytovanni_reproducibility or the pipeline).
+- Action: nothing.
+- Test: jobs/r2b_verify/v2_all.py G2-02; f2_A.py "G2-02".
+
+### R2b-G2-05 `extend_fit`: orphan new rainbow types got arbitrary factors
+- Commit: R2b-A (review/R2b-bugs), 2026-11-07. Approval: todo/R2b_approval.md item G2-05.
+- Where: rainbow.rbim.RainbowCalibrator.extend_fit (rainbow/rbim.py:194-212); the check was only in
+  rainbow.rbim_scatter.RainbowScatterCalibrationModule.extend_standalone (rainbow/rbim_scatter.py:234-248).
+- What was wrong: a new rainbow type measured only in new batches, without any known type in those batches, makes the
+  type and batch parameters degenerate (scatter and fluorescence). `extend_fit` fitted it anyway: in the lead check the
+  scatter factor C/A was 2.40 / 3.39 (FSC/SSC) instead of 1.25, without a warning.
+- Now: the check is `RainbowBatchOrdinalEncoder.check_orphan_types(df)` (rainbow/rboe.py), called by `extend_fit` before
+  anything is changed (encoder, `self.adatas`) and by `extend_standalone`. It raises `CalibrationModuleException`
+  naming the types.
+- Affected when: `extend_fit` with a new rainbow type whose batches are all new and contain no known type.
+- Effect on results: no change for valid extensions (new type in a known batch, or together with a known type). Orphan
+  extensions now raise instead of producing arbitrary calibration factors for the new batches.
+- Affected analyses: none. The only `extend_fit` (pipeline hd7-01, cell 20) adds `20240924_comp_*` batches with the known
+  type 3285117. cytovanni_reproducibility: no `extend_fit` call.
+- Action: nothing.
+- Test: jobs/r2b_verify/v2_all.py G2-05; f2_A.py "G2-05".
+
+### R2b-G2-08 `LineGate`: kept side depended on the order of p1 and p2
+- Commit: R2b-A (review/R2b-bugs), 2026-11-07. Approval: todo/R2b_approval.md item G2-08 (user: "Below = lower y").
+- Where: gating.line.LineGate.__init__ / get_distance_points (gating/line.py:27-50), plot (:79).
+- What was wrong: the sign of the distance came from the direction p1 -> p2, so `below=True` kept the points below the
+  line for p1.x < p2.x and above it for p1.x > p2.x. `plot` always shaded as if "below" meant lower y; for
+  `below=False` it shaded down to y=0 instead of the lower axis limit.
+- Now: the points are ordered by x in `__init__`, so `below=True` always keeps lower y; `p1[0] == p2[0]` (vertical line)
+  raises ValueError. `plot` shades the removed side (above for `below=True`, below to the axis limit otherwise).
+  Docstrings for the class, `get_distance_points` and `plot`.
+- Affected when: `LineGate` with p1[0] > p2[0] (kept side flips to the documented one); vertical lines (now an error);
+  plots with `below=False`.
+- Effect on results: changes gate masks (`apply`, `apply_df`, `obs[addkey]`) for gates defined with p1.x > p2.x: they now
+  keep the other side, as documented.
+- Affected analyses: none found (no `LineGate` in the package, cytovanni_reproducibility or the pipeline).
+- Action: nothing; anyone with own LineGates defined right-to-left: check the kept side.
+- Test: jobs/r2b_verify/v2_all.py G2-08; f2_A.py "G2-08".
+
+### R2b-G2-09 `fit_rainbow_GMM` retry ignored empty components
+- Commit: R2b-A (review/R2b-bugs), 2026-11-07. Approval: todo/R2b_approval.md item G2-09.
+- Where: rainbow.gmm.fit_rainbow_GMM (rainbow/gmm.py:109-112).
+- What was wrong: the label shares came from `np.unique`, which omits components with no beads, so an empty component
+  was not seen. Even with zero counts, the retry needed both a small and a large share; with 7 even peaks + 1 empty
+  (N=8) no retry happened.
+- Now: counts with `np.bincount(labels, minlength=N)`; the fit counts as failed if the shares are uneven (as before) or
+  any component is empty. Failed -> retry with a new seed (up to `Nretry`), then a GMMAssignmentWarning (also with
+  `Nretry=0`). Docstring of `warningthreshold` / `Nretry`.
+- Affected when: a GMM fit in which a component gets no beads (sklearn rarely leaves a component exactly empty; a lost
+  peak usually keeps a tiny nonzero share, which was already caught if another share is large).
+- Effect on results: rare. Such samples are now refitted (different GMM labels, means, gate) or, if all retries fail,
+  warned about. Samples without empty components are unchanged. Same vs repro copy (it has the `np.unique` version).
+- Affected analyses: every `fit_rainbow_GMM` call (pipeline hd7-01; reproducibility gosling.py:357/371,
+  instrument_rainbow/lib/pipeline.py:64/68, refmoh.py:64/66, plots_calib/lib/calib.py:1213/1215,
+  figures/plots_rainbow/01_gating_gmm.ipynb). No evidence that any of them hit an empty component (not checked on the data:
+  a re-run shows it as new `GMMAssignmentWarning`s).
+- Action: nothing; if re-running hd7-01, look for new GMMAssignmentWarnings.
+- Test: jobs/r2b_verify/v2_all.py G2-09; f2_A.py "G2-09".
+
+### R2b-G2-10 `df_channel_train` only set with `warn_missing=True`
+- Commit: R2b-A (review/R2b-bugs), 2026-11-07. Approval: todo/R2b_approval.md item G2-10.
+- Where: rainbow.rbim_data.RainbowFluorescenceGMMCalibrationDataset.setup_data (rainbow/rbim_data.py:262-264),
+  check_batch_training_missing (:172).
+- What was wrong: `df_channel_train`, which `RainbowFluorescenceGMMCalibrationTrainer.fit_init` needs, was only computed
+  when the warning was requested, so a dataset with `warn_missing=False` failed with AttributeError in the trainer.
+- Now: `check_batch_training_missing(warn=...)` always sets `df_channel_train`; only the warning depends on `warn_missing`.
+- Affected when: datasets built with `warn_missing=False` and passed to the trainer (`fit_fluorescence` always used True).
+- Effect on results: none (latent crash -> works).
+- Affected analyses: none. `get_rainbow_peak_parameters` (package) and repro comparison.py:221 use `warn_missing=False`
+  without fitting; they now also compute the table (no output change).
+- Action: nothing.
+- Test: jobs/r2b_verify/v2_all.py G2-10; f2_A.py "G2-10".
+
+### R2b-G2-13 `log(0)` RuntimeWarning in every bead gate
+- Commit: R2b-A (review/R2b-bugs), 2026-11-07. Approval: todo/R2b_approval.md item G2-13.
+- Where: gating.autospill.HistogramTesselator (gating/autospill.py:179).
+- What was wrong: the binned KDE (R1-D1) is exactly 0 far from the data, so `np.log` warned "divide by zero" in every
+  `gate_scatter_bead_sample` call; the -inf was clipped to `MIN_LOGDENSITY` right after.
+- Now: `np.errstate(divide="ignore")` around the log; values unchanged.
+- Affected when: every scatter bead gate with the binned KDE (default).
+- Effect on results: none (warning noise only).
+- Affected analyses: all bead gates (e.g. hd7-01) lose the RuntimeWarning; nothing else.
+- Action: nothing.
+- Test: jobs/r2b_verify/v2_all.py G2-13; f2_A.py "G2-13".
+
+### R2b-G2-15 spectrum PCA: zero-variance last component
+- Commit: R2b-A (review/R2b-bugs), 2026-11-07. Approval: todo/R2b_approval.md item G2-15.
+- Where: spill.pca.SingleSpectrumPCAFitter.__init__ (spill/pca.py:24); spill.panel.PanelConfiguration.collect_PCA_data
+  (spill/panel.py:101).
+- What was wrong: N was capped at min(N, n_spectra, n_channels), but n mean-centred spectra span only n-1 dimensions. With
+  n_spectra <= N the last component had (numerically) zero variance, and after the std norming in `collect_PCA_data` its
+  embedding column was NaN or above 1e6 in magnitude.
+- Now: N = min(N, n_spectra-1, n_channels) (1 spectrum: the dummy fit with N=0, as before). `collect_PCA_data` raises
+  ValueError naming the components a panel requests that were not fitted (before: a bare KeyError from pandas).
+- Affected when: dyes with n_spectra <= N (default N=5, `SpilloverSingleStain.add_PCA_fit`).
+- Effect on results: for those dyes one PCA component fewer: `pca_embedding` / `pca_components` /
+  `pca_explained_variance` lose the degenerate column. The remaining components are unchanged. A panel that used the
+  removed (last) component now raises ValueError; it was degenerate. Dyes with more than N spectra are unchanged. vs repro
+  copy: same (it caps at min(N, n_spectra)).
+- Affected analyses: none found. figures/plots_dye/lib/dye.py:78/522/707-708 and pipeline hd7-02 (cells 64, 79, 89):
+  all fluorophores in the 23 runs have more than 5 runs (lead check, VERIFY.md), so N=5 < n_spectra-1 is unchanged.
+- Action: nothing.
+- Test: jobs/r2b_verify/v2_all.py G2-15; f2_A.py "G2-15"; jobs/r2_verify/f_spill.py "C14" (expectation updated: 3
+  spectra -> N=2).
+
+### R2b-G2-17 `readfcs_sample`: missing meta channel gave a bare KeyError
+- Commit: R2b-A (review/R2b-bugs), 2026-11-07. Approval: todo/R2b_approval.md item G2-17.
+- Where: io.utils.readfcs_sample (io/utils.py:228).
+- What was wrong: a `channels_meta` channel (e.g. `Time`) missing from the file raised a pandas KeyError, while missing
+  fluorescence channels give a ChannelMismatchException with the available channels.
+- Now: ChannelMismatchException "Could not find meta channels [...] in file ...! Available channels are: [...]".
+  Docstring lists the raised cases.
+- Affected when: .fcs files lacking a configured meta channel (also via `readfcs_rainbow_sample`).
+- Effect on results: none (error type/message only).
+- Affected analyses: none (A3 files have Time).
+- Action: nothing.
+- Test: jobs/r2b_verify/v2_all.py G2-17; f2_A.py "G2-17".

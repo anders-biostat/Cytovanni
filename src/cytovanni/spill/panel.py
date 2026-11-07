@@ -90,6 +90,8 @@ class PanelConfiguration():
     def collect_PCA_data(self, spcollection):
         """ Collect all PCA data from spillover collection spcollection.
             Also changes the norm from L2-norm 1 of the components, to std 1 for the embeddings.
+            Raises ValueError if the panel uses a component that was not fitted (a stain with n spectra has at most
+            n-1 components, see SingleSpectrumPCAFitter).
         """
         exported = [spcollection.single_stains[key].export_pca(self) for key in self.stains]
 
@@ -98,7 +100,12 @@ class PanelConfiguration():
         self.pca_offset = pd.concat([e["offset"] for e in exported], axis=0)
         self.pca_components_stain = pd.concat([e["components_stain"] for e in exported], axis=0)
         self.pca_components_use = pd.Series(False, index=self.pca_components_stain.index)
-        self.pca_components_use.loc[[i for e in exported for i in e["components_use"]]] = True
+        use = [i for e in exported for i in e["components_use"]]
+        missing = [i for i in use if i not in self.pca_components_use.index]
+        if missing:
+            raise ValueError(f"Panel '{self.name}' uses PCA components {missing} that were not fitted: a stain with n spectra "
+                             f"has at most n-1 components (and at most N of add_PCA_fit)!")
+        self.pca_components_use.loc[use] = True
         self.pca_explained_variance = pd.concat([e["explained_variance"] for e in exported], axis=0)
         self.pca_explained_variance_channelratio = pd.concat([e["explained_variance_channelratio"] for e in exported], axis=0)
         self.spectra_full = {k:e["spectra"] for k, e in zip(self.stains, exported)}

@@ -124,6 +124,7 @@ class RainbowFluorescenceGMMCalibrationDataset():
             :param channel_missing_cutoff: float. Usually, all channels need to be present for the calibration to work. But when looking at calibration data etc. there may be rainbow bead measurements where a laser was turned off etc. Setting this to a finite value will treat all channels where every peak (in a given sample) is below this value as not fittable to avoid trying to fit pure noise. This is done by simply treating all peaks in that channel as nonlinear in the same way as for peaks that are off-scale.
             
             :param warn_missing: bool. Whether to warn about missing channels that will not get trained.
+                dataset.df_channel_train is set in either case.
         """
         self.cytoconfig = adatas[0].uns["cytoconfig"] # just use the first one, channels have to be the same everywhere anyway
         self.channels = self.cytoconfig.channels_fluorescence
@@ -169,9 +170,12 @@ class RainbowFluorescenceGMMCalibrationDataset():
                                for ad in adatas if ad.uns["rainbow_type"]==tp])[0]
                 for tp in np.unique([ad.uns["rainbow_type"] for ad in adatas])}
     
-    def check_batch_training_missing(self):
+    def check_batch_training_missing(self, warn=True):
         """ Check for batches where some parameters are not getting trained,
             either because all peaks are in the non-linear range, or because all peaks are too low.
+            Sets self.df_channel_train (batch x channel, True = trained), which the trainer needs.
+
+            :param warn: bool. Raise a CalibrationModuleWarning if some channel is not trained in some batch.
         """
         batch_idx = {k:self.peak_shares_batchidx[k].cpu().numpy() for k in self.present_types}
         train_mask = {k:np.any(self.peak_usemask[k].cpu().numpy(), axis=1) for k in self.present_types}
@@ -185,7 +189,7 @@ class RainbowFluorescenceGMMCalibrationDataset():
 
         self.df_channel_train = df_train
 
-        if (~self.df_channel_train.to_numpy()).sum()>0:
+        if warn and (~self.df_channel_train.to_numpy()).sum()>0:
             warnstr = "For some batches, some channels will not get trained! Make sure this is intentional, and not caused by wrong settings for 'max_linear_range' or 'channel_missing_cutoff'."
             n_channel, Nc = ((~self.df_channel_train.to_numpy()).sum(0)>0).sum(), self.df_channel_train.shape[1]
             n_batch, Nb = ((~self.df_channel_train.to_numpy()).sum(1)>0).sum(), self.df_channel_train.shape[0]
@@ -259,9 +263,8 @@ class RainbowFluorescenceGMMCalibrationDataset():
         # subsample class
         self.batch_index_sampler = {tp:Sampler(self.data_indices_batched[tp], self.Nsubsample, self.device) for tp in self.data_indices_batched}
         
-        # check for not trainable channels in batches
-        if self.warn_missing:
-            self.check_batch_training_missing()
+        # not trainable channels per batch (df_channel_train, needed by the trainer); warn only if warn_missing
+        self.check_batch_training_missing(warn=self.warn_missing)
     
     def shift_data_to_device(self):
         """ Shift all relevant data to self.device.

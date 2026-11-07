@@ -175,6 +175,9 @@ def readfcs_sample(filepath, cytoconfig, metadct=None, gates=None, print_gates=F
 
         :param allow_missing_scatter: bool. If True, only warn if scatter channels are missing instead of throwing an error.
 
+        Raises ChannelMismatchException (listing the available channels) if a fluorescence or meta channel of
+        cytoconfig is missing in the file, or a scatter channel with allow_missing_scatter=False.
+
         adata.uns['UTC'] is the start of the recording ($DATE, $BTIM) in seconds since the epoch, with the .fcs time
         read as local time in cytoconfig.timezone; adata.uns['uid'] is '<cytometer>-<int(UTC)>' (or a hash of the
         file path if the time is not available).
@@ -216,6 +219,10 @@ def readfcs_sample(filepath, cytoconfig, metadct=None, gates=None, print_gates=F
     else:
         channels_scatter_available = cytoconfig.channels_scatter
     
+    missing_meta = [c for c in cytoconfig.channels_meta if c not in sample_df.columns]
+    if missing_meta:
+        raise ChannelMismatchException(f"Could not find meta channels {missing_meta} in file {filepath}!\nAvailable channels are: {list(sample_df.columns)}")
+
     channels_HW = [c for c in cytoconfig.channels_fluorescence_addHW if c in sample_df.columns]
     channels = channels_scatter_available + cytoconfig.channels_fluorescence + channels_HW
     

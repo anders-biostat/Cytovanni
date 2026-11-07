@@ -176,7 +176,9 @@ class HistogramTesselator():
             self.density_kde = _BinnedKDE(np.vstack([x, y]), lambda kde: bw_factor * gaussian_kde.scotts_factor(kde))
             ind_X, ind_Y = np.mgrid[0:Nx, 0:Ny]
             self.density = self.density_kde(np.vstack([self.bins_center_x[ind_X].flatten(), self.bins_center_y[ind_Y].flatten()])).reshape((Nx, Ny))
-            self.logdensity = np.clip(np.log(self.density), a_min=self.MIN_LOGDENSITY, a_max=None)
+            # the binned KDE is exactly 0 far from the data (clipped at 0): log(0) = -inf is clipped right away
+            with np.errstate(divide="ignore"):
+                self.logdensity = np.clip(np.log(self.density), a_min=self.MIN_LOGDENSITY, a_max=None)
             #self.density = np.exp(self.density)
         # max density within neighbourhood size
         ind_ng_X, ind_ng_Y = np.mgrid[-neigh_size:neigh_size+1, -neigh_size:neigh_size+1]

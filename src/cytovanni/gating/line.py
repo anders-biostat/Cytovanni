@@ -24,11 +24,33 @@ class LineGate():
     """ Gate data above/below a line.
     """
     def __init__(self, x, y, p1, p2, below=True, name="", color=None, layer="raw", scale_x=1., scale_y=1.):
-        """ 
+        """ Gate keeping the events below (or above) the line through p1 and p2 in the (x, y) plane.
+
+            :param x, y: str. Channel names (adata.var index / DataFrame columns) of the two axes.
+
+            :param p1, p2: 2-tuples (x, y). Two distinct points on the line, in any order. The line must not be
+                vertical (p1[0] == p2[0] raises ValueError), since "below" is defined by y.
+
+            :param below: bool. True keeps the events with lower y than the line at their x, False those with higher y.
+
+            :param name: str. Gate name, used as plot label.
+
+            :param color: matplotlib color of the line in plots.
+
+            :param layer: str. adata layer the gate is applied to.
+
+            :param scale_x, scale_y: positive floats. Axis scaling used for the distance to the line
+                (see set_distance_scaling_factors); they do not change which side is kept.
         """
         self.x, self.y = x, y
         self.scale_x, self.scale_y = scale_x, scale_y
-        self.p1, self.p2 = np.asarray(p1), np.asarray(p2)
+        p1, p2 = np.asarray(p1, dtype=float), np.asarray(p2, dtype=float)
+        if p1[0] == p2[0]:
+            raise ValueError(f"LineGate '{name}': p1 and p2 have the same x ({p1[0]}), a vertical line has no below/above!")
+        # orient the line from lower to higher x, so that a positive distance always means lower y
+        if p1[0] > p2[0]:
+            p1, p2 = p2, p1
+        self.p1, self.p2 = p1, p2
         self.below = below
         self.name = name
         self.color = color
@@ -45,7 +67,8 @@ class LineGate():
         self.scale_y = 1 / np.mean(ad[:,self.y].layers[self.layer][:,0])
     
     def get_distance_points(self, points):
-        """ Signed, scaled distance of points (shape (N, 2), columns x and y) from the line; positive means kept. """
+        """ Signed, scaled distance of points (shape (N, 2), columns x and y) from the line; positive means kept
+            (lower y than the line if below, higher y otherwise). """
         scaling = np.asarray([self.scale_x, self.scale_y])
         dist = _distance_from_line(scaling*self.p1, scaling*self.p2, scaling[None]*np.asarray(points, dtype=float))
         return dist if self.below else -dist
@@ -65,6 +88,7 @@ class LineGate():
         return self.get_distance_points(df[[self.x, self.y]].to_numpy())>0
     
     def plot(self, ax, addlegend=True, mark_outside=True):
+        """ Draw the line into ax (keeping its limits); with mark_outside, shade the side that is removed. """
         args = np.polyfit([self.p1[0], self.p2[0]], [self.p1[1], self.p2[1]], 1)
         line = np.poly1d(args)
         xlim, ylim = ax.get_xlim(), ax.get_ylim()
@@ -76,7 +100,7 @@ class LineGate():
             if self.below:
                 ax.fill_between(x, line(x), ylim[1], interpolate=True, color='red', alpha=.1)
             else:
-                ax.fill_between(x, line(x), interpolate=True, color='red', alpha=.1)
+                ax.fill_between(x, ylim[0], line(x), interpolate=True, color='red', alpha=.1)
     
     def plot_adata(self, adata, ax=None, **kwargs):
         if ax is None:
