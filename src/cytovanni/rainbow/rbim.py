@@ -1,3 +1,9 @@
+"""Rainbow bead calibration: `RainbowCalibrator` fits per-batch channel factors from rainbow bead measurements.
+
+The calibrator combines a scatter model (`RainbowScatterCalibrationModule`) and a fluorescence model
+(`RainbowFluorescenceGMMCalibrationModule`) over a shared batch encoder (`RainbowBatchOrdinalEncoder`). Multiplying
+raw data of a batch by its calibration factors brings all batches onto a common scale (the 'calibrated' layer).
+"""
 import numpy as np
 import pandas as pd
 import torch
@@ -20,8 +26,7 @@ from .utils import scale_spectra_wfactors
 
 import scipy.stats as stats
 def _plot_rfim_pdf(ax, i, mean, std, shares, islinear, vline=True):
-    """ Plot PDF of the rainbow model in channel i onto axis ax.
-    """
+    """Plot the fitted mixture density (arcsinh scale) of column i onto ax: linear peaks black, nonlinear grey."""
     xlim = ax.get_xlim()
     x = np.linspace(xlim[0], xlim[1], 1000)
     y_linear = (stats.norm.pdf(x[:,None], mean[None,:,i], std[None,:,i]) * shares[None])[:,islinear[:,i]].sum(-1)
@@ -34,12 +39,11 @@ def _plot_rfim_pdf(ax, i, mean, std, shares, islinear, vline=True):
             ax.axvline(v, color="gray", zorder=-3)
 
 def _geometric_mean(x):
+    """Geometric mean of the positive array x."""
     return np.exp(np.log(x).mean())
 
 def _restrict_to_available(values, adata):
-    """ Restrict a per-channel Series (calibration factors or shifts) to the channels present in adata.var.
-        Warns about the dropped channels, e.g. scatter channels that are missing from the sample.
-    """
+    """Restrict a per-channel Series (factors or shifts) to the channels in adata.var; warns about the dropped ones."""
     missing = values.index.difference(adata.var.index)
     if len(missing)>0:
         warnings.warn(f"Calibration available for channels {missing.tolist()} that are not in the sample, skipping them.", CalibrationModuleWarning)
@@ -47,6 +51,85 @@ def _restrict_to_available(values, adata):
 
 
 class RainbowCalibrator():
+    """Calibration of detector channels across batches with rainbow beads.
+
+    Rainbow beads have fixed fluorescence and scatter intensities, so differences between their measurements reflect
+    changes of the cytometer (PMT voltages, laser power, alignment). From all rainbow bead measurements, the
+    calibrator fits one multiplicative factor per batch and channel; multiplying the raw data of a batch by them
+    brings all batches onto a common scale (``layers['calibrated']``, see `add_calibrated`).
+
+    A batch ('rainbow_batch') is a period with unchanged cytometer settings (same 'set_hash') on one cytometer, with one
+    or more rainbow bead measurements (each with its own 'uid'). Several bead types ('rainbow_type', e.g. lots) can be
+    combined if they are linked by a batch in which both were measured.
+
+    Constructing the calibrator from data sets up the batch encoder, fits the scatter model at once (closed form) and
+    prepares the fluorescence model, which is then fitted with `fit_fluorescence`.
+
+    Parameters
+    ----------
+    adatas : list of anndata.AnnData, optional
+        Scatter-gated rainbow bead measurements, each after `fit_rainbow_GMM` (``obs['GMM_label']``,
+        ``uns['GMM_means']``, ``uns['GMM_asinh_cofactor']``), with ``layers['raw']``, ``uns['cytoconfig']`` and the
+        metadata 'cytometer', 'rainbow_batch', 'rainbow_type', 'uid' and 'set_hash' in ``uns`` (as set by
+        `cytovanni.io.readfcs_rainbow_sample`); 'UTC' and 'date' are used if present. All need the fluorescence
+        channels of the first measurement's ``cytoconfig``. Default: an empty calibrator, as used by `from_saved`.
+    include_shift : bool, default True
+        Fit a shift per measurement and channel in the fluorescence model (see
+        `RainbowFluorescenceGMMCalibrationModule`).
+
+    Attributes
+    ----------
+    adatas : list of anndata.AnnData
+        Training data (not set after `from_saved`).
+    rboe : RainbowBatchOrdinalEncoder
+        Encoder of cytometers, batches, bead types and measurements.
+    rsim : RainbowScatterCalibrationModule
+        Scatter model.
+    rfim : RainbowFluorescenceGMMCalibrationModule
+        Fluorescence model.
+    channel_missing_cutoff : float or None
+        Value used in the last `fit_fluorescence` (None before).
+
+    Raises
+    ------
+    CalibrationModuleException
+        If a measurement lacks one of the required ``uns``, ``obs`` or layer entries (each missing key is also listed
+        in a `CalibrationModuleWarning`), or the number of peaks differs between measurements of one bead type.
+    MissingChannelException
+        If a measurement lacks one of the fluorescence channels or the scatter channels to calibrate.
+    InconsistentBatchException, RepeatedBatchException
+        If a batch contains different settings hashes, or a batch name occurs on several cytometers.
+
+    See Also
+    --------
+    fit_rainbow_GMM : per-measurement peak assignment needed as input.
+    plot_eval_RBInt_fit : check the fit.
+
+    Notes
+    -----
+    Fluorescence model (`RainbowFluorescenceGMMCalibrationModule`): every bead type is a mixture with one component per
+    peak; on the arcsinh scale, ``arcsinh((x + s) / f)`` of a bead of peak p in measurement m of batch b is normal with
+    mean ``arcsinh(mu_p / (Gamma_b f))`` and a covariance per peak and measurement; the peak shares are fitted per
+    measurement. ``mu_p`` is the peak position of the bead type, ``Gamma_b`` the calibration factor of the batch (per
+    channel), ``s`` a shift per measurement and channel, f the arcsinh cofactor of the bead type (geometric mean of the
+    measurements' ``GMM_asinh_cofactor``). ``ln Gamma`` is constrained to mean 0 per channel over the batches of the
+    first fit, which fixes the common scale. Entries of these batches that could not be trained (see
+    `fit_fluorescence`) still enter this mean. Peaks whose GMM mean is above
+    ``cytoconfig.max_linear_range`` get a free position per batch and no shift, so they do not inform the factors.
+
+    Scatter model (`RainbowScatterCalibrationModule`): the log median of every scatter channel per measurement is a
+    position per bead type plus a log shift per batch, fitted by weighted least squares.
+
+    When the model is extended (`extend_fit`), the parameters of the known batches and bead types are frozen and
+    only the new ones are fitted, so earlier calibrated data stay valid.
+
+    Examples
+    --------
+    >>> rbint = RainbowCalibrator(adatas)
+    >>> rbint.fit_fluorescence(gpu=True)
+    >>> rbint.save("rainbow_calibrator.pt")
+    >>> rbint.add_calibrated(adata_sample)  # adds adata_sample.layers["calibrated"]
+    """
     REQUIRED_UNS = ["cytometer", "rainbow_batch", "rainbow_type", "uid", "set_hash"]
     REQUIRED_GMM_UNS = ["GMM_means", "GMM_asinh_cofactor"]
     REQUIRED_GMM_OBS = ["GMM_label"]
@@ -54,22 +137,6 @@ class RainbowCalibrator():
     channel_missing_cutoff = None
     
     def __init__(self, adatas=None, include_shift=True):
-        """ Initialise from list of adatas.
-            
-            Requires:
-                'cytometer': name of the cytometer
-                'rainbow_batch': batch name
-                'rainbow_type': type of the rainbow bead (lot etc.)
-                'uid': rainbow bead sample unique identifier
-                'set_hash': hash of relevant cytometer settings (voltages etc.) to ensure no changes in batches
-            to be present in adata.uns.
-            If available also uses 'UTC' and 'date'.
-            
-            The fluorescence calibration also expects adata.uns['GMM_means'], adata.uns['GMM_asinh_cofactor']
-            and adata.obs['GMM_label'] as added by fit_rainbow_GMM.
-            
-            If adatas is None, has to be initialised manually later!
-        """
         if adatas is not None:
             self._check_adatas(adatas)
             self.adatas = adatas
@@ -92,8 +159,7 @@ class RainbowCalibrator():
     
     @classmethod
     def _check_adatas(cls, adatas):
-        """ Checks that all required entries are present in adatas.
-        """
+        """Raise CalibrationModuleException if some adatas lack a required uns/obs/layer entry (warns per key)."""
         abort = False
         
         for key in cls.REQUIRED_UNS:
@@ -125,8 +191,7 @@ class RainbowCalibrator():
     
     @classmethod
     def _check_adatas_channels(cls, adatas, channels):
-        """ Ensure that all fluorescence channels are present in all adatas.
-        """
+        """Raise MissingChannelException if some adatas lack one of `channels` in adata.var."""
         missing = 0
         for ad in adatas:
             if not np.all(np.isin(channels, ad.var.index)):
@@ -136,8 +201,7 @@ class RainbowCalibrator():
     
     @classmethod
     def _process_adatas_meta(self, adatas):
-        """ Extract metadata from adatas.
-        """
+        """Metadata table of adatas (one row per measurement) from their uns, as needed by the batch encoder."""
         df_meta = pd.DataFrame([[ad.uns["cytometer"] for ad in adatas],
                                 [ad.uns["rainbow_batch"] for ad in adatas],
                                 [ad.uns["rainbow_type"] for ad in adatas],
@@ -152,17 +216,46 @@ class RainbowCalibrator():
     
     
     def fit_fluorescence(self, gpu=True, device="cuda:0", verbosity=2, freeze=True, channel_missing_cutoff=-np.inf):
-        """ Fit fluorescence part of the model.
-            
-            :param gpu: bool. If True, tries to run fitting on GPU.
-            
-            :param device: bool. CUDA device if gpu, defaults to 'cuda:0'
-            
-            :param verbosity: int. 0 silent, 1 only progress bars, 2 also loss plots.
-            
-            :param freeze: bool. Whether all parameters should be frozen when the fit is done. Cannot be reversed, so should be turned off when the same batches should be trained again afterwards. But necessary to achieve the correct behaviour when extending the model.
-            
-            :param channel_missing_cutoff: float. Usually, all channels need to be present for the calibration to work. But when looking at calibration data etc. there may be rainbow bead measurements where a laser was turned off etc. Setting this to a finite value will treat all channels where every peak (in a given sample) is below this value as not fittable to avoid trying to fit pure noise. This is done by simply treating all peaks in that channel as nonlinear in the same way as for peaks that are off-scale.
+        """Fit the fluorescence model on the training data.
+
+        Builds a `RainbowFluorescenceGMMCalibrationDataset` and runs `RainbowFluorescenceGMMCalibrationTrainer` with its
+        default settings: initial fit of the peak positions (SGD on the GMM means), of the covariances (Adam), then
+        the full likelihood fit (Adam, 10000 steps on subsamples of at most 1000 beads per measurement).
+
+        Parameters
+        ----------
+        gpu : bool, default True
+            Fit on `device`. If no CUDA device is available, falls back to the CPU with a `MissingGPUWarning` (much
+            slower; torch uses one thread unless set with ``torch.set_num_threads``).
+        device : str, default "cuda:0"
+            Torch device used if `gpu`; ignored otherwise (CPU).
+        verbosity : int, default 2
+            0 silent, 1 progress messages and bars, 2 also the loss plots of the trainer.
+        freeze : bool, default True
+            Freeze all parameters after the fit. Freezing cannot be undone: turn it off only to continue training the
+            same batches with another call; it is needed for `extend_fit` to keep the known batches fixed.
+        channel_missing_cutoff : float, default -inf
+            Channels in which every peak of a measurement has a GMM mean below this value (raw units) are treated like
+            off-scale peaks (not used for the factors) in that measurement, e.g. a laser that was switched off. The
+            default uses all channels.
+
+        Returns
+        -------
+        None
+            Sets `dataset` and `rfim_trainer` and fits `rfim` in place (moved to the device).
+
+        Raises
+        ------
+        CalibrationModuleException
+            If the calibrator has no training data (loaded with `from_saved`; use `extend_fit` to add data).
+
+        Warns
+        -----
+        CalibrationModuleWarning
+            If `channel_missing_cutoff` differs from the previous fit, or some channels cannot be trained in some
+            batches (all peaks off-scale or below `channel_missing_cutoff`; their factors are set to 1 later).
+        MissingGPUWarning
+            If `gpu` but no CUDA device is available.
         """
         if not hasattr(self, "adatas"):
             raise CalibrationModuleException("RainbowCalibrator was loaded from saved and has no training data attached! If you want to extend the model use .extend() instead!")
@@ -192,17 +285,40 @@ class RainbowCalibrator():
     
     
     def extend_fit(self, adatas, **fitkwargs):
-        """ Extend fitmodel to new samples in adata, freezes all previously present parameters.
-            Also fits the fluorescence.
-            Previously loaded data is discarded and not used for the extension fit!
+        """Extend the model to new rainbow bead measurements and fit them, keeping all known parameters fixed.
 
-            Raises CalibrationModuleException (before anything is changed) if a new rainbow type has no overlap with
-            the trained data: it must be measured in a known batch, or in a new batch together with a known type
-            (RainbowBatchOrdinalEncoder.check_orphan_types). Otherwise its calibration factors would be arbitrary.
+        New batches, bead types and measurements are added to the encoder and both models; the parameters present
+        before are frozen, the scatter model is refitted (closed form) and the fluorescence model is fitted with
+        `fit_fluorescence` on the new data only. Factors of the known batches do not change. Works on a calibrator
+        loaded with `from_saved`.
 
-            :param adatas: iterable of AnnData. New rainbow samples.
+        Parameters
+        ----------
+        adatas : list of anndata.AnnData
+            New rainbow bead measurements, prepared as for the constructor. They replace `adatas`: the previous
+            training data are not used. Measurements in known batches are possible (their batch factors stay fixed).
+        **fitkwargs
+            Passed to `fit_fluorescence`.
 
-            :param fitkwargs: passed to fit_fluorescence.
+        Returns
+        -------
+        None
+
+        Raises
+        ------
+        CalibrationModuleException
+            Before anything is changed: if a measurement lacks required entries, or a new bead type has no link to the
+            trained data (it must be measured in a known batch, or in a new batch together with a known type; see
+            `RainbowBatchOrdinalEncoder.check_orphan_types`), since its factors would be arbitrary. After the encoder
+            was extended: if a known bead type has a different number of peaks.
+        MissingChannelException
+            If a measurement lacks one of the channels.
+
+        Examples
+        --------
+        >>> rbint = RainbowCalibrator.from_saved("rainbow_calibrator.pt")
+        >>> rbint.extend_fit(new_adatas)
+        >>> rbint.save("rainbow_calibrator_extended.pt")
         """
         self._check_adatas(adatas)
         df_meta = self._process_adatas_meta(adatas)
@@ -229,7 +345,12 @@ class RainbowCalibrator():
     
     
     def export(self):
-        """ Export self to dict.
+        """Export the calibrator (encoder, both models, `channel_missing_cutoff`; no training data) as a dict.
+
+        Returns
+        -------
+        dict
+            Keys 'rboe', 'rsim', 'rfim', 'channel_missing_cutoff'; the input of `from_saved` after ``torch.save``.
         """
         exported = {}
         exported["rboe"] = self.rboe.export()
@@ -239,11 +360,18 @@ class RainbowCalibrator():
         return exported
     
     def save(self, filepath, make_path_structure=False):
-        """ Save self to filepath.
-            
-            :param filepath: str. Path where file should be saved, should end in '.pt'.
-            
-            :param make_path_structure: bool. Whether path structure in filepath should be created if it doesn't yet exist. Turned off by default to not silently ignore unintentional errors in filepath, but can be enabled.
+        """Save the calibrator (`export`, without training data) with ``torch.save``.
+
+        Parameters
+        ----------
+        filepath : str
+            Output path, by convention ending in '.pt'.
+        make_path_structure : bool, default False
+            Create missing parent folders. Off by default, so that a mistyped path raises an error.
+
+        Returns
+        -------
+        None
         """
         exported = self.export()
         if make_path_structure:
@@ -252,7 +380,18 @@ class RainbowCalibrator():
     
     @classmethod
     def from_saved(cls, filepath):
-        """ Reconstruct saved calibrator from saved at filepath.
+        """Load a calibrator saved with `save`.
+
+        Parameters
+        ----------
+        filepath : str
+            Path of the saved file (loaded onto the CPU, ``weights_only=False``: load only trusted files).
+
+        Returns
+        -------
+        RainbowCalibrator
+            Calibrator without training data: it can calibrate data and be extended with `extend_fit`, but not refitted
+            with `fit_fluorescence`.
         """
         exported = torch.load(filepath, map_location=torch.device("cpu"), weights_only=False)
         rbint = cls()
@@ -264,16 +403,35 @@ class RainbowCalibrator():
     
     
     def get_calibration_factor(self, rainbow_batch=None, adata=None):
-        """ Get calibration factor from batch into common units.
-            Calibration is done by multiplying the raw data with the factors.
-            Correspondingly, to take data from batch1 to batch2 instead of to the common units, multiply with factors1 / factors2.
+        """Calibration factors of one batch: multiply its raw data by them to bring it onto the common scale.
 
-            Includes calibration factors for both height and area of scatter channels if applicable,
-            only includes factors for area of fluorescence channels.
+        To take data from batch 1 to batch 2 instead, multiply by ``factors1 / factors2``.
 
-            :param rainbow_batch: str. Optional, batch for which to get the calibration factor.
+        Parameters
+        ----------
+        rainbow_batch : str, optional
+            Batch name. Takes precedence over `adata`; if it is unknown and `adata` is given, the batch is taken from
+            `adata` (with an `OrdinalEncoderWarning`).
+        adata : anndata.AnnData, optional
+            Sample whose batch is used: ``uns['rainbow_batch']`` if it is a known batch, otherwise the batch is inferred
+            from 'cytometer', 'date', 'UTC' and the settings hash (`RainbowBatchOrdinalEncoder.find_closest_batch`).
 
-            :param adata: AnnData. Optional, AnnData from which to get the batch for the calibration factor.
+        Returns
+        -------
+        pandas.Series
+            Factor per channel: the calibrated scatter channels (e.g. FSC-A and FSC-H with the factor fitted on FSC-A,
+            see ``cytoconfig.get_default_scatter_calibration``), then the fluorescence channels of the model (area
+            channels). Fluorescence factors that were not trained for this batch are set to 1.
+
+        Raises
+        ------
+        OrdinalEncoderException, AutoBatchException
+            If neither argument is given, or the batch cannot be found or inferred.
+
+        Warns
+        -----
+        CalibrationModuleUntrainedParameterWarning
+            If some fluorescence factors of the batch were not trained (set to 1, not trustworthy).
         """
         factor_scatter = self.rsim.get_calibration_factor(rainbow_batch=rainbow_batch, adata=adata)
         factor_fluorescence = self.rfim.get_calibration_factor(rainbow_batch=rainbow_batch, adata=adata, fix_untrained=True, warn_untrained=True, return_mask=False)
@@ -281,7 +439,18 @@ class RainbowCalibrator():
         return factor
     
     def get_calibration_factor_all_single(self, rainbow_batch):
-        """ get_calibration_factor, modified version for get_calibration_factors_all.
+        """Factors of one batch as in `get_calibration_factor`, without warning, plus the fluorescence trained-mask.
+
+        Parameters
+        ----------
+        rainbow_batch : str
+            Batch name.
+
+        Returns
+        -------
+        tuple of pandas.Series
+            Factors (untrained fluorescence factors set to 1) and boolean mask of the trained fluorescence factors
+            (index: fluorescence channels).
         """
         factor_scatter = self.rsim.get_calibration_factor(rainbow_batch=rainbow_batch)
         factor_fluorescence, mask_trained_fluorescence = self.rfim.get_calibration_factor(rainbow_batch=rainbow_batch, fix_untrained=True, warn_untrained=False, return_mask=True)
@@ -289,7 +458,19 @@ class RainbowCalibrator():
         return factor, mask_trained_fluorescence
     
     def get_calibration_factors_all(self, warn_untrained=True):
-        """ Run .get_calibration_factor for all available rainbow batches, return as DataFrame.
+        """Calibration factors of all batches of the model.
+
+        Parameters
+        ----------
+        warn_untrained : bool, default True
+            Warn (`CalibrationModuleUntrainedParameterWarning`, one summary) if some fluorescence factors were not
+            trained; they are set to 1.
+
+        Returns
+        -------
+        pandas.DataFrame
+            Shape (batch, channel): index the batch names (encoder order), columns as in `get_calibration_factor`.
+            Over the batches of the first fit, the factors have geometric mean 1 per channel.
         """
         outs = [self.get_calibration_factor_all_single(rainbow_batch=label) for label in self.rboe.oes["rainbow_batch"].labels]
         factors = pd.DataFrame([o[0] for o in outs],
@@ -306,8 +487,14 @@ class RainbowCalibrator():
         return factors
     
     def get_rainbow_shifts_all(self):
-        """ Get all rainbow calibration shifts.
-            Returns a dictionary for every rainbow type.
+        """Fitted shifts of all rainbow bead measurements, per bead type.
+
+        Returns
+        -------
+        dict of str to pandas.DataFrame
+            Per rainbow type a DataFrame of shape (measurement, channel): index the measurement uids, columns the
+            fluorescence channels, values in raw units (see
+            `RainbowFluorescenceGMMCalibrationModule.get_calibration_rainbow_shift`).
         """
         outdct = {}
         df = self.rboe.data_df[["uid", "rainbow_type"]]
@@ -320,19 +507,39 @@ class RainbowCalibrator():
         return outdct
     
     def get_rainbow_peak_parameters(self, adata, channels):
-        """ Get parameters of the rainbow GMM fit for adata and channels.
-            
-            Returned parameters are exactly like they are used in the model,
-            i.e. they describe the raw measured data after adding the trained shift.
-            
-            Return means and covariances of Gaussians on arcsinh scale, the class shares,
-            wether the peak is in the linear range, as well as the arcsinh cofactor that was used.
-            Works wherever the fluorescence module is (CPU, or GPU after fit_fluorescence(gpu=True));
-            the returned values are numpy arrays on the CPU.
+        """Fitted mixture parameters of one rainbow bead measurement, as used in the fluorescence model.
 
-            :param adata: AnnData. Rainbow bead sample known to the model (its uid and rainbow type).
+        They describe ``arcsinh((x + s) / f)``, the raw data x after adding the fitted shift s (raw units), with the
+        cofactor f of the bead type: means and covariances of the peaks on this arcsinh scale, peak shares, and which
+        peaks count as linear. For nonlinear peaks the mean is the free per-batch position. Works wherever the
+        fluorescence module is (CPU, or GPU after ``fit_fluorescence(gpu=True)``).
 
-            :param channels: list of str. Fluorescence channels to return, in this order.
+        Parameters
+        ----------
+        adata : anndata.AnnData
+            Rainbow bead measurement known to the model (its uid, batch and rainbow type), prepared as for the
+            constructor.
+        channels : list of str
+            Fluorescence channels to return, in this order.
+
+        Returns
+        -------
+        mean : numpy.ndarray
+            Shape (peak, channel), arcsinh scale.
+        covariance : numpy.ndarray
+            Shape (peak, channel, channel), arcsinh scale.
+        shares : numpy.ndarray
+            Shape (peak,), fitted peak shares (sum 1).
+        islinear : numpy.ndarray
+            Boolean, shape (peak, channel): peak used for the calibration (GMM mean below ``max_linear_range`` and
+            channel not missing).
+        cofactor : float
+            Arcsinh cofactor f of the bead type (raw units).
+
+        Raises
+        ------
+        CalibrationModuleException
+            If the batch, type or uid of `adata` is not in the model.
         """
         # the dataset has to live on the device of the module (cuda after a GPU fit, cpu after from_saved)
         device = next(self.rfim.parameters()).device
@@ -361,14 +568,54 @@ class RainbowCalibrator():
     
     
     def apply_ArcSinh(self, x, tp):
-        """ Apply arcsinh for rainbow type tp to data x with same cofactor as used in the fit.
+        """Return ``arcsinh(x / f)`` with the cofactor f (raw units) of rainbow type `tp` in the fluorescence model.
+
+        Parameters
+        ----------
+        x : numpy.ndarray
+            Data on the raw (or calibrated) scale.
+        tp : str
+            Rainbow type.
+
+        Returns
+        -------
+        numpy.ndarray
+            Same shape as `x`.
         """
         return np.arcsinh(x / self.rfim.class_cofactor[tp])
     
     
     def add_calibrated_rainbow(self, adata, include_shift=True, only_shift=False, addlayer="calibrated"):
-        """ Add calibrated data layer to rainbow bead sample adata.
-            Can include the fitted shift.
+        """Add a calibrated layer to a rainbow bead measurement known to the model, optionally with its fitted shift.
+
+        The layer is ``(raw + shift) * factor`` per channel, with the shift of the measurement (raw units, fluorescence
+        channels only) and the factors of its batch. Channels without shift or factor are copied from ``layers['raw']``.
+
+        Parameters
+        ----------
+        adata : anndata.AnnData
+            Rainbow bead measurement with ``layers['raw']``, whose uid and rainbow type are in the model. Changed in
+            place: ``layers[addlayer]`` is set (overwritten).
+        include_shift : bool, default True
+            Add the fitted shift before multiplying by the factors.
+        only_shift : bool, default False
+            Only add the shift, do not apply the factors.
+        addlayer : str, default "calibrated"
+            Name of the layer to write.
+
+        Returns
+        -------
+        None
+
+        Raises
+        ------
+        CalibrationModuleException
+            If the shift is requested and the uid or rainbow type of `adata` is not in the model.
+
+        Warns
+        -----
+        CalibrationModuleWarning
+            If the model has channels that are not in `adata` (skipped).
         """
         adata.layers[addlayer] = adata.layers["raw"].copy()
         
@@ -384,10 +631,41 @@ class RainbowCalibrator():
             adata.layers[addlayer][:,index] = adata.layers[addlayer][:,index] * factor.to_numpy()[None]
     
     def add_calibrated(self, adata, rainbow_batch=None, addlayer="calibrated"):
-        """ Add calibrated data layer to sample adata.
-            If given uses 'rainbow_batch', otherwise tries to infer from adata.
+        """Add the calibrated layer ``raw * factor`` to a sample.
 
-            As they are usually not used, does not apply calibration to fluorescence height channels.
+        Factors as in `get_calibration_factor`: the calibrated scatter channels and the fluorescence (area) channels of
+        the model. Fluorescence height channels and all other channels are copied from ``layers['raw']`` unchanged.
+
+        Parameters
+        ----------
+        adata : anndata.AnnData
+            Sample with ``layers['raw']``. Changed in place: ``layers[addlayer]`` is set (overwritten).
+        rainbow_batch : str, optional
+            Batch of the sample. Default: taken from `adata` (``uns['rainbow_batch']``, or inferred from its date, time
+            and settings, see `get_calibration_factor`).
+        addlayer : str, default "calibrated"
+            Name of the layer to write.
+
+        Returns
+        -------
+        None
+
+        Raises
+        ------
+        OrdinalEncoderException, AutoBatchException
+            If the batch cannot be found or inferred.
+
+        Warns
+        -----
+        CalibrationModuleWarning
+            If the model has channels that are not in `adata` (skipped).
+        CalibrationModuleUntrainedParameterWarning
+            If some fluorescence factors of the batch were not trained (set to 1).
+
+        Examples
+        --------
+        >>> rbint.add_calibrated(adata, rainbow_batch="12_11_2021")
+        >>> adata.layers["calibrated"]
         """
         adata.layers[addlayer] = adata.layers["raw"].copy()
         
@@ -396,28 +674,65 @@ class RainbowCalibrator():
         adata.layers[addlayer][:,index] = adata.layers[addlayer][:,index] * factor.to_numpy()[None]
     
     def add_calibration_factor(self, adata, rainbow_batch=None, addkey="rainbow_calibration_factor"):
-        """ Add calibration factors to sample adata.var[addkey].
-            If given uses 'rainbow_batch', otherwise tries to infer from adata.
-            Defaults to nan if channel was not calibrated.
+        """Store the calibration factors of the sample's batch in ``adata.var[addkey]``.
+
+        Parameters
+        ----------
+        adata : anndata.AnnData
+            Sample. Changed in place: ``var[addkey]`` is set, NaN for channels without a factor.
+        rainbow_batch : str, optional
+            Batch of the sample. Default: taken from `adata`, see `get_calibration_factor`.
+        addkey : str, default "rainbow_calibration_factor"
+            Column of ``adata.var`` to write.
+
+        Returns
+        -------
+        None
         """
         adata.var[addkey] = np.nan
         intfactor = _restrict_to_available(self.get_calibration_factor(adata=adata, rainbow_batch=rainbow_batch), adata)
         adata.var.loc[intfactor.index, addkey] = intfactor
 
     def make_calibrated_fcs(self, filepath, filepath_new, cytoconfig, rainbow_batch=None, force=False, gates=[]):
-        """ Read .fcs at filepath, calibrate data using the rainbow model, write calibrated data to .fcs at filepath_new.
-    
-            :param filepath: str. Path to the original .fcs file.
-    
-            :param filepath_new: str. Path to the new .fcs file.
-    
-            :param cytoconfig: CytometerConfiguration.
-    
-            :param rainbow_batch: None, str. Either infer batch from file metadata, or give explicitly here.
-    
-            :param force: bool. Writes a note into files after calibration to make sure it is only applied once, can be overwritten here to enforce additional calibration either way.
+        """Write a calibrated copy of an .fcs file.
 
-            :param gates: iterable. List of gates to apply before the calibration, e.g. to exclude events in the non-linear detector range here as this is not longer possible afterwards.
+        Reads the raw data with FlowKit, multiplies the calibrated channels by the factors of the file's batch
+        (`get_calibration_factor`) and writes a new .fcs file with the original metadata and channel names. The
+        metadata key ``__cytovanni_rainbow_calibrated`` is set to "True", and a file that already has it is not
+        calibrated again (unless `force`).
+
+        Parameters
+        ----------
+        filepath : str
+            Path of the original .fcs file.
+        filepath_new : str
+            Path of the new .fcs file.
+        cytoconfig : CytometerConfiguration
+            Configuration of the cytometer; maps the file's channel names to the model's and is used to read the
+            metadata for the batch inference.
+        rainbow_batch : str, optional
+            Batch of the file. Default: inferred from the file's metadata (date, time, settings).
+        force : bool, default False
+            Calibrate even if the file is marked as calibrated already.
+        gates : list of gates, default []
+            Gates (with ``apply_df``, on the raw data with the model's channel names) applied before the calibration;
+            only the events inside all gates are written. E.g. to remove events outside the linear detector range,
+            which cannot be identified after the calibration.
+
+        Returns
+        -------
+        None
+
+        Raises
+        ------
+        MissingChannelException
+            If none of the calibrated channels is in the file.
+
+        Warns
+        -----
+        UserWarning
+            If the file is already marked as calibrated and `force` is False; the data are then written uncalibrated
+            (gates still applied).
         """
         markkey = "__cytovanni_rainbow_calibrated"
     
@@ -448,22 +763,50 @@ class RainbowCalibrator():
         writefcs(filepath_new, data_df, sample_id="", add_metadata=metadata, overwrite_pns=True, pns=pns)
 
     def get_calibrated_spectra(self, spectra, rainbow_batch, spectral=False):
-        """ Takes single stain spectra 'spectra', recorded in batch 'rainbow_batch', and standardizes the channels.
-            If spectral, normalizes the largest entry per spectrum to one, if not keeps the entry that is currently one at one.
+        """Calibrate single-stain spectra recorded in one batch and normalise them again.
 
-            :param spectra: pd.DataFrame. Single stain spectra, index channel, column dye.
-    
-            :param rainbow_batch: str. Rainbow bead batch of the spectra.
+        Multiplies every channel of the spectra by the calibration factor of `rainbow_batch` and renormalises each
+        spectrum, see `scale_spectra_wfactors`.
 
-            :param spectral: bool. Whether to use spectral flow normalization .
+        Parameters
+        ----------
+        spectra : pandas.DataFrame
+            Spectra of shape (channel, dye) on the raw scale of the batch; every channel needs a factor.
+        rainbow_batch : str
+            Batch in which the spectra were recorded.
+        spectral : bool, default False
+            Normalisation: if True the largest entry of every spectrum is 1 (spectral flow); if False the entry that
+            is 1 in the input stays 1 (conventional flow, the detector of the dye).
+
+        Returns
+        -------
+        pandas.DataFrame
+            Calibrated spectra, shape (channel, dye).
         """
         factors = self.get_calibration_factor(rainbow_batch=rainbow_batch)
         return scale_spectra_wfactors(spectra, factors, spectral=spectral)
     
 
     def plot_rainbow_with_PDF(self, adata, channels=None, bins=400):
-        """ Plot spectrum of rainbow beads adata.
-            Overlays the PDF of the fitted Gaussian.
+        """Plot the histograms of a rainbow bead measurement with the fitted mixture density overlaid.
+
+        One panel per channel: ``arcsinh((raw + s) / f)`` of the beads (shift s of the measurement, cofactor f of its
+        type), the fitted density of the linear peaks (black) and the nonlinear peaks (grey), and the fitted peak
+        positions (grey vertical lines).
+
+        Parameters
+        ----------
+        adata : anndata.AnnData
+            Rainbow bead measurement known to the model. Changed in place: the layer '_calibratedos' (raw plus shift)
+            is added.
+        channels : list of str, optional
+            Fluorescence channels to plot. Default: all channels of the model.
+        bins : int, default 400
+            Number of histogram bins.
+
+        Returns
+        -------
+        None
         """
         if channels is None:
             channels = self.rfim.channels

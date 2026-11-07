@@ -1,3 +1,4 @@
+"""Training data of the rainbow fluorescence model, and the subsampler also used by the Sinkhorn factor fits."""
 import numpy as np
 import pandas as pd
 import torch
@@ -7,7 +8,23 @@ import itertools
 from ..exceptions import CalibrationModuleException, CalibrationModuleWarning
 
 class DataLoader():
-    """ Simple dataloader from RainbowFluorescenceGMMCalibrationDataset.
+    """Iterate over one subsample of one rainbow type of a `RainbowFluorescenceGMMCalibrationDataset` in batches.
+
+    Parameters
+    ----------
+    dataset : RainbowFluorescenceGMMCalibrationDataset
+        Dataset to read from.
+    tp : str
+        Rainbow type.
+    sample_indices : torch.Tensor
+        Event indices (into the type's data) of the subsample, shape (events,).
+    batch_size : int
+        Events per batch.
+
+    Notes
+    -----
+    Iterating yields the dicts of `RainbowFluorescenceGMMCalibrationDataset.get_batch`. ``len()`` is the number of
+    events, not of batches (used to weight the batches).
     """
     def __init__(self, dataset, tp, sample_indices, batch_size):
         self.dataset = dataset
@@ -25,13 +42,10 @@ class DataLoader():
         return len(self.sample_indices)
 
 def _intype_GMM_crosstab_shares(index, label, N_sample, N_peak):
-    """ Share of every peak label within every sample, like pd.crosstab(index, label, normalize="index"), but much faster.
-        
-        :param index: torch.Tensor. Sample index of every bead, in range(N_sample).
-        
-        :param label: torch.Tensor. Peak label of every bead, in range(N_peak).
-        
-        Returns tensor of shape (N_sample, N_peak). Samples without beads get uniform shares 1/N_peak.
+    """Share of every peak label per sample, shape (N_sample, N_peak), like a row-normalised crosstab but faster.
+
+    `index` is the sample index (in range(N_sample)) and `label` the peak label (in range(N_peak)) of every bead;
+    samples without beads get uniform shares 1/N_peak.
     """
     count = torch.zeros((N_sample, N_peak), dtype=torch.float32)
     for lb in torch.unique(label):
@@ -41,8 +55,22 @@ def _intype_GMM_crosstab_shares(index, label, N_sample, N_peak):
     return torch.where(total>0, count / total.clamp(min=1.), torch.full_like(count, 1./N_peak))
 
 class Sampler():
-    """ Sampler to get subsample indices.
-        Faster on gpu by >10x
+    """Draw random subsamples of at most `Nsubsample` indices from each of several groups.
+
+    Parameters
+    ----------
+    indices_list : list of torch.Tensor
+        One 1-D int64 tensor of indices per group (e.g. the events of one measurement or batch). Groups may be empty.
+    Nsubsample : int
+        Maximum number of indices drawn per group in every call of `sample`; groups with fewer contribute all of
+        theirs (in random order).
+    device : str, default "cpu"
+        Torch device for the permutations. On a CUDA device, one large permutation is used for all groups, which is
+        much faster than one permutation per group.
+
+    Notes
+    -----
+    Every call of `sample` draws a new subsample without replacement within each group.
     """
     def __init__(self, indices_list, Nsubsample, device="cpu"):
         self.indices_list = indices_list
@@ -68,9 +96,10 @@ class Sampler():
                                              for i, inds in enumerate(self.indices_list)]).to(self.device)
     
     def permutation_cuda(self):
-        """ Get one big permutation on gpu, much faster than many small ones.
-            Argsort, add shift such that each group is in its own range, argsort again.
-            Finally choose Nsubsample for each group and turn into indices in dataset.
+        """Subsample with one large permutation on the GPU (returns a CPU tensor).
+
+        Ranks of a random permutation, offset by group so that every group keeps its own range, argsorted again: a
+        random order within every group. The first `Nsubsample` of every group are returned, groups in order.
         """
         full_permutation = torch.randperm(self.total, device=self.device, dtype=torch.int64)
         argsort_permutation = torch.argsort(full_permutation) + self.indices_group_add
@@ -80,14 +109,25 @@ class Sampler():
         return subsample_indices
     
     def permutation_cpu(self):
-        """ Slower fallback on cpu.
-        """
+        """Subsample with one permutation per group (CPU path); groups in order."""
         get_permutation = lambda inds: inds[torch.randperm(len(inds), device=self.device)[:self.Nsubsample].cpu()]
         return torch.cat([get_permutation(inds) for inds in self.indices_list])
     
     def sample(self, split=False):
-        """ If not split, returns the indices as one long tensor.
-            If split, splits them according to the group they belong to.
+        """Draw a new subsample.
+
+        Parameters
+        ----------
+        split : bool, default False
+            Return the subsample split by group.
+
+        Returns
+        -------
+        torch.Tensor or tuple
+            If not `split`: the drawn indices of all groups concatenated (groups in order, ``min(len(group),
+            Nsubsample)`` each), on the CPU for CPU `indices_list`. If `split`: a tuple ``(indices, groups)``, with a
+            tuple of one index tensor per non-empty group and a tensor of the numbers of these groups (empty groups
+            are left out).
         """
         if self.on_gpu:
             inds = self.permutation_cuda()
@@ -104,28 +144,65 @@ class Sampler():
         return tuple(splitinds[g] for g in nonempty), torch.tensor(nonempty, dtype=torch.int64)
 
 class RainbowFluorescenceGMMCalibrationDataset():
-    """ Dataset for rainbow channel GMM calibration.
+    """Training data of `RainbowFluorescenceGMMCalibrationModule`: rainbow bead events per type, with their indices.
+
+    Collects the raw fluorescence data (``layers['raw']``, channels ``cytoconfig.channels_fluorescence`` of the first
+    measurement), the GMM labels and peak means of `fit_rainbow_GMM`, and the encoded batch, type and uid of every
+    bead, grouped by rainbow type. Marks which peaks are usable for the calibration, and provides random subsamples of
+    at most `Nsubsample` beads per measurement for every training step.
+
+    Parameters
+    ----------
+    rboe : RainbowBatchOrdinalEncoder
+        Batch encoder that already contains all batches, types and uids of `adatas`.
+    adatas : list of anndata.AnnData
+        Rainbow bead measurements after `fit_rainbow_GMM` (see `RainbowCalibrator`).
+    device : str, default "cpu"
+        Torch device of the data and the subsampling, e.g. 'cpu' or 'cuda:0'.
+    Nsubsample : int, default 1000
+        Beads drawn per measurement (in total over its peaks) in every training step; measurements with fewer usable
+        beads contribute all of them.
+    batch_size : int, default 20000
+        Events per batch of the loaders of `sample_loaders` (memory limit only; the gradients are accumulated over
+        all batches of a step).
+    data_on_device : bool, default True
+        Move the data to `device` at once (rainbow data are small).
+    channel_missing_cutoff : float, default -inf
+        Channels in which every peak of a measurement has a GMM mean below this value (raw units) are treated like
+        off-scale peaks in that measurement (e.g. a laser switched off). The default uses all channels.
+    warn_missing : bool, default True
+        Warn if some channels cannot be trained in some batches (`df_channel_train` is set in any case).
+
+    Attributes
+    ----------
+    present_types : numpy.ndarray of str
+        Rainbow types in `adatas`.
+    data : dict of str to torch.Tensor
+        Raw fluorescence data per type, shape (events, channel).
+    GMM_means : dict of str to numpy.ndarray
+        ``uns['GMM_means']`` per type, shape (measurement, peak, channel), raw scale.
+    peak_usemask : dict of str to torch.Tensor
+        Boolean, shape (measurement, peak, channel): peak usable for the calibration (``GMM_means`` below
+        ``cytoconfig.max_linear_range`` of the measurement, and the channel not missing, see
+        `channel_missing_cutoff`). The other peaks are the "nonlinear" peaks of the model.
+    peak_shares : dict of str to torch.Tensor
+        Share of every GMM peak per measurement, shape (measurement, peak), from the beads that are not off-scale in
+        all channels.
+    df_channel_train : pandas.DataFrame
+        Boolean, shape (batch, channel), index the names of the batches in `adatas`: True if the channel has a usable
+        peak in some measurement of the batch, i.e. its factor can be trained.
+
+    Raises
+    ------
+    CalibrationModuleException
+        If some measurements were not fitted with `fit_rainbow_GMM`, the number of peaks differs within a type, or a
+        batch, type or uid is not in `rboe`.
+
+    Notes
+    -----
+    Beads whose GMM peak is unusable in every channel are left out of the subsamples.
     """
     def __init__(self, rboe, adatas, device="cpu", Nsubsample=1000, batch_size=20000, data_on_device=True, channel_missing_cutoff=-np.inf, warn_missing=True):
-        """ 
-            
-            :param rboe: RainbowBatchOrdinalEncoder. Batch encoder, already setup.
-            
-            :param adatas: iterable. List of adatas to include in training.
-            
-            :param device: str. CUDA device to use, usually either 'cpu' or 'cuda:0'.
-            
-            :param Nsubsample: int. Subsample each sample to at most Nsubsample beads every time .sample() is used.
-            
-            :param batch_size: int. Batch size of the dataloaders returned by .sample_loaders().
-            
-            :param data_on_device: bool. Whether data should be shifted to device immediately, usually the best choice since it isn't that big anyway.
-            
-            :param channel_missing_cutoff: float. Usually, all channels need to be present for the calibration to work. But when looking at calibration data etc. there may be rainbow bead measurements where a laser was turned off etc. Setting this to a finite value will treat all channels where every peak (in a given sample) is below this value as not fittable to avoid trying to fit pure noise. This is done by simply treating all peaks in that channel as nonlinear in the same way as for peaks that are off-scale.
-            
-            :param warn_missing: bool. Whether to warn about missing channels that will not get trained.
-                dataset.df_channel_train is set in either case.
-        """
         self.cytoconfig = adatas[0].uns["cytoconfig"] # just use the first one, channels have to be the same everywhere anyway
         self.channels = self.cytoconfig.channels_fluorescence
         self.rboe = rboe
@@ -146,15 +223,26 @@ class RainbowFluorescenceGMMCalibrationDataset():
     
     @classmethod
     def check_GMM_setup(self, adatas):
-        """ Make sure simple GMM was run on all samples.
+        """Raise CalibrationModuleException if some adatas lack ``obs['GMM_label']`` or ``uns['GMM_means']``.
+
+        Parameters
+        ----------
+        adatas : list of anndata.AnnData
+            Rainbow bead measurements.
         """
         if np.any([("GMM_label" not in ad.obs) or ("GMM_means" not in ad.uns) for ad in adatas]):
             raise CalibrationModuleException("Some of the adatas were not fitted with the simple GMM model!")
     
     @classmethod
     def check_type_Npeak_consistency(cls, adatas, prior={}):
-        """ Mare sure that the number of peaks is consistent for every different rainbow bead type.
-            Optionally also tests if it is the same as previously set.
+        """Raise CalibrationModuleException if the number of GMM peaks differs within a rainbow type.
+
+        Parameters
+        ----------
+        adatas : list of anndata.AnnData
+            Rainbow bead measurements after `fit_rainbow_GMM`.
+        prior : dict of str to int, default {}
+            Known number of peaks per type; a type in `prior` must also match it.
         """
         for tp in np.unique([ad.uns["rainbow_type"] for ad in adatas]):
             uN = np.unique([ad.uns["GMM_means"].shape[0] for ad in adatas if ad.uns["rainbow_type"]==tp])
@@ -163,7 +251,22 @@ class RainbowFluorescenceGMMCalibrationDataset():
     
     @classmethod
     def get_type_Npeak(cls, adatas):
-        """ Get number of peaks for every rainbow bead type.
+        """Number of GMM peaks per rainbow type.
+
+        Parameters
+        ----------
+        adatas : list of anndata.AnnData
+            Rainbow bead measurements after `fit_rainbow_GMM`.
+
+        Returns
+        -------
+        dict of str to int
+            Number of peaks (rows of ``uns['GMM_means']``) per type.
+
+        Raises
+        ------
+        CalibrationModuleException
+            If the number differs within a type.
         """
         cls.check_type_Npeak_consistency(adatas)
         return {tp: np.unique([ad.uns["GMM_means"].shape[0]
@@ -171,11 +274,19 @@ class RainbowFluorescenceGMMCalibrationDataset():
                 for tp in np.unique([ad.uns["rainbow_type"] for ad in adatas])}
     
     def check_batch_training_missing(self, warn=True):
-        """ Check for batches where some parameters are not getting trained,
-            either because all peaks are in the non-linear range, or because all peaks are too low.
-            Sets self.df_channel_train (batch x channel, True = trained), which the trainer needs.
+        """Find the (batch, channel) factors that cannot be trained and store them in `df_channel_train`.
 
-            :param warn: bool. Raise a CalibrationModuleWarning if some channel is not trained in some batch.
+        A factor cannot be trained if no measurement of the batch has a usable peak in the channel (all peaks above the
+        linear range, or the channel missing, see `channel_missing_cutoff`). The trainer needs `df_channel_train`.
+
+        Parameters
+        ----------
+        warn : bool, default True
+            Issue a `CalibrationModuleWarning` (with counts) if some channel cannot be trained in some batch.
+
+        Returns
+        -------
+        None
         """
         batch_idx = {k:self.peak_shares_batchidx[k].cpu().numpy() for k in self.present_types}
         train_mask = {k:np.any(self.peak_usemask[k].cpu().numpy(), axis=1) for k in self.present_types}
@@ -198,6 +309,15 @@ class RainbowFluorescenceGMMCalibrationDataset():
             warnings.warn(warnstr, CalibrationModuleWarning)
     
     def setup_data(self):
+        """Collect data, indices, usable-peak masks, initial peak shares and the subsamplers from `adatas` (by type).
+
+        Called by the constructor; also sets `df_channel_train` (see `check_batch_training_missing`).
+
+        Raises
+        ------
+        CalibrationModuleException
+            If a batch, type or uid of `adatas` is not in `rboe`.
+        """
         self.present_types = np.unique([ad.uns["rainbow_type"] for ad in self.adatas])
         self.adatas_tp = {tp:[ad for ad in self.adatas if ad.uns["rainbow_type"]==tp] for tp in self.present_types}
         
@@ -267,19 +387,37 @@ class RainbowFluorescenceGMMCalibrationDataset():
         self.check_batch_training_missing(warn=self.warn_missing)
     
     def shift_data_to_device(self):
-        """ Shift all relevant data to self.device.
-        """
+        """Move the event data, index tensors and usable-peak masks to `device`."""
         keys_to_device = ["data", "data_uid_index", "data_batch_index", "data_intype_index", "peak_usemask"]
         for key in keys_to_device:
             setattr(self, key, {tp:getattr(self, key)[tp].to(self.device) for tp in getattr(self, key)})
 
     def get_sample_indices(self):
-        """ Get sampled indices, subsample to N beads per rainbow bead sample.
+        """Draw a new subsample of at most `Nsubsample` usable beads per measurement.
+
+        Returns
+        -------
+        dict of str to torch.Tensor
+            Per rainbow type the event indices of the subsample (CPU), shape (events,).
         """
         return {tp:self.batch_index_sampler[tp].sample() for tp in self.batch_index_sampler}
     
     def get_batch(self, tp, sample_indices):
-        """ Get a single batch from indices.
+        """Data and indices of the given events of one rainbow type, on `device`.
+
+        Parameters
+        ----------
+        tp : str
+            Rainbow type.
+        sample_indices : torch.Tensor
+            Event indices into the type's data, shape (events,).
+
+        Returns
+        -------
+        dict
+            'data' (raw fluorescence, shape (events, channel)), 'uid_idx' and 'batch_idx' (encoded uid and batch,
+            shape (events,)), 'peak_islinear' (usable-peak mask of each event's measurement, shape
+            (events, peak, channel)).
         """
         if self.data_on_device:
             sample_indices = sample_indices.to(self.device)
@@ -290,7 +428,17 @@ class RainbowFluorescenceGMMCalibrationDataset():
         return {"data":data, "uid_idx":uid_idx, "batch_idx":batch_idx, "peak_islinear":type_peak_usemask}
     
     def sample_loaders(self, batch_size_override=None):
-        """ Subsample to N beads per rainbow bead sample, return dataloader for each bead type.
+        """Draw a new subsample (`get_sample_indices`) and return one loader per rainbow type.
+
+        Parameters
+        ----------
+        batch_size_override : int, optional
+            Events per batch. Default: `batch_size`.
+
+        Returns
+        -------
+        dict of str to DataLoader
+            Loader per rainbow type, yielding dicts as returned by `get_batch`.
         """
         sample_indices = self.get_sample_indices()
         
@@ -300,7 +448,13 @@ class RainbowFluorescenceGMMCalibrationDataset():
         return loaders
     
     def sample(self):
-        """ Subsample to N beads per rainbow bead sample, return their data.
+        """Draw a new subsample and return all of its data at once, per rainbow type.
+
+        Returns
+        -------
+        dict
+            Keys as in `get_batch` ('data', 'uid_idx', 'batch_idx', 'peak_islinear'), each a dict of rainbow type to
+            tensor on `device`.
         """
         sample_indices = self.get_sample_indices()
         

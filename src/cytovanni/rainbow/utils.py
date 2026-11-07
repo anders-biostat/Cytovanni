@@ -1,3 +1,4 @@
+"""Helpers for rainbow calibration results: apply factors to spectra, split log factors into laser and channel parts."""
 import numpy as np
 import pandas as pd
 import warnings
@@ -5,14 +6,35 @@ import warnings
 from ..exceptions import CalibrationModuleWarning, CalibrationModuleException, SpilloverWarning
 
 def scale_spectra_wfactors(spectra, factors, spectral=False):
-    """ Scale spectra with calibration factors.
-        If spectral flow, norm largest entry of every spectrum to one.
-        For conventional flow, try keeping the entry that is one normed to one,
-        use spectral convention as fallback if multiple entries are exactly one.
+    """Multiply spectra by per-channel calibration factors and normalise every spectrum again.
 
-        :param spectra: pd.DataFrame. Single stain spectra, index channel, column dye.
+    Parameters
+    ----------
+    spectra : pandas.DataFrame
+        Single-stain spectra of shape (channel, dye) (index channels, columns dyes), on the scale the factors apply to
+        (e.g. raw).
+    factors : pandas.Series
+        Factor per channel; must contain every channel of `spectra` (extra entries are ignored), e.g. from
+        `RainbowCalibrator.get_calibration_factor`. Use ``1 / factors`` to go from calibrated back to raw.
+    spectral : bool, default False
+        Normalisation after scaling. True (spectral flow): the largest entry of every spectrum is 1 (NaN ignored).
+        False (conventional flow): the entry that is exactly 1 in the input stays 1; spectra with no or several
+        entries equal to 1 (or all NaN) fall back to the spectral normalisation, with a `SpilloverWarning`.
 
-        :param factors: pd.Series. Scaling factor for every channel with corresponding index.
+    Returns
+    -------
+    pandas.DataFrame
+        Scaled spectra, shape (channel, dye), float.
+
+    Raises
+    ------
+    CalibrationModuleException
+        If `factors` lacks a channel of `spectra` or contains NaN for one.
+
+    Examples
+    --------
+    >>> calibrated = scale_spectra_wfactors(spectra_raw, rbint.get_calibration_factor(rainbow_batch="b1"),
+    ...                                     spectral=True)
     """
     spectra = spectra.astype(float)
     factors = factors.astype(float)
@@ -48,18 +70,39 @@ def scale_spectra_wfactors(spectra, factors, spectral=False):
     return spectra_scaled
 
 def extract_logfactor_laserfactor(logfactors, fixed_components=True):
-    """ Take fitted logfactors for every channel, pd.DataFrame of shape (batch, channel).
-        
-        Both variants decompose logfactors[batch, channel] = common[batch] * component[channel] + residuals[batch, channel].
-        
-        If fixed_components, the component is one for all channels, so the common factor is the least squares
-        (= mean over channels) factor of every batch.
-        
-        If not fixed_components, the component is the first principal component, rescaled to mean one over the channels
-        (which also fixes its sign), and the common factor is the mean over channels of the PCA reconstruction (offset
-        included). For a constant component this is identical to fixed_components=True.
-        
-        Returns common factor and residuals
+    """Split log calibration factors into a common factor per batch and per-channel residuals.
+
+    Decomposes ``logfactors[batch, channel] = common[batch] * component[channel] + residuals[batch, channel]``. Meant
+    for the channels of one laser: a change of the laser scales all of them approximately equally, so the common
+    factor approximately captures the laser and the residuals the individual detectors.
+
+    Parameters
+    ----------
+    logfactors : pandas.DataFrame
+        Log calibration factors, shape (batch, channel), e.g. ``numpy.log(rbint.get_calibration_factors_all())``
+        restricted to the channels of one laser. Batches with a NaN in any channel are left out (NaN in the output).
+    fixed_components : bool, default True
+        If True, the component is 1 for all channels, so the common factor is the mean over channels of every batch
+        (least squares). If False, the component is the first principal component over batches, rescaled to mean 1
+        over the channels (which also fixes its sign), and the common factor is the mean over channels of the PCA
+        reconstruction (offset included); for a constant component both are identical.
+
+    Returns
+    -------
+    common_logfactor : pandas.Series
+        Common log factor per batch (index of `logfactors`).
+    residuals : pandas.DataFrame
+        Residuals, same shape and labels as `logfactors`.
+
+    Raises
+    ------
+    CalibrationModuleException
+        If not `fixed_components` and the first principal component has no common direction (mean over channels
+        near 0).
+
+    See Also
+    --------
+    extract_logfactor_laserfactor_bylaser : the same for every laser separately.
     """
     mask_nan = logfactors.isna().any(axis=1)
 
@@ -89,8 +132,29 @@ def extract_logfactor_laserfactor(logfactors, fixed_components=True):
     return common_logfactor, residuals
 
 def extract_logfactor_laserfactor_bylaser(logfactors, key_laser, fixed_components=True):
-    """ Same as extract_logfactor_laserfactor, but run separately for every laser according to key_laser.
-        key_laser should correspond to the columns of logfactors.
+    """Run `extract_logfactor_laserfactor` separately for the channels of every laser.
+
+    Parameters
+    ----------
+    logfactors : pandas.DataFrame
+        Log calibration factors, shape (batch, channel).
+    key_laser : numpy.ndarray or pandas.Series
+        Laser of every column of `logfactors`, in column order (e.g.
+        ``cytoconfig.channel_laser_key.loc[logfactors.columns]``).
+    fixed_components : bool, default True
+        See `extract_logfactor_laserfactor`.
+
+    Returns
+    -------
+    residuals : pandas.DataFrame
+        Residuals, shape (batch, channel), columns grouped by laser (sorted laser names). Channels that are NaN in all
+        batches stay NaN.
+    laserfactors : pandas.DataFrame
+        Common log factor per batch and laser, shape (batch, laser); NaN for a laser without any non-NaN channel.
+
+    Notes
+    -----
+    The order of the outputs (residuals first) is the reverse of `extract_logfactor_laserfactor`.
     """
     lasers = np.unique(key_laser)
     def safe_extract(logfactors):
@@ -108,11 +172,25 @@ def extract_logfactor_laserfactor_bylaser(logfactors, key_laser, fixed_component
     return residuals, laserfactors
 
 def reorder_peaks(adata, new_order):
-    """ Reorder peaks in rainbow bead measurement adata.
+    """Change the peak numbering of a rainbow bead measurement after `fit_rainbow_GMM`, in place.
 
-        new_order should be the old order as index, new order as value,
-        e.g. pd.Series(np.arange(5)[::-1], index=np.arange(5)) flips the order.
-        Applies this not only to GMM_label, but also the various entries in adata.uns
+    Parameters
+    ----------
+    adata : anndata.AnnData
+        Measurement after `fit_rainbow_GMM`. Changed in place: ``obs['GMM_label']`` and the rows of ``uns``
+        'GMM_means', 'GMM_asinh_means', 'GMM_asinh_covariances' and 'GMM_asinh_stds' are reordered.
+    new_order : pandas.Series
+        Index the old label, value the new label (a permutation of 0..N-1), e.g.
+        ``pd.Series(np.arange(5)[::-1], index=np.arange(5))`` reverses 5 peaks.
+
+    Returns
+    -------
+    None
+
+    Raises
+    ------
+    ValueError
+        If `new_order` does not have as many entries as there are labels in ``obs['GMM_label']``.
     """
     if not len(adata.obs["GMM_label"].unique())==len(new_order):
         raise ValueError("Make sure the new order has as many classes as the old one!")
