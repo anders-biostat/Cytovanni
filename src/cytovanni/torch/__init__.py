@@ -1,3 +1,8 @@
+"""Torch building blocks used by the fits.
+
+Distribution losses (Sinkhorn, MMD), extendable parameters, the arcsinh normal distribution of the rainbow model,
+differentiable unmixing, and helpers for saving pandas objects.
+"""
 from .utils import diffclamp, _ensure_real_nll
 from .utils import torch_print_memory, torch_show_tensors_inmemory
 from .loss import LossContainer
