@@ -255,7 +255,7 @@ class PanelModule(Module):
         inv_spectra = torch_invert_spectra(self(embedding, clamp_differentiable=False, mask_unused=not include_unused))
         return (torch_apply_unmixing_inv(inv_spectra, x) * stainscale / arcsinh_cofactor).arcsinh()
     
-    def get_unmixing_resistance(self, x_np, embedding_np, stainscale_np=None, arcsinh_cofactor=1500, embedding_step=1., include_unused=False, single_step=True, gradstep_maxnorm=True, batch_size=1e4):
+    def get_unmixing_resistance(self, x_np, embedding_np, stainscale_np=None, arcsinh_cofactor=1500, embedding_step=1., include_unused=False, single_step=False, gradstep_maxnorm=False, batch_size=1e4):
         """Estimate per event and stain how strongly the unmixed value is affected by spectrum errors.
 
         For every event and stain, the unmixed value ``val = arcsinh(unmixed * stainscale / arcsinh_cofactor)`` is
@@ -282,10 +282,10 @@ class PanelModule(Module):
         include_unused : bool, default False
             Let the components not used in the panel enter the spectra, so steps along them change the result; if False
             they are masked.
-        single_step : bool, default True
+        single_step : bool, default False
             If True, step only along the component with the largest absolute Jacobian (per event and stain), by
             +-`embedding_step`. If False, step along the Jacobian direction, normalised as set by `gradstep_maxnorm`.
-        gradstep_maxnorm : bool, default True
+        gradstep_maxnorm : bool, default False
             Only if not `single_step`: if True, the largest component change of the step is `embedding_step`; if False,
             the absolute changes of all components sum to `embedding_step`.
         batch_size : int or float, default 1e4
@@ -392,13 +392,13 @@ class PanelModule(Module):
                                      f"the panel {len(self.stains)}!")
         return x_np, stainscale_np
 
-    def get_unmixing_resistance_fromad(self, adata, embedding_np, key_layer="calibrated", arcsinh_cofactor=1500, embedding_step=1., include_unused=False, single_step=False, gradstep_maxnorm=True, batch_size=1e4, label_marker=True, apply_factors=True):
+    def get_unmixing_resistance_fromad(self, adata, embedding_np, key_layer="calibrated", arcsinh_cofactor=1500, embedding_step=1., include_unused=False, single_step=False, gradstep_maxnorm=False, batch_size=1e4, label_marker=True, apply_factors=True):
         """Unmixing resistance R (see `get_unmixing_resistance`) for the events of an AnnData.
 
         With `apply_factors`, the data are put on the scale of the fitted model first, using the parameters that
         ``add_standardisation_parameters`` of a fitted `SpectralFitTransformer` stored in `adata` (where present):
         the layer is multiplied by the channel factors ``adata.var['sfm_calibration_factor']`` and the unmixed values
-        by the stain factors ``adata.varm['sfm_stain_factor']``. Note the different default of `single_step`.
+        by the stain factors ``adata.varm['sfm_stain_factor']``.
 
         Parameters
         ----------
@@ -416,7 +416,7 @@ class PanelModule(Module):
             Let the components not used in the panel enter the spectra.
         single_step : bool, default False
             Step along the single most important component (True) or along the Jacobian direction (False).
-        gradstep_maxnorm : bool, default True
+        gradstep_maxnorm : bool, default False
             Only if not `single_step`: normalise the largest component change (True) or the sum of absolute changes
             (False) to `embedding_step`.
         batch_size : int or float, default 1e4

@@ -128,6 +128,7 @@ A fix can change results relative to one of these and not the other; both are st
 | R3b-B9 | `LinearSingleStainSpectrumFit.plot_NxN` plotted the wrong channels for a subset | no (plot only) | `plot_NxN(channels=...)` not a leading subset |
 | R3b-B10 | `anndata_concat(permute)`, `anndata_subsample`, `df_subsample` selected by name | no for unique names (same draws); crash/extra rows -> works | non-unique event names / index |
 | R3b-B11 | S8 scatter channels' laser assignment | no (plot colours, `channel_laser_key`) | `CytometerConfiguration_S8` |
+| R3b-U2 | `get_unmixing_resistance(_fromad)` defaults = the author's settings | yes, calls relying on the defaults | `single_step`/`gradstep_maxnorm` not passed |
 | R3b-U3 | panel `*_fromad` diagnostics ignored the fitted channel/stain factors | yes, diagnostics on AnnData with stored standardisation parameters | `get_unmixing_resistance_fromad`, `get_grouped_jac(_single)_fromad`, `get_clustermeans_withz` |
 
 Entry format: see the review notes (todo/00_CONVENTIONS.md "Fix log" in the review project).
@@ -1476,3 +1477,11 @@ in the review project (11/11 PASS, GPU job; B9 not run, code only).
 - Effect on results: yes, these diagnostics on AnnData objects that carry the standardisation parameters.
 - Affected analyses: hd7-03-spectra-integration.ipynb cells 94, 96 (R, grouped Jacobian) and 120-257
   (`get_grouped_jac_single_fromad`): values change if re-run (diagnostic plots only, no downstream results).
+
+### R3b-U2 unmixing-resistance defaults
+- Where: ref.panel.PanelModule.get_unmixing_resistance (was single_step=True, gradstep_maxnorm=True) and
+  get_unmixing_resistance_fromad (was gradstep_maxnorm=True): both now single_step=False, gradstep_maxnorm=False,
+  the settings of every call in the usage evidence (hd7-03 cells 5, 96, 317). `include_unused` stays False.
+- Approval: user 2026-11-07, "Yes, change the defaults".
+- Effect on results: yes, for calls that rely on the defaults (different step direction/normalisation of R).
+- Affected analyses: none known (all known calls pass both arguments explicitly).
