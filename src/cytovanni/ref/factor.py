@@ -265,6 +265,13 @@ def fit_factors_Sinkhorn(datadct, fit_markers=None, arcsinh_cofactor=5000, Nsamp
     Nbatch = len(keys)
     Nmarker = len(markers)
     marker_train = [(marker in fit_markers if fit_markers is not None else True) for marker in markers]
+    # all frames must have the same markers; align them to the first frame's column order (tensors are positional)
+    if len(set(markers)) != len(markers):
+        raise ValueError(f"Duplicate marker columns in the data: {markers}")
+    for k, v in datadct.items():
+        if set(v.columns) != set(markers) or len(v.columns) != len(markers):
+            raise ValueError(f"Batch '{k}' has markers {list(v.columns)}, expected the same set as the first batch: {markers}")
+    datadct = {k: v[markers] for k, v in datadct.items()}
     
     if dummy:
         return pd.DataFrame(1., index=keys, columns=markers)

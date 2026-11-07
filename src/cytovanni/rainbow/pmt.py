@@ -49,12 +49,14 @@ class PMTExponentFitter():
             printwtime(f"Not enough different values to fit exponent for channel {channel}!")
             return [np.nan, np.nan, np.nan]
 
-        def fitfunct(xdata, intercept, slope_PMT, slope_LAS):
-            return intercept + self._combinex(xdata, intercept, slope_PMT, slope_LAS)
-
-        params = scipy.optimize.curve_fit(fitfunct, xdata, ydata, p0=[0,10,1])[0]
-        if not self.fit_laser_exponent:
-            params[2] = 1.
+        if self.fit_laser_exponent:
+            def fitfunct(xdata, intercept, slope_PMT, slope_LAS):
+                return intercept + self._combinex(xdata, intercept, slope_PMT, slope_LAS)
+            params = scipy.optimize.curve_fit(fitfunct, xdata, ydata, p0=[0,10,1])[0]
+        else: # laser exponent fixed at 1: only intercept and PMT exponent are free (two voltages suffice)
+            def fitfunct(xdata, intercept, slope_PMT):
+                return intercept + self._combinex(xdata, intercept, slope_PMT, 1.)
+            params = np.append(scipy.optimize.curve_fit(fitfunct, xdata, ydata, p0=[0,10])[0], 1.)
 
         if plot:
             sns.regplot(x=self._combinex(xdata, *params), y=ydata)

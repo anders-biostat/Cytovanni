@@ -91,7 +91,7 @@ class UnmxErrorExclusionMultiplier(ScaleMultiplier):
             return xc * scale
         else:
             mask = xc.detach()[:,self.group_stain_idx] > self.group_threshold[self.group_arange,self.group_stain_idx][None]
-            detach_mask = torch.clamp((mask.to(torch.float32) @ self.block_mask), 0., 1.)
+            detach_mask = torch.clamp((mask.to(self.block_mask.dtype) @ self.block_mask), 0., 1.)
             return xc * (detach_mask * scale.detach() + (1-detach_mask) * scale)
     
     def export(self):

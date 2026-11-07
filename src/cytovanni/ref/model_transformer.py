@@ -127,8 +127,10 @@ class ScaleFactor(Module):
         super().__init__()
         self.parameter = ExtendableParameter((Nbatch,Nchannel), 0, 0., allow_grad=trainable, axis_norm=0 if mean_norm else None)
         self.parameter.param_mask_trainable.data[(list(anchoridxs), slice(None))] = 0.
-        if use_channel_mask is not None:
-            self.parameter.param_mask_trainable.data[(slice(None), ~torch.tensor(use_channel_mask.to_numpy(), dtype=bool))] = 0.
+        # features that are never scaled (also not for batches added later by extend)
+        self.idx_fixed_features = [] if use_channel_mask is None else list(np.where(~np.asarray(use_channel_mask, dtype=bool))[0])
+        if len(self.idx_fixed_features)>0:
+            self.parameter.param_mask_trainable.data[(slice(None), self.idx_fixed_features)] = 0.
         
         self.max_abs_value = max_abs_value
     
@@ -163,7 +165,13 @@ class ScaleFactor(Module):
         self.parameter.freeze()
     
     def extend(self, inds):
+        """ Extend by new batch indices inds. New batches are trainable, except for the features excluded by
+            use_channel_mask at construction, which stay fixed (factor 1) for the new batches as well.
+        """
+        Nold = self.parameter.shape[0]
         self.parameter.extend(inds)
+        if len(self.idx_fixed_features)>0:
+            self.parameter.param_mask_trainable.data[Nold:, self.idx_fixed_features] = 0.
     
     @property
     def shape(self):

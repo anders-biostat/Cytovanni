@@ -181,7 +181,8 @@ class PanelConfiguration():
         embedding = []
         for dye in spectra.index:
             embedding.append(self.get_single_spectrum_embedding(dye, spectra.loc[dye]))
-        embedding = pd.concat([e for e in embedding if len(e)>0])
+        embedding = [e for e in embedding if len(e)>0]
+        embedding = pd.concat(embedding) if len(embedding)>0 else pd.Series(dtype=float) # all-fixed panel: no components
         embedding = embedding.loc[[i for i in self.pca_components.index if i in embedding.index]]
 
         if ensure_complete:
@@ -206,7 +207,10 @@ class PanelConfiguration():
             components = self.pca_components.loc[compind]
             components_mask = self.pca_components_use.loc[compind].astype(float) if only_included_components else 1.
             try:
-                spectrum = self.pca_offset.loc[dye] + (components_mask * embedding.loc[compind]) @ components
+                emb = embedding.loc[compind]
+                if only_included_components: # unused components contribute 0, also if their embedding is not finite
+                    emb = emb.where(components_mask!=0, 0.)
+                spectrum = self.pca_offset.loc[dye] + (components_mask * emb) @ components
             except KeyError:
                 if allow_missing:
                     spectrum = pd.Series(np.nan, index=components.columns)
