@@ -1,3 +1,21 @@
 sphinx
 myst-nb
 pydata-sphinx-theme
+# for the API reference (autodoc imports the package from ../src; geomloss, pykeops, flowkit are mocked in conf.py)
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch
+numpy
+pandas<3
+scipy
+scikit-learn
+matplotlib
+seaborn
+anndata
+joblib
+tqdm
+statsmodels
+Pillow
+python-dateutil
+tzdata
+flowio
+flowutils

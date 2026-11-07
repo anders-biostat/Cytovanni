@@ -1,3 +1,10 @@
+"""Automatic scatter gating of bead samples on singlets.
+
+A Python reimplementation, with small modifications, of the gating strategy of AutoSpill (Roca et al. 2021,
+https://github.com/carlosproca/autospill/blob/master/R/do_gate.r): two rounds of KDE peak finding and Voronoi
+tessellation on a 2-D scatter plot (usually FSC-A vs SSC-A, raw scale) select the main bead population, and a convex
+hull around its densest events is the final gate. Use it through `gate_scatter_bead_sample`.
+"""
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
@@ -12,42 +19,47 @@ from scipy.ndimage import map_coordinates
 from scipy.signal import fftconvolve
 
 def _scotts_factor(X):
+    """Scott's bandwidth factor ``n**(-1/(d+4))`` for data `X` of shape (events, d)."""
     return X.shape[0]**(-1./(X.shape[1]+4))
 
 def _clip_to_percentiles(x, minperc, maxperc):
-    """ Clip values to min and max percentiles along axis.
-    """
+    """Clip values to the `minperc` and `maxperc` percentiles (0-100) of `x` (flattened)."""
     return np.clip(x, a_min=np.percentile(x, minperc), a_max=np.percentile(x, maxperc))
 
 def _clip_to_medianfactor(x, fmin=.5, fmax=1.5):
-    """ Clip values to min and max percentiles along axis.
-    """
+    """Clip values to [`fmin` * median, `fmax` * median] of `x`."""
     return np.clip(x, a_min=fmin*np.median(x), a_max=fmax*np.median(x))
 
 def _mad(data, axis=None):
-    """ Mean absolute deviation.
-    """
+    """Mean absolute deviation from the mean (not the median absolute deviation)."""
     return np.mean(np.abs(data - np.mean(data, axis)), axis)
 
 def _plot_subsample(n, max_points):
-    """ Indices of at most max_points of n events for plotting (fixed seed, so plots are reproducible).
-    """
+    """Sorted indices of at most `max_points` of `n` events for plotting (fixed seed, so plots are reproducible)."""
     if max_points is None or n <= max_points:
         return np.arange(n)
     return np.sort(np.random.default_rng(0).choice(n, max_points, replace=False))
 
 def _style_axes(ax, name_x, name_y):
+    """Set axis labels and tick label sizes of `ax`."""
     ax.set_xlabel(name_x, size=16)
     ax.set_ylabel(name_y, size=16)
     ax.tick_params(labelsize=12)
 
 class _BinnedKDE(gaussian_kde):
-    """gaussian_kde (2D) evaluated via linear binning on a grid + FFT convolution with the full-covariance Gaussian,
-    then linear interpolation at the points. Bandwidth/covariance exactly as gaussian_kde."""
+    """2-D `scipy.stats.gaussian_kde`, evaluated approximately by linear binning, FFT convolution and interpolation.
+
+    The data are binned linearly on an ``N_GRID`` x ``N_GRID`` grid (padded by ``PAD_SD`` kernel standard deviations),
+    convolved with the full-covariance Gaussian kernel (truncated at ``PAD_SD`` standard deviations) and linearly
+    interpolated at the evaluation points; negative interpolation artefacts are clipped to 0. Bandwidth, covariance and
+    weights are exactly those of `gaussian_kde`, only the evaluation is approximate (cost linear in the number of
+    events instead of events x points).
+    """
     N_GRID = 512 # 256 can erase maxima the exact KDE finds; 512 matched exact gates in tests (density error ~3e-4 of max)
     PAD_SD = 4.
 
     def evaluate(self, points):
+        """Density at `points` (array of shape (2, points)), approximated on the grid; 0 far from the data."""
         points = np.atleast_2d(np.asarray(points, dtype=float))
         sd = np.sqrt(np.diag(self.covariance))
         lo = np.minimum(self.dataset.min(1), points.min(1)) - self.PAD_SD * sd
@@ -72,7 +84,19 @@ class _BinnedKDE(gaussian_kde):
     __call__ = evaluate
 
 class ScaledVoronoi():
-    """ Voronoi, but scaled to translate between index in grid and actual values.
+    """Voronoi tessellation computed in grid index space, with coordinates mapped back to data values.
+
+    The tessellation is done on grid indices so that both axes count equally, whatever the scale of the two channels;
+    `points` and `vertices` hold the mapped (data-scale) coordinates, `points_index` the index-space sites.
+
+    Parameters
+    ----------
+    voronoi : scipy.spatial.Voronoi
+        Tessellation of the sites in grid index space.
+    ind_to_point : callable
+        Maps grid index coordinates (array of shape (n, 2)) to data values.
+    point_to_ind : callable
+        Inverse of `ind_to_point`: data values (array of shape (n, 2)) to grid index coordinates.
     """
     def __init__(self, voronoi, ind_to_point, point_to_ind):
         self.points = ind_to_point(voronoi.points)
@@ -87,17 +111,52 @@ class ScaledVoronoi():
         self.point_to_ind = point_to_ind
     
     def assign_group(self, X):
+        """Assign points to Voronoi tiles.
+
+        Parameters
+        ----------
+        X : numpy.ndarray
+            Points of shape (events, 2) in data values.
+
+        Returns
+        -------
+        numpy.ndarray
+            Index of the nearest site (in grid index space), i.e. the tile, for every point; shape (events,).
+        """
         group = KDTree(self.points_index).query(self.point_to_ind(X))[1]
         return group
 
     def plot(self, ax=None, show_points=True, show_vertices=False,
              line_colors="k", line_width=1., line_alpha=1., ray_length=100.):
-        """ Replacement for voronoi_plot_2d.
-            Ridge geometry is built in index space, where the perpendicular
-            bisector construction is valid, and only then mapped through
-            ind_to_point. Passing the scaled object to voronoi_plot_2d is
-            wrong because it re-derives ray directions by rotating the
-            tangent 90 deg, which the anisotropic scaling does not preserve.
+        """Draw the tile borders in data coordinates (replacement for `scipy.spatial.voronoi_plot_2d`).
+
+        Parameters
+        ----------
+        ax : matplotlib.axes.Axes, optional
+            Axes to draw into. Default: a new 6 x 6 figure.
+        show_points : bool, default True
+            Mark the Voronoi sites.
+        show_vertices : bool, default False
+            Mark the Voronoi vertices.
+        line_colors : color, default "k"
+            Colour of the tile borders.
+        line_width : float, default 1.0
+            Line width of the tile borders.
+        line_alpha : float, default 1.0
+            Opacity of the tile borders.
+        ray_length : float, default 100.0
+            Length of the infinite ridges (dashed), in multiples of the largest extent of the sites (index space).
+
+        Returns
+        -------
+        matplotlib.axes.Axes
+            The axes drawn into.
+
+        Notes
+        -----
+        The ridge geometry is built in index space, where the perpendicular bisector construction is valid, and only
+        then mapped to data values. Passing the scaled object to `voronoi_plot_2d` would be wrong: it derives the ray
+        directions by rotating the ridge tangent by 90 degrees, which the anisotropic scaling does not preserve.
         """
         vor, f = self.voronoi, self.ind_to_point
         if ax is None:
@@ -136,16 +195,73 @@ class ScaledVoronoi():
         return ax
 
 class HistogramTesselator():
+    """KDE density on a grid, local maxima and Voronoi tessellation of a 2-D scatter plot (one step of the gating).
+
+    The density of the events is estimated with a Gaussian KDE (bandwidth `bw_factor` x Scott's factor) on the centres
+    of an `Nx` x `Ny` grid spanning `bounds_x` x `bounds_y`. Local maxima of the gridded density are the sites of a
+    Voronoi tessellation in grid index space; every event is assigned to the tile of its nearest maximum, and one tile
+    (or several, see `merge_tiles_min_saddle`) is marked as the main tile.
+
+    Parameters
+    ----------
+    x, y : numpy.ndarray
+        1-D arrays of the event values of the two channels (same scale as the bounds, raw in
+        `AutoSpillTesselationGating`).
+    bounds_x, bounds_y : tuple of float
+        (min, max) of the grid along each axis.
+    Nx, Ny : int, default 100
+        Number of grid cells along x and y.
+    bw_factor : float, default 3.0
+        KDE bandwidth as a multiple of Scott's factor.
+    neigh_size : int, default 3
+        A grid point is a local maximum if its density equals the maximum within ``2 * neigh_size + 1`` grid points
+        around it in both directions (truncated at the grid edge). Maxima below ``MIN_REL_MAXIMUM`` x the highest
+        density are ignored.
+    density_exclusion_corner : float, default 0.05
+        Maxima whose grid index is within this fraction of the grid from the lower end in x or in y are discarded
+        (low-scatter debris).
+    name_x, name_y : str, default "FSC-A", "SSC-A"
+        Axis labels for plots.
+    Nsubsample : int, optional
+        Keep a random subset of this many events for the tile assignment (`x`, `y` attributes); the histogram and the
+        KDE still use all events. Default: all events.
+    main_tile : {'count', 'density'}, default 'count'
+        Main tile: the tile with the most events ('count', as in AutoSpill) or the tile of the highest density maximum
+        ('density').
+    merge_tiles_min_saddle : float, optional
+        Also mark as main the tiles whose maximum is connected to the main maximum by a density ridge: the minimum
+        density on the straight line (index space) between both maxima is at least this fraction of the density at the
+        main maximum. Default: only the main tile.
+
+    Attributes
+    ----------
+    density, logdensity : numpy.ndarray
+        KDE density on the grid, shape (Nx, Ny); its log, clipped below at ``MIN_LOGDENSITY``.
+    maxima, maxima_indices : numpy.ndarray
+        Local maxima in data values and in grid indices, shape (maxima, 2). `maxima_indices` can contain up to three
+        additional far-away dummy sites, added because the tessellation fails for two or for collinear sites.
+    voronoi : ScaledVoronoi or None
+        The tessellation, None if there is only one maximum.
+    voronoi_label : numpy.ndarray
+        Tile of every event, shape (events,).
+    voronoi_label_ismain : numpy.ndarray
+        Boolean mask of shape (events,): event lies in a main tile.
+    saddle_ratio : dict of int to float
+        For every maximum except the main one, the ridge ratio described under `merge_tiles_min_saddle`.
+
+    Raises
+    ------
+    RuntimeError
+        If no local maximum is found, or none is left after the exclusion of the lower edge.
+    ValueError
+        If `main_tile` is not 'count' or 'density'.
+    """
     USE_APPROX_KDE_TREE = False # doesn't currently work!
     MIN_LOGDENSITY = -50
     MAXIMUM_TOLERANCE = 1e-7
     MIN_REL_MAXIMUM = 1e-6 # ignore maxima below this fraction of the peak density (flat empty regions)
     PLOT_LOGDENSITY_RANGE = 12. # log density colour range in plots
     
-    """ Single histogram, peak finding and tesselation.
-        
-        Replace kde estimation by much faster FFT version!
-    """
     def __init__(self, x, y, bounds_x, bounds_y, Nx=100, Ny=100, bw_factor=3., neigh_size=3, density_exclusion_corner=.05, name_x="FSC-A", name_y="SSC-A", Nsubsample=None,
                  main_tile="count", merge_tiles_min_saddle=None):
         self.x, self.y = x, y
@@ -232,16 +348,31 @@ class HistogramTesselator():
             self.voronoi_label_ismain = np.isin(self.voronoi_label, main)
     
     def _saddle_ratio(self, i, j, n=100):
-        """ Minimum density on the straight line (grid index space) between maxima i (main) and j, relative to the density
-            at maximum i. High: j sits on a ridge connected to the main peak (e.g. sub-bands of one bead population);
-            low: separated by a valley, or j is a small bump far from the main peak.
+        """Minimum density on the straight line (grid index space) between maxima i (main) and j, relative to maximum i.
+
+        High: j sits on a ridge connected to the main peak (e.g. sub-bands of one bead population); low: separated by a
+        valley, or j is a small bump far from the main peak.
         """
         a, b = self.maxima_indices[i], self.maxima_indices[j]
         path = np.rint(a[None] + np.linspace(0, 1, n)[:,None] * (b - a)[None]).astype(int)
         return self.density[path[:,0], path[:,1]].min() / self.density[tuple(a)]
     
     def plot(self, ax=None, xlim=None, ylim=None, max_points=20000):
-        """ Log density, events coloured by Voronoi tile (main tile black), maxima and tile borders.
+        """Plot the log density, the events coloured by tile (main tiles black), the maxima and the tile borders.
+
+        Parameters
+        ----------
+        ax : matplotlib.axes.Axes, optional
+            Axes to draw into. Default: a new 6 x 6 figure.
+        xlim, ylim : tuple of float, optional
+            Axis limits. Default: the grid bounds.
+        max_points : int or None, default 20000
+            At most this many events are drawn (fixed random subset); None draws all.
+
+        Returns
+        -------
+        matplotlib.axes.Axes
+            The axes drawn into.
         """
         if ax is None:
             fig, ax = plt.subplots(1,1,figsize=(6,6))
@@ -263,6 +394,18 @@ class HistogramTesselator():
         return ax
     
     def rectangle_from_main(self, mad_factor):
+        """Rectangle around the events of the main tiles: median +- `mad_factor` x mean absolute deviation per axis.
+
+        Parameters
+        ----------
+        mad_factor : float
+            Half-width of the rectangle in units of the mean absolute deviation (from the mean) of each axis.
+
+        Returns
+        -------
+        xlim, ylim : tuple of float
+            (min, max) of the rectangle along x and along y, in data values.
+        """
         X = np.vstack([self.x,self.y]).T[self.voronoi_label_ismain]
         center = np.median(X, axis=0)
         mad = _mad(X, axis=0)
@@ -271,10 +414,32 @@ class HistogramTesselator():
         return xlim, ylim
 
 class DensityGate():
+    """Final gate: convex hull of the densest events of a 2-D population.
+
+    The events are ranked by their KDE density (bandwidth `factor_kde` x Scott's factor), the ranks scaled to [0, 1];
+    the gate is the convex hull of the events with scaled rank above `cutoff`, i.e. of the densest ``1 - cutoff``
+    fraction of the events.
+
+    Parameters
+    ----------
+    X : numpy.ndarray
+        Events of shape (events, 2), data values.
+    cutoff : float, default 0.33
+        Fraction of the least dense events left out of the hull.
+    factor_kde : float, default 1.0
+        KDE bandwidth as a multiple of Scott's factor.
+    Nsubsample : int, optional
+        Use a random subset of this many events. Default: all events.
+
+    Attributes
+    ----------
+    density_scaled : numpy.ndarray
+        Density rank of every event scaled to [0, 1], shape (events,).
+    vertices_hull : numpy.ndarray
+        Vertices of the convex hull, shape (vertices + 1, 2), the first vertex repeated at the end.
+    """
     USE_APPROX_KDE_TREE=False # not implemented yet
     
-    """ Final gate with kde density cutoff.
-    """
     def __init__(self, X, cutoff=.33, factor_kde=1., Nsubsample=None):
         self.X = X
         if Nsubsample is not None:
@@ -290,9 +455,26 @@ class DensityGate():
         self.vertices_hull = np.vstack([vertices_hull, vertices_hull[[0]]])
     
     def hull_gatemask(self, X):
+        """Boolean mask of shape (events,): which of the points `X` (shape (events, 2)) lie inside the hull."""
         return flowutils.gating.points_in_polygon(self.vertices_hull, X)
     
     def plot(self, ax=None, xlim=None, ylim=None, max_points=20000):
+        """Plot the events coloured by scaled density rank, and the hull.
+
+        Parameters
+        ----------
+        ax : matplotlib.axes.Axes, optional
+            Axes to draw into. Default: a new 6 x 6 figure.
+        xlim, ylim : tuple of float, optional
+            Axis limits. Default: matplotlib's automatic limits.
+        max_points : int or None, default 20000
+            At most this many events are drawn (fixed random subset); None draws all.
+
+        Returns
+        -------
+        matplotlib.axes.Axes
+            The axes drawn into.
+        """
         if ax is None:
             fig, ax = plt.subplots(1,1,figsize=(6,6))
 
@@ -305,14 +487,94 @@ class DensityGate():
         return ax
 
 class AutoSpillTesselationGating():
-    """ Tesselation gating that is used by AutoSpill, ported to Python from:
-        https://github.com/carlosproca/autospill/blob/master/R/do_gate.r
-        
-        All the Voronoi tesselations are done on the index space of the grid,
-        not the actual values. Beads may have very different FSC/SSC values,
-        otherwise will yield strange tiles.
-        
-        Initial trimming happens on the recorded data, I think AutoSpill uses something slightly different?
+    """Automatic singlet gate for bead samples, a reimplementation of the tessellation gating of AutoSpill.
+
+    Ported, with small modifications, from https://github.com/carlosproca/autospill/blob/master/R/do_gate.r. The gate
+    is computed when the object is created, in four steps:
+
+    1. Trimming: each axis is clipped to the percentiles `trim_x_min`/`trim_x_max` (`trim_y_*`), or, with
+       `trim_beadmode`, to [`trim_beadmode_min_clipfactor`, `trim_beadmode_max_clipfactor`] x its median. The clip
+       range gives the bounds; events at the bounds (the clipped ones) are left out of the following steps.
+    2. Bound tessellation (`histogram_bound`, a `HistogramTesselator` over the bounds, ``bound_density_*``
+       parameters). The main tile defines a rectangle, median +- `bound_density_mad_factor` x mean absolute deviation
+       of its events on each axis (`region_x`, `region_y`).
+    3. Region tessellation (`histogram_region`, ``region_density_*`` parameters) of the events inside the rectangle;
+       its main tile(s) are the candidate singlets (`x_final`, `y_final`).
+    4. Density gate (`densitygate`, a `DensityGate`): the convex hull of the densest ``1 - final_density_cutoff``
+       fraction of the candidate singlets is the final gate, see `get_gatemask`.
+
+    All tessellations are done in the index space of the grid, not in data values, so that both axes count equally
+    even though FSC and SSC values of beads can differ by orders of magnitude.
+
+    Parameters
+    ----------
+    x, y : numpy.ndarray
+        1-D arrays of the event values of the two scatter channels (raw scale), e.g. FSC-A and SSC-A.
+    verbose : bool, default False
+        Show the summary plot (`plot`) after the fit.
+    **kwargs
+        Override any of the class attributes below for this instance (set with ``setattr`` before the fit; names are
+        not checked, so a misspelled name has no effect).
+
+    Other Parameters
+    ----------------
+    trim_x_min, trim_x_max, trim_y_min, trim_y_max : float, default 1, 99
+        Percentiles (0-100) the axes are clipped to, if not `trim_beadmode`.
+    trim_beadmode : bool, default False
+        Clip to multiples of the median instead of to percentiles (`gate_scatter_bead_sample` sets True).
+    trim_beadmode_min_clipfactor, trim_beadmode_max_clipfactor : float, default 0.5, 1.5
+        Clip range as factors of the median, if `trim_beadmode`.
+    name_x, name_y : str, default "FSC-A", "SSC-A"
+        Axis labels for plots.
+    subsample_kde_estimates : int, optional
+        `Nsubsample` of the tessellations and the density gate. Default None: all events.
+    bound_density_bw_factor : float, default 3.0
+        KDE bandwidth factor of the bound tessellation (see `HistogramTesselator`, `bw_factor`).
+    bound_density_grid_N : int, default 100
+        Grid size (per axis) of the bound tessellation.
+    bound_density_neigh_size : int, default 3
+        Neighbourhood size for local maxima of the bound tessellation.
+    bound_density_exclusion_corner : float, default 0.05
+        Lower-edge exclusion of maxima in the bound tessellation (see `density_exclusion_corner`).
+    bound_density_mad_factor : float, default 3.0
+        Half-width of the region rectangle in mean absolute deviations of the main tile.
+    region_density_bw_factor : float, default 2.0
+        KDE bandwidth factor of the region tessellation.
+    region_density_grid_N : int, default 100
+        Grid size (per axis) of the region tessellation.
+    region_density_neigh_size : int, default 2
+        Neighbourhood size for local maxima of the region tessellation.
+    region_density_exclusion_corner : float, default 0.0
+        Lower-edge exclusion of maxima in the region tessellation.
+    final_density_bw_factor : float, default 1.0
+        KDE bandwidth factor of the density gate.
+    final_density_cutoff : float, default 0.33
+        Fraction of the least dense candidate singlets left out of the hull.
+    main_tile : {'count', 'density'}, default 'count'
+        How the main tile is chosen in both tessellations (see `HistogramTesselator`).
+    merge_tiles_min_saddle : float, optional
+        Region tessellation only: also keep tiles connected to the main maximum by a density ridge of at least this
+        fraction of the main maximum (see `HistogramTesselator`). Default None: only the main tile.
+    plot_view_percentiles : tuple of float, default (5, 95)
+        The plot view covers these percentiles of all events, the clip bounds and the region.
+    plot_view_margin : float, default 0.1
+        Margin around the plot view, as a fraction of its width.
+    plot_max_points : int, default 10000
+        Maximum number of events drawn per scatter plot.
+
+    Raises
+    ------
+    RuntimeError
+        If a tessellation finds no density maximum (from `HistogramTesselator`).
+
+    See Also
+    --------
+    gate_scatter_bead_sample : applies this gate to a bead AnnData, with tuned defaults.
+
+    Examples
+    --------
+    >>> asp = AutoSpillTesselationGating(fsc_a, ssc_a, trim_beadmode=True, final_density_cutoff=.2)
+    >>> keep = asp.get_gatemask(fsc_a, ssc_a)
     """
     
     # General trimming percentiles
@@ -405,8 +667,7 @@ class AutoSpillTesselationGating():
             self.plot()
     
     def _plot_view(self):
-        """ Plot limits: union of the plot_view_percentiles range of all events, the clip bounds and the region, plus a margin.
-        """
+        """Plot limits: union of the `plot_view_percentiles` range of all events, bounds and region, plus margin."""
         lims = []
         for full, bounds, region in [(self.x_full, self.bounds_x, self.region_x), (self.y_full, self.bounds_y, self.region_y)]:
             lo = min(np.percentile(full, self.plot_view_percentiles[0]), bounds[0], region[0])
@@ -416,6 +677,25 @@ class AutoSpillTesselationGating():
         return lims
 
     def plot(self, title="", figsize=(32,6)):
+        """Summary plot of the four gating steps in one row.
+
+        Panels: all events with the bound tessellation, clip bounds (dashed) and region (gray); the region
+        tessellation (main tiles black); the candidate singlets with the density gate; the final gate on all events
+        (red: outside) with the fraction of events inside.
+
+        Parameters
+        ----------
+        title : str, default ""
+            Figure title.
+        figsize : tuple of float, default (32, 6)
+            Figure size.
+
+        Returns
+        -------
+        fig : matplotlib.figure.Figure
+        ax : numpy.ndarray of matplotlib.axes.Axes
+            The four axes.
+        """
         fig, ax = plt.subplots(1,4,figsize=figsize)
         xlim, ylim = self._plot_view()
         ind = _plot_subsample(len(self.x_full), self.plot_max_points)
@@ -460,7 +740,17 @@ class AutoSpillTesselationGating():
         return fig, ax
     
     def get_gatemask(self, x, y):
-        """ Get gate mask for final gate.
+        """Apply the final gate to events.
+
+        Parameters
+        ----------
+        x, y : numpy.ndarray
+            1-D arrays of the two channels, same scale as the data the gate was fitted on.
+
+        Returns
+        -------
+        numpy.ndarray
+            Boolean mask of shape (events,), True inside the convex hull of the density gate.
         """
         return self.densitygate.hull_gatemask(np.vstack([x, y]).T)
 

@@ -1,3 +1,10 @@
+"""Batch standardisation with reference / overlap samples.
+
+The overlap fit (`OverlapFitModel`) fits per-batch dye spectra (`PanelEmbeddingModule`) and stain scale factors
+(`SpectralFitTransformer`, `ScalingTransformer`) on samples measured in several batches (`SampleOverlapDataset`,
+batch labels encoded by `MultiOrdinalEncoder`). The functions of `cytovanni.ref.factor` fit per-batch scale
+factors directly, without a full model.
+"""
 from .panel import PanelModule, PanelEmbeddingModule, FixedPanelModule
 from .moe import MultiOrdinalEncoder
 from .data import SampleOverlapDataset, adatas_process_anchors

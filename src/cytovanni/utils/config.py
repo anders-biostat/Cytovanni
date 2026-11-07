@@ -1,3 +1,10 @@
+"""Cytometer configurations: channels, linear range, lasers and settings hash of an instrument.
+
+A `CytometerConfiguration` is passed to the readers in `cytovanni.io` and stored with every sample in
+``adata.uns['cytoconfig']``; the calibration, gating and spillover modules read their channel lists and limits from
+there. The subclasses below are the configurations of the instruments the package was developed with; for another
+instrument, create a `CytometerConfiguration` (or a subclass) with its channels.
+"""
 import numpy as np
 import pandas as pd
 import json
@@ -10,9 +17,7 @@ from .misc import textcolor, get_cmap, cmap_to_legendhandles, wavelength_to_hex
 from ..exceptions import DefaultScatterGatingException, SettingsHashException, DefaultScatterCalibrationException, CytometerConfigurationException, CytovanniWarning
 
 def _to_builtin(value):
-    """ Recursively convert numpy values (as read back from .h5ad) to Python builtins:
-        ndarray -> list, numpy scalar -> int/float/str/bool, also inside dicts, lists and tuples.
-    """
+    """Recursively convert numpy values (as read back from .h5ad) to Python builtins, also inside containers."""
     if isinstance(value, np.ndarray):
         return value.tolist()
     if isinstance(value, np.generic):
@@ -24,27 +29,35 @@ def _to_builtin(value):
     return value
 
 def _default_hash_settings(adata, use_voltages=True, use_gains=True, include_scatter=True, include_fluorescence=True):
-    """ Convert all relevant settings of the cytometer when sample adata was measured to a hash.
-        Required to later automatically check that the correct rainbow batch was used,
-        and to automatically infer the correct batch.
-        
-        Can be replaced by arbitrary custom functions that return a hash.
-        
-        Uses the settings for all scatter and fluorophore channels.
+    """Default settings hash of a sample: SHA-256 of the voltages and gains of its scatter and fluorescence channels.
 
-        To fail gracefully, only uses available channels for calculation and adds 'red_' to the hash if some are missing.
-        Maybe better to explicitly set the unique scatter channels in the config to avoid doing this?!
-        
-        Do not use 'hash()'! Not deterministic between different kernels!
-        Instead go through hashlib or equivalent.
-        
-        :param use_voltages: bool. Whether to use voltage setting 'pnv'.
-        
-        :param use_gains: bool. Whether to use gain setting 'png'.
-        
-        :param include_scatter: bool. Whether to include scatter channel settings.
-        
-        :param include_fluorescence: bool. Whether to include fluorescence channel settings.
+    Used to check that a sample and its rainbow bead measurement were recorded with the same instrument settings,
+    and to find the matching rainbow batch automatically. Can be replaced by any function that returns a hash, see
+    `CytometerConfiguration` (`fct_hash_settings`).
+
+    Parameters
+    ----------
+    adata : anndata.AnnData
+        Sample with ``adata.uns['cytoconfig']`` and the channel settings in ``adata.var['pnv']`` (voltage) and
+        ``adata.var['png']`` (gain).
+    use_voltages : bool, default True
+        Include the voltages ``pnv``.
+    use_gains : bool, default True
+        Include the gains ``png``.
+    include_scatter : bool, default True
+        Include the scatter channels of the configuration.
+    include_fluorescence : bool, default True
+        Include the fluorescence channels of the configuration.
+
+    Returns
+    -------
+    str
+        Hex digest. Only the channels present in ``adata.var`` enter it; if some configured channels are missing,
+        the hash is prefixed with ``'red_'``.
+
+    Notes
+    -----
+    Python's built-in ``hash()`` is not used because it is not deterministic between interpreter sessions.
     """
     channels = []
     if include_scatter:
@@ -70,15 +83,28 @@ DEFAULT_TIMEZONE = "Europe/Berlin"
 HASH_FUNCTIONS = {"_default_hash_settings": _default_hash_settings}
 
 def register_hash_function(fct, name=None):
-    """ Make a custom settings-hash function known by name, so that configurations using it can be exported and
-        imported again (CytometerConfiguration.to_dictionary / from_exported, and the .h5ad / .json writers).
-        Register it in every session before importing such a configuration.
+    """Register a custom settings-hash function by name, so that configurations using it can be exported and imported.
 
-        :param fct: function. Takes a sample in AnnData format and returns a hash, see CytometerConfiguration.
+    Exports (`CytometerConfiguration.to_dictionary`, and with it the .h5ad and .json writers) store only the name of
+    the settings-hash function. Register the function in every session before importing such a configuration.
 
-        :param name: str. Optional, name under which it is stored. Defaults to fct.__name__.
+    Parameters
+    ----------
+    fct : callable
+        Takes a sample (anndata.AnnData) and returns a hash, see `CytometerConfiguration` (`fct_hash_settings`).
+    name : str, optional
+        Name under which it is stored. Default: ``fct.__name__`` (a lambda cannot be told apart this way, so give
+        it a name).
 
-        :returns: str. The registered name.
+    Returns
+    -------
+    str
+        The registered name.
+
+    Raises
+    ------
+    CytometerConfigurationException
+        If a different function is already registered under this name.
     """
     name = fct.__name__ if name is None else str(name)
     if name in HASH_FUNCTIONS and HASH_FUNCTIONS[name] is not fct:
@@ -87,14 +113,14 @@ def register_hash_function(fct, name=None):
     return name
 
 def _hash_function_name(fct):
-    """ Registered name of fct, or its __name__ if it is not registered (importing then raises). """
+    """Registered name of `fct`, or its ``__name__`` if it is not registered (importing then raises)."""
     for name, known in HASH_FUNCTIONS.items():
         if known is fct:
             return name
     return getattr(fct, "__name__", repr(fct))
 
 def _all_config_classes():
-    """ {class name: class} for CytometerConfiguration and all its (indirect) subclasses. """
+    """Dict of class name to class for CytometerConfiguration and all its (indirect) subclasses."""
     classes, stack = {}, [CytometerConfiguration]
     while stack:
         klass = stack.pop()
@@ -103,31 +129,79 @@ def _all_config_classes():
     return classes
 
 class CytometerConfiguration:
-    """
-    The CytometerConfiguration class stores general attributes of the data,
-    such as the fluorophore channels and intensity range.
+    """Configuration of a cytometer: channels, linear range, lasers and settings hash.
 
-    :param channels_fluorescence: list. List of all fluorescence intensity channels. Only include -A here.
+    Passed to the readers in `cytovanni.io` and stored with every sample in ``adata.uns['cytoconfig']``. All channel
+    names are the names after `replace_channelname_dict` is applied. Some settings are only checked when they are
+    used (`get_default_scatter_gate_channels`, `get_default_scatter_calibration`), since setting them is optional.
 
-    :param channels_scatter: list. List of all relevant scatter channels, 'FSC-A', 'SSC-A' etc.
-    
-    :param default_scatter_gate: list. Optionally set the scatter channels that the scatter calibration should default to. Dictionary of channels on which a factor should be fitted, with the channels that it should be applied to. E.g. to fit a factor for the forward scatter and apply it to 'FSC-A' and 'FSC-H' use {'FSC-A':['FSC-A','FSC-H']}.
-    
-    :param max_linear_range: float. Maximum intensity at which linearity can be assumed for the detectors.
-    
-    :param channels_meta: list. List of per event metadata, usually just 'Time'.
-    
-    :param try_adding_HW: bool. Whether it should try adding -H and -W channel data for channels_fluorescence.
-    
-    :param laserdict: dict. Optional, assign channels to lasers. Structured as {laser:[channels]}.
-    
-    :param replace_channelname_dict: dict. Optional, in case channel labels are not consistent on the same machine, replaces channel names with value in dict immediately after loading data.
-    
-    :param fct_hash_settings: function. Function that takes loaded sample in AnnData format, and calculates a hash based on the cytometer settings. Default uses the voltages 'pnv' and gains 'png' for all scatter and fluorescence channels; this should probably capture everything that is relevant for most cytometers. Does not compare laser settings since most cytometers don't export them to the .fcs files, but those are anyway usually held constant. Can be replaced by an arbitrary custom function that returns a hash. To disable this comparison, pass something that assigns everything a default value like (lambda adata: 0). Exports store only the function's name: to import a configuration with a custom function again, register it first with register_hash_function (a lambda cannot be imported).
+    Parameters
+    ----------
+    channels_fluorescence : list of str
+        Fluorescence channels, area (-A) only; the -H and -W channels are added automatically if `try_adding_HW`.
+        Reading a sample fails if one of them is missing in the file.
+    channels_scatter : list of str, default ["FSC-A", "FSC-H", "FSC-W", "SSC-A", "SSC-H", "SSC-W"]
+        Scatter channels to load. Must not overlap with the fluorescence channels.
+    default_scatter_gate : list of str, default ["FSC-A", "SSC-A"]
+        The two channels the scatter gate of the beads uses by default (`cytovanni.gating`).
+    default_scatter_calibrate : dict of str to list of str, optional
+        Default scatter calibration of the rainbow calibration: for every key, a factor is fitted on that scatter
+        channel and applied to the channels in its list. All channels must be scatter channels, and the lists must
+        not overlap. Default ``{"FSC-A": ["FSC-A", "FSC-H"], "SSC-A": ["SSC-A", "SSC-H"]}``.
+    channels_meta : list of str, default ["Time"]
+        Per-event metadata channels, stored in ``adata.obs``; reading a sample fails if one is missing.
+    max_linear_range : float, default 2e5
+        Raw intensity up to which the detectors are assumed to be linear; the upper limit for the rainbow
+        calibration, the voltage setting, `cytovanni.gating.FluorescenceMinMaxGate` and the single-stain spillover fits.
+    cytometer : str, default "default"
+        Name of the instrument; stored in ``adata.uns['cytometer']`` and used in the sample uid.
+    try_adding_HW : bool, default True
+        Also load the -H and -W channels of every fluorescence -A channel, where the file contains them.
+    laserdict : dict of str to list of str, default {}
+        Optional assignment of channels to lasers, ``{laser: [channels]}``; every channel at most once. Used for
+        colours in plots (see `channel_laser_key`).
+    replace_channelname_dict : dict of str to str, default {}
+        Optional renaming of channels directly after reading, for instruments whose channel names are not consistent
+        between files: ``{name in file: name used here}``.
+    fct_hash_settings : callable, default _default_hash_settings
+        Takes a sample (anndata.AnnData) and returns a hash of the instrument settings that matter for the
+        calibration; samples and rainbow beads are matched by it. The default uses the voltages ``pnv`` and gains
+        ``png`` of all scatter and fluorescence channels, which should capture the relevant settings of most
+        cytometers. Laser settings are not compared, since most cytometers don't export them to the .fcs files and
+        they are usually held constant. To disable the comparison, pass a function that returns a constant, such as
+        ``lambda adata: 0``. Exports store only the function's name: to import a configuration with a custom function
+        again, register it first with `register_hash_function` (a lambda cannot be imported).
+    timezone : str, default "Europe/Berlin"
+        IANA time zone of the instrument clock. The .fcs $DATE/$BTIM are local instrument time; they are converted
+        to UTC (``adata.uns['UTC']``, and from it the uid) in this time zone, independent of the machine that reads
+        the file.
 
-    :param timezone: str. IANA time zone of the instrument clock (e.g. 'Europe/Berlin'). The .fcs $DATE/$BTIM are local instrument time; they are converted to UTC (adata.uns['UTC'], and from it the uid) in this time zone, independent of the machine that reads the file.
+    Attributes
+    ----------
+    default_scatter_gate_channels : list of str
+        `default_scatter_gate`.
+    channels_fluorescence_addHW : list of str
+        The -H and -W channels added for the fluorescence channels (empty if not `try_adding_HW`).
+    channel_laser_key : pandas.Series
+        Laser of every scatter and fluorescence channel (index: channels), ``'unknown'`` for channels not in
+        `laserdict`.
 
-    Subclasses that add attributes list them in `_export_extras` so that they are exported too (pd.Series are supported).
+    Raises
+    ------
+    CytometerConfigurationException
+        If scatter and fluorescence channels (including the added -H/-W channels) overlap, `laserdict` lists a
+        channel twice, or `timezone` is unknown.
+
+    Notes
+    -----
+    Subclasses that add attributes list them in ``_export_extras`` so that they are exported too (pandas.Series are
+    supported).
+
+    Examples
+    --------
+    >>> cytoconfig = CytometerConfiguration(["FITC-A", "PE-A", "APC-A"], cytometer="myCanto",
+    ...                                     max_linear_range=2.5e5)
+    >>> adata = cytovanni.io.readfcs_sample("sample.fcs", cytoconfig)
     """
     _export_extras = ()
     
@@ -183,8 +257,7 @@ class CytometerConfiguration:
     
     
     def check_channel_overlap(self):
-        """ Make sure scatter and fluorescence channels don't overlap.
-        """
+        """Raise CytometerConfigurationException if scatter channels are also fluorescence or added -H/-W channels."""
         overlap = set(self.channels_scatter) & set(self.channels_fluorescence)
         if len(overlap)>0:
             raise CytometerConfigurationException(f"Channels {list(overlap)} are present in both scatter and fluorescence, choose one!")
@@ -194,8 +267,13 @@ class CytometerConfiguration:
             raise CytometerConfigurationException(f"Automatically added -H and -W channels {list(overlap)} are present in both scatter and fluorescence, either remove them from scatter or make sure automatically adding them works as expected!")
     
     def check_process_laserdict(self):
-        """ Make sure laserdict is properly formatted etc.
-        """
+        """Check `laserdict` and build `channel_laser_key` from it.
+
+    Raises
+    ------
+    CytometerConfigurationException
+        If a channel appears twice in the same laser or in several lasers.
+    """
         if not ( sum([len(v) for v in self.laserdict.values()]) == sum([len(set(v)) for v in self.laserdict.values()]) ):
             raise CytometerConfigurationException(f"Laser dictionary contains duplicate channel entries!")
         if not ( len(set().union(*[set(v) for v in self.laserdict.values()])) == sum([len(v) for v in self.laserdict.values()]) ):
@@ -221,6 +299,7 @@ class CytometerConfiguration:
     
     @staticmethod
     def _check_timezone(timezone):
+        """Return `timezone` as str; raise CytometerConfigurationException if it is not a known IANA time zone."""
         try:
             ZoneInfo(str(timezone))
         except Exception as e:
@@ -228,10 +307,19 @@ class CytometerConfiguration:
         return str(timezone)
 
     def to_dictionary(self):
-        """ Export configuration to dictionary (writable to .json and to AnnData .uns).
-            Also stores the configuration class ('config_class'), the name of the settings-hash function
-            ('fct_hash_settings', see register_hash_function) and the subclass attributes in `_export_extras`.
-        """
+        """Export the configuration to a dictionary (writable to .json and to ``adata.uns``).
+
+    Returns
+    -------
+    dict
+        All settings, plus the configuration class name (``'config_class'``), the registered name of the
+        settings-hash function (``'fct_hash_settings'``, see `register_hash_function`) and the subclass attributes
+        listed in ``_export_extras`` (pandas.Series as ``{'index': [...], 'values': [...]}``).
+
+    See Also
+    --------
+    from_exported : the inverse.
+    """
         savekeys = ["channels_fluorescence", "channels_scatter", "channels_meta",
                     "default_scatter_gate_channels", "default_scatter_calibrate",
                     "max_linear_range", "cytometer", "try_adding_HW",
@@ -249,14 +337,23 @@ class CytometerConfiguration:
         return export
     
     def import_exported(self, exported):
-        """ Import configuration from exported dictionary into this instance.
-            Use CytometerConfiguration.from_exported to get an instance of the exported class.
+        """Overwrite the settings of this instance with an exported configuration.
 
-            Raises CytometerConfigurationException if the exported class is not the class of this instance,
-            or if the exported settings-hash function is not registered (see register_hash_function).
-            All values are converted to Python builtins (numpy arrays to lists, numpy scalars to Python scalars,
-            recursively), so a configuration read back from .h5ad equals the original and can be written with write_json.
-        """
+    Use `from_exported` to get an instance of the exported class instead. All values are converted to Python builtins
+    (numpy arrays to lists, numpy scalars to Python scalars, recursively), so a configuration read back from .h5ad
+    equals the original and can be written with `write_json`. Re-runs `check_process_laserdict`.
+
+    Parameters
+    ----------
+    exported : dict
+        Output of `to_dictionary`, possibly read back from .json or .h5ad.
+
+    Raises
+    ------
+    CytometerConfigurationException
+        If the exported class is not the class of this instance, the exported settings-hash function is not
+        registered (see `register_hash_function`), the time zone is unknown, or the laser assignment is invalid.
+    """
         exported = _to_builtin(dict(exported))
         config_class = str(exported.pop("config_class", type(self).__name__))
         if config_class != type(self).__name__:
@@ -281,10 +378,27 @@ class CytometerConfiguration:
 
     @classmethod
     def from_exported(cls, exported):
-        """ Construct a configuration from an exported dictionary (see to_dictionary).
-            Re-creates the exported class (any subclass of CytometerConfiguration; defaults to cls if the export
-            does not name one), and restores all exported attributes, including the settings-hash function by name.
-        """
+        """Create a configuration from an exported dictionary (see `to_dictionary`).
+
+    Re-creates the exported class (any subclass of CytometerConfiguration; `cls` if the export names none) and
+    restores all exported attributes, including the settings-hash function by name. The subclass ``__init__`` is not
+    run: the instance starts from the base defaults and gets everything else from the export.
+
+    Parameters
+    ----------
+    exported : dict
+        Output of `to_dictionary`, possibly read back from .json or .h5ad.
+
+    Returns
+    -------
+    CytometerConfiguration
+        Instance of the exported class.
+
+    Raises
+    ------
+    CytometerConfigurationException
+        If the exported class is unknown (import the module that defines it first), or as in `import_exported`.
+    """
         classes = _all_config_classes()
         config_class = str(exported.get("config_class", cls.__name__))
         if config_class not in classes:
@@ -296,23 +410,43 @@ class CytometerConfiguration:
         return cytoconfig
     
     def write_json(self, filepath):
-        """ Write configuration to .json file.
-        """
+        """Write the configuration (`to_dictionary`) to a .json file at `filepath` (str), overwriting it."""
         with open(filepath, "w") as outfile: 
             json.dump(self.to_dictionary(), outfile)
     
     @classmethod
     def load_json(cls, filepath):
-        """ Construct cytometer configuration from exported .json file (of the class stored in the file).
-        """
+        """Read a configuration written by `write_json`.
+
+    Parameters
+    ----------
+    filepath : str
+        Path of the .json file.
+
+    Returns
+    -------
+    CytometerConfiguration
+        Instance of the class stored in the file (see `from_exported`).
+    """
         with open(filepath, "r") as file: 
             exported = json.load(file)
         return cls.from_exported(exported)
     
     def get_default_scatter_gate_channels(self):
-        """ Get self.default_scatter_gate_channels, but also implements some sanity checks.
-            Do this here instead of at instantiation because setting this appropriately is optional.
-        """
+        """Return `default_scatter_gate_channels` after checking them.
+
+    Checked here instead of at construction, since setting them is optional.
+
+    Returns
+    -------
+    list of str
+        The two default scatter gate channels.
+
+    Raises
+    ------
+    DefaultScatterGatingException
+        If there are not exactly two channels, or one of them is not a scatter, fluorescence or added -H/-W channel.
+    """
         if len(self.default_scatter_gate_channels)!=2:
             raise DefaultScatterGatingException(f"Default scatter gating choice {self.default_scatter_gate_channels} is invalid, need to be exactly two channels!")
         all_channels = self.channels_scatter + self.channels_fluorescence + self.channels_fluorescence_addHW
@@ -321,16 +455,43 @@ class CytometerConfiguration:
         return self.default_scatter_gate_channels
     
     def get_settings_hash(self, adata):
-        """ Get hash of channel settings in adata, raise more informative exception if it fails for any reason.
-        """
+        """Compute the settings hash of a sample with `fct_hash_settings`.
+
+    Parameters
+    ----------
+    adata : anndata.AnnData
+        Sample, as needed by `fct_hash_settings`.
+
+    Returns
+    -------
+    object
+        The hash (a str for the default function).
+
+    Raises
+    ------
+    SettingsHashException
+        If `fct_hash_settings` raises any exception (chained).
+    """
         try:
             return self.fct_hash_settings(adata)
         except Exception as e:
             raise SettingsHashException("Something went wrong when calculating the settings hash from adata!") from e
     
     def check_scatter_calibration(self, scatter_calibrate, message_default=False):
-        """ Sanity checks for the scatter calibration.
-        """
+        """Check a scatter calibration dictionary against the scatter channels of this configuration.
+
+    Parameters
+    ----------
+    scatter_calibrate : dict of str to list of str
+        ``{fit channel: [channels the factor is applied to]}``, as `default_scatter_calibrate`.
+    message_default : bool, default False
+        Say "default scatter calibration" in the error messages.
+
+    Raises
+    ------
+    DefaultScatterCalibrationException
+        If a channel is not among `channels_scatter`, or two keys share a channel they are applied to.
+    """
 
         # check that all keys are present
         missing = []
@@ -354,20 +515,40 @@ class CytometerConfiguration:
             raise DefaultScatterCalibrationException(f"There is some overlap present within the {'default ' if message_default else ''}scatter calibration among channels that should be calibrated with different factors!")
     
     def get_default_scatter_calibration(self):
-        """ Get self.default_scatter_calibrate, but also implements some sanity checks.
-            Do this here instead of at instantiation because setting this appropriately is optional.
-        """
+        """Return `default_scatter_calibrate` after checking it with `check_scatter_calibration`.
+
+    Checked here instead of at construction, since setting it is optional.
+
+    Returns
+    -------
+    dict of str to list of str
+        The default scatter calibration (not a copy).
+
+    Raises
+    ------
+    DefaultScatterCalibrationException
+        See `check_scatter_calibration`.
+    """
         scatter_calibrate = self.default_scatter_calibrate
         self.check_scatter_calibration(scatter_calibrate, message_default=True)
         return scatter_calibrate
     
     def plot_height_clipping(self, adata, logscale=False):
-        """ Plot height clipping. Area of fluorescence channels against height of fluorescence channels,
-            once the height channels saturate the area can no longer be assumed to be linear.
-            Preferrably test this with rainbow beads; due to their small size clipping sets in earlier
-            than for cells, and for rainbow calibration it is important to set the max linear range
-            appropriately for them.
-        """
+        """Scatter the area against the height of every fluorescence channel, to choose `max_linear_range`.
+
+    Once the height saturates, the area can no longer be assumed to be linear. Preferably check this with rainbow
+    beads: due to their small size, clipping sets in earlier than for cells, and for the rainbow calibration it
+    matters that the linear range is set appropriately for them. Draws the raw -A against the -H channel of every
+    fluorescence channel that has one in `adata` (coloured by laser) and a vertical line at `max_linear_range`, into
+    a new figure (no ``plt.show()``). Warns (CytovanniWarning) if no height channel is found.
+
+    Parameters
+    ----------
+    adata : anndata.AnnData
+        Events with raw intensities in ``layers['raw']``, including -H channels (see `try_adding_HW`).
+    logscale : bool, default False
+        Use logarithmic x and y axes.
+    """
         fig, ax = plt.subplots(figsize=(10,5))
         total = 0
         cmap = get_cmap(self.channel_laser_key.loc[self.channels_fluorescence])
@@ -385,6 +566,12 @@ class CytometerConfiguration:
             plt.xscale("log")
             plt.yscale("log")
 
+# ---------------------------------------------------------------------------------------------------------------------
+# Configurations of the instruments the package was developed with. The channel lists and laser assignments below are
+# instrument data; the class docstrings only say what differs between them.
+# ---------------------------------------------------------------------------------------------------------------------
+
+# Dye names of the A3 channels to their detector names (laser, number, wavelength), see CytometerConfiguration_A3.
 A3_channelname_rpldct = {   "BB515": "B1 (515)",
                             "BB700": "B2 (710)",
                             "APC": "R1 (670)",
@@ -410,7 +597,14 @@ A3_channelname_rpldct = {   "BB515": "B1 (515)",
                             "BYG790": "YG4 (780)"}
 
 class CytometerConfiguration_A3(CytometerConfiguration):
-    """ Cytometer configuration for our A3.
+    """Configuration of a BD FACSymphony A3 with 23 fluorescence channels named by dye (``cytometer='A3'``).
+
+    Five lasers (UV, Violet, Blue, Yellow-Green, Red), default scatter channels and linear range.
+
+    Attributes
+    ----------
+    alt_name_dct : dict of str to str
+        Channel name to the detector name (e.g. ``'BB515-A'`` to ``'B1 (515)-A'``), for the -A, -H and -W channels.
     """
     _export_extras = ("alt_name_dct",)
     def __init__(self):
@@ -435,7 +629,9 @@ class CytometerConfiguration_A3(CytometerConfiguration):
         self.alt_name_dct = {k+"-A":v+"-A" for k,v in A3_channelname_rpldct.items()} | {k+"-H":v+"-H" for k,v in A3_channelname_rpldct.items()} | {k+"-W":v+"-W" for k,v in A3_channelname_rpldct.items()}
 
 class CytometerConfiguration_A3small(CytometerConfiguration):
-    """ Cytometer configuration for our A3.
+    """Configuration of the same BD FACSymphony A3 with 21 fluorescence channels (``cytometer='A3'``).
+
+    As `CytometerConfiguration_A3`, without the channels BUV737-A and BV650-A, and without ``alt_name_dct``.
     """
     def __init__(self):
         channels_fluorescence = ['BB515-A', 'BB700-A',
@@ -457,7 +653,9 @@ class CytometerConfiguration_A3small(CytometerConfiguration):
         )
 
 class CytometerConfiguration_S6(CytometerConfiguration):
-    """ Cytometer configuration for our S6.
+    """Configuration of a BD FACSymphony S6 with 48 fluorescence channels (``cytometer='S6'``).
+
+    Five lasers (UV, Violet, Blue, Yellow-Green, Red), default scatter channels and linear range.
     """
     def __init__(self):
         channels_fluorescence = ['UV379-A', 'UV446-A', 'UV515-A', 'UV540-A', 'UV585-A', 'UV610-A', 'UV660-A', 'UV695-A', 'UV736-A', 'UV809-A',
@@ -479,9 +677,18 @@ class CytometerConfiguration_S6(CytometerConfiguration):
         )
 
 class CytometerConfiguration_S8(CytometerConfiguration):
-    """ Cytometer configuration for our S8.
-        
-        Not sure which lasers do which scatter detectors.
+    """Configuration of a BD FACSDiscover S8 spectral sorter with imaging (``cytometer='S8'``).
+
+    78 fluorescence channels, linear range 4e6. Scatter channels FSC, LightLoss (Imaging) and SSC (Imaging); the
+    scatter gate defaults to LightLoss (Imaging)-A and SSC (Imaging)-A, the scatter calibration fits FSC-A and
+    SSC (Imaging)-A. In `laserdict`, FSC and SSC (Imaging) are assigned to the Blue laser and LightLoss (Violet) to
+    the Violet laser; LightLoss (Imaging) is not assigned.
+
+    Parameters
+    ----------
+    include_imaging_based : bool, default False
+        Also load LightLoss (Violet) and the image-derived features (size, intensity, moments, centre of mass,
+        eccentricity, ... of the LightLoss, FSC and SSC images) as scatter channels.
     """
     def __init__(self, include_imaging_based=False):
         channels_fluorescence = ['B1 (500)-A', 'B2 (515)-A', 'B3 (530)-A', 'B4 (545)-A', 'B5 (575)-A', 'B6 (590)-A', 'B7 (605)-A', 'B8 (625)-A',
@@ -505,14 +712,14 @@ class CytometerConfiguration_S8(CytometerConfiguration):
                            'UV17 (700)-A', 'UV18 (725)-A', 'UV19 (750)-A', 'UV20 (780)-A', 'UV21 (810)-A', 'UV22 (845)-A'],
                      "Violet":['V1 (420)-A', 'V2 (440)-A', 'V3 (460)-A', 'V4 (475)-A', 'V5 (500)-A', 'V6 (515)-A', 'V7 (530)-A',
                                'V8 (545)-A', 'V9 (575)-A', 'V10 (590)-A', 'V11 (605)-A', 'V12 (625)-A', 'V13 (655)-A', 'V14 (675)-A',
-                               'V15 (700)-A', 'V16 (725)-A', 'V17 (750)-A', 'V18 (780)-A', 'V19 (810)-A', 'V20 (845)-A'],
+                               'V15 (700)-A', 'V16 (725)-A', 'V17 (750)-A', 'V18 (780)-A', 'V19 (810)-A', 'V20 (845)-A'
+                              ] + ["LightLoss (Violet)-A", "LightLoss (Violet)-H", "LightLoss (Violet)-W"],
                      "Blue":['B1 (500)-A', 'B2 (515)-A', 'B3 (530)-A', 'B4 (545)-A', 'B5 (575)-A', 'B6 (590)-A', 'B7 (605)-A', 'B8 (625)-A',
                              'B9 (655)-A', 'B10 (675)-A', 'B11 (700)-A', 'B12 (725)-A', 'B13 (750)-A', 'B14 (780)-A', 'B15 (810)-A', 'B16 (845)-A'
-                            ] + ["FSC-A","FSC-H","FSC-W"],
+                            ] + ["FSC-A","FSC-H","FSC-W", "SSC (Imaging)-A","SSC (Imaging)-H","SSC (Imaging)-W"],
                      "Yellow-Green":['YG1 (575)-A', 'YG2 (590)-A', 'YG3 (605)-A', 'YG4 (625)-A', 'YG5 (655)-A', 'YG6 (675)-A', 'YG7 (700)-A',
                                      'YG8 (725)-A', 'YG9 (750)-A', 'YG10 (780)-A', 'YG11 (810)-A', 'YG12 (845)-A'],
-                     "Red":['R1 (655)-A', 'R2 (675)-A', 'R3 (700)-A', 'R4 (725)-A', 'R5 (750)-A', 'R6 (780)-A', 'R7 (810)-A', 'R8 (845)-A'],
-                     "Imaging":["SSC (Imaging)-A","SSC (Imaging)-H","SSC (Imaging)-W"]}
+                     "Red":['R1 (655)-A', 'R2 (675)-A', 'R3 (700)-A', 'R4 (725)-A', 'R5 (750)-A', 'R6 (780)-A', 'R7 (810)-A', 'R8 (845)-A']}
         
         channels_scatter = ["FSC-A","FSC-H","FSC-W",
                             "LightLoss (Imaging)-A", "LightLoss (Imaging)-H", "LightLoss (Imaging)-W",
@@ -548,9 +755,7 @@ class CytometerConfiguration_S8(CytometerConfiguration):
         )
 
 def _add_AHW_replacedct(rpldict):
-    """ Takes dict and adds -A, -H, -W to all keys and values.
-        To make using replace_channelname_dict simpler, instead of having to manually add the different modalities of every channel.
-    """
+    """Expand ``{old: new}`` channel base names to ``{old-A: new-A, old-H: new-H, old-W: new-W}``."""
     rpldict_full = {}
     for k, v in rpldict.items():
         for add in ["-A","-H","-W"]:
@@ -558,7 +763,19 @@ def _add_AHW_replacedct(rpldict):
     return rpldict_full
 
 class CytometerConfiguration_FACSAriaIII(CytometerConfiguration):
-    """ Cytometer configuration for our FACSAria III.
+    """Configuration of a BD FACSAria III with 18 fluorescence channels (``cytometer='FACSAriaIII'``).
+
+    Lasers UV, Violet, Blue, Green (532 nm), Red. The file channel names (e.g. ``'BL-B'``) are renamed to detector
+    names (e.g. ``'B1 (525)'``) with `replace_channelname_dict`. Scatter channels are not assigned to a laser.
+
+    Attributes
+    ----------
+    lasers : list of str
+        Laser names.
+    lasers_wavelength : pandas.Series
+        Wavelength (nm) per laser.
+    lasers_color : pandas.Series
+        Hex colour per laser, from its wavelength (`wavelength_to_hex`), for plots.
     """
     _export_extras = ("lasers", "lasers_wavelength", "lasers_color")
     def __init__(self):
@@ -593,7 +810,15 @@ class CytometerConfiguration_FACSAriaIII(CytometerConfiguration):
         self.lasers_color = pd.Series([wavelength_to_hex(wl) for wl in self.lasers_wavelength], index=self.lasers)
 
 class CytometerConfiguration_FACSAriaIII_v2(CytometerConfiguration):
-    """ Cytometer configuration for our other FACSAria III.
+    """Configuration of a second BD FACSAria III with 18 fluorescence channels (``cytometer='FACSAriaIII_v2'``).
+
+    As `CytometerConfiguration_FACSAriaIII`, but with a Yellow-Green (561 nm) instead of a Green laser (channels
+    YG1-YG4 instead of G1-G4).
+
+    Attributes
+    ----------
+    lasers, lasers_wavelength, lasers_color
+        As in `CytometerConfiguration_FACSAriaIII`.
     """
     _export_extras = ("lasers", "lasers_wavelength", "lasers_color")
     def __init__(self):
@@ -628,7 +853,15 @@ class CytometerConfiguration_FACSAriaIII_v2(CytometerConfiguration):
         self.lasers_color = pd.Series([wavelength_to_hex(wl) for wl in self.lasers_wavelength], index=self.lasers)
 
 class CytometerConfiguration_FACSAriaFusion(CytometerConfiguration):
-    """ Cytometer configuration for our FACSAria Fusion.
+    """Configuration of a BD FACSAria Fusion with 16 fluorescence channels (``cytometer='FACSAriaFusion'``).
+
+    Lasers Violet, Blue, Yellow-Green, Red (633 nm), no UV. File channel names are renamed to detector names with
+    `replace_channelname_dict`. Scatter channels are not assigned to a laser.
+
+    Attributes
+    ----------
+    lasers, lasers_wavelength, lasers_color
+        As in `CytometerConfiguration_FACSAriaIII`.
     """
     _export_extras = ("lasers", "lasers_wavelength", "lasers_color")
     def __init__(self):
@@ -660,7 +893,15 @@ class CytometerConfiguration_FACSAriaFusion(CytometerConfiguration):
         self.lasers_color = pd.Series([wavelength_to_hex(wl) for wl in self.lasers_wavelength], index=self.lasers)
 
 class CytometerConfiguration_FACSAriaFusion_v2(CytometerConfiguration):
-    """ Cytometer configuration for our other FACSAria Fusion.
+    """Configuration of a second BD FACSAria Fusion with 18 fluorescence channels (``cytometer='FACSAriaFusion_v2'``).
+
+    Lasers UV, Violet, Blue, Yellow-Green, Red (640 nm). File channel names are renamed to detector names with
+    `replace_channelname_dict`. Scatter channels are not assigned to a laser.
+
+    Attributes
+    ----------
+    lasers, lasers_wavelength, lasers_color
+        As in `CytometerConfiguration_FACSAriaIII`.
     """
     _export_extras = ("lasers", "lasers_wavelength", "lasers_color")
     def __init__(self):
@@ -695,7 +936,9 @@ class CytometerConfiguration_FACSAriaFusion_v2(CytometerConfiguration):
         self.lasers_color = pd.Series([wavelength_to_hex(wl) for wl in self.lasers_wavelength], index=self.lasers)
 
 class CytometerConfiguration_DxFLEX1L(CytometerConfiguration):
-    """ Cytometer configuration for our DxFLEX in 1 laser configuration.
+    """Configuration of a Beckman Coulter DxFLEX with one laser and 5 fluorescence channels FL1-FL5.
+
+    ``cytometer='DxFLEX1L'``. Scatter channels FSC and SSC -A and -H only (no -W), linear range 2e6.
     """
     def __init__(self):
         channels_scatter = ["FSC-A","FSC-H", "SSC-A","SSC-H"]
@@ -713,10 +956,11 @@ class CytometerConfiguration_DxFLEX1L(CytometerConfiguration):
         )
 
 class CytometerConfiguration_Aurora(CytometerConfiguration):
-    """ Cytometer configuration for our Cytek Aurora.
+    """Configuration of a 5-laser Cytek Aurora with 64 fluorescence channels (``cytometer='Aurora'``).
 
-        Max linear range taken from as 4e6:
-        https://assets.thermofisher.com/TFS-Assets/BID/Reference-Materials/spectral-flow-cytometry-expanding-research-spectrum-article.pdf
+    Scatter channels FSC, SSC and SSC-B (side scatter of the blue laser), all three used in the default scatter
+    calibration. Linear range 4e6 (22 bit detectors), taken from the Thermo Fisher article "Spectral flow cytometry:
+    expanding the research spectrum" (assets.thermofisher.com, TFS-Assets/BID/Reference-Materials).
     """
     def __init__(self):
         channels_fluorescence = ['B1-A', 'B2-A', 'B3-A', 'B4-A', 'B5-A', 'B6-A', 'B7-A', 'B8-A', 'B9-A', 'B10-A', 'B11-A', 'B12-A', 'B13-A', 'B14-A',
@@ -746,10 +990,11 @@ class CytometerConfiguration_Aurora(CytometerConfiguration):
         )
 
 class CytometerConfiguration_NorthernLights(CytometerConfiguration):
-    """ Cytometer configuration for a 3 laser (V/B/R) Cytek Northern Lights, as used by Gosling et al. (Zenodo 21366352).
+    """Configuration of a 3-laser (Violet, Blue, Red) Cytek Northern Lights, as used by Gosling et al. (Zenodo 21366352).
 
-        SpectroFlo < 4 writes '$CYT=Aurora' into the .fcs files of this instrument, so the header name is not reliable.
-        Same 22 bit range as the Aurora, see CytometerConfiguration_Aurora.
+    ``cytometer='NorthernLights'``; 38 fluorescence channels, scatter channels and linear range as
+    `CytometerConfiguration_Aurora`. SpectroFlo < 4 writes '$CYT=Aurora' into the .fcs files of this instrument, so
+    the name in the file header is not reliable.
     """
     def __init__(self):
         channels_fluorescence = ['V1-A', 'V2-A', 'V3-A', 'V4-A', 'V5-A', 'V6-A', 'V7-A', 'V8-A', 'V9-A', 'V10-A', 'V11-A', 'V12-A', 'V13-A', 'V14-A', 'V15-A', 'V16-A',

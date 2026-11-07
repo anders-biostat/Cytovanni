@@ -1,3 +1,4 @@
+"""Small helpers: colours and legends, axis labelling for arcsinh scales, subsampling, AnnData concatenation."""
 import numpy as np
 from datetime import datetime
 import anndata
@@ -10,6 +11,11 @@ import colorsys
 
 
 class textcolor:
+    """ANSI escape codes for coloured and bold terminal output (used in the ``__repr__`` of several classes).
+
+    The class attributes (``PURPLE``, ``CYAN``, ``DARKCYAN``, ``BLUE``, ``GREEN``, ``YELLOW``, ``RED``, ``WHITE``,
+    ``BLACK``, ``BOLD``, ``UNDERLINE``) are the codes; ``END`` resets the formatting.
+    """
     PURPLE = '\033[95m'
     CYAN = '\033[96m'
     DARKCYAN = '\033[36m'
@@ -25,15 +31,24 @@ class textcolor:
     
     @classmethod
     def toBOLD(cls, text):
+        """Return `text` (str) wrapped in the codes for bold text."""
         return cls.BOLD + text + cls.END
     
     @classmethod
     def toCOLOR(cls, text, color):
+        """Return `text` (str) wrapped in the codes for `color`, the name of a class attribute such as ``"RED"``."""
         return getattr(cls, color) + text + cls.END
 
 def get_scanpy_palette_20():
-    """ Default 20 color palette of Scanpy.
-        Copy code to not add dependency just for this.
+    """Return scanpy's default 20-colour categorical palette.
+
+    A copy of scanpy's code (matplotlib's tab20, reordered, with a few colours replaced), so that scanpy is not
+    needed as a dependency.
+
+    Returns
+    -------
+    list of str
+        20 hex colours.
     """
     from matplotlib import cm, colors
     
@@ -66,6 +81,7 @@ def get_scanpy_palette_20():
     
     return vega_20_scanpy
 
+# Categorical palettes: scanpy's default 20 colours, and scanpy's zeileis_28 extended by 4 colours.
 palette_20 = get_scanpy_palette_20()
 
 # zeileis_28 from scanpy
@@ -102,7 +118,24 @@ palette_28 = [
 ]
 
 def get_hex_distinct(N):
-    """ Return N distinct colors.
+    """Return `N` distinct colours.
+
+    Up to 20 colours come from `palette_20`, up to 28 from `palette_28`; for more, hues are spread evenly around the
+    colour wheel in a random order with random saturation (seeded, so the result is reproducible).
+
+    Parameters
+    ----------
+    N : int
+        Number of colours.
+
+    Returns
+    -------
+    list of str
+        `N` hex colours.
+
+    Notes
+    -----
+    For ``N > 28`` this calls ``np.random.seed(0)``, which resets numpy's global random state.
     """
     if N<=20:
         return palette_20[:N]
@@ -116,12 +149,22 @@ def get_hex_distinct(N):
         return hexs
 
 def wavelength_to_rgb(wavelength, gamma=0.8):
-    ''' This converts a given wavelength of light to an 
-        approximate RGB color value. The wavelength must be given
-        in nanometers in the range from 380 nm through 750 nm
-        (789 THz through 400 THz).
-        Based on code by Dan Bruton
-        http://www.physics.sfasu.edu/astro/color/spectra.html
+    '''Convert a wavelength of visible light to an approximate RGB colour.
+
+    Based on code by Dan Bruton (http://www.physics.sfasu.edu/astro/color/spectra.html). Used e.g. to colour lasers
+    and detector channels by their wavelength.
+
+    Parameters
+    ----------
+    wavelength : float
+        Wavelength in nm. Visible range 380-750 nm; outside of it the result is black.
+    gamma : float, default 0.8
+        Gamma correction applied to every component.
+
+    Returns
+    -------
+    tuple of int
+        (R, G, B), each in 0-255.
     '''
     wavelength = float(wavelength)
     if wavelength >= 380 and wavelength <= 440:
@@ -160,44 +203,154 @@ def wavelength_to_rgb(wavelength, gamma=0.8):
     return (int(R), int(G), int(B))
 
 def wavelength_to_hex(wavelength):
-    """ wavelength_to_rgb and convert to hex
+    """Convert a wavelength of visible light to an approximate colour as a hex string.
+
+    Parameters
+    ----------
+    wavelength : float
+        Wavelength in nm, see `wavelength_to_rgb`.
+
+    Returns
+    -------
+    str
+        Hex colour, e.g. ``'#a2ff00'`` for 550 nm.
     """
     return matplotlib.colors.to_hex(np.asarray(wavelength_to_rgb(wavelength))/255)
 
 
 def get_cmap(labels, ishex=True):
-    """ Get color dict for all unique labels.
+    """Assign a distinct colour to every unique label.
+
+    Parameters
+    ----------
+    labels : array-like
+        Labels, may contain repetitions.
+    ishex : bool, default True
+        Return colours as hex strings; if False, as RGB tuples of floats in [0, 1].
+
+    Returns
+    -------
+    dict
+        Label to colour, for the sorted unique labels (colours from `get_hex_distinct`).
     """
     uns = np.unique(labels)
     return {k:v if ishex else matplotlib.colors.to_rgb(v) for k, v in zip(uns, get_hex_distinct(len(uns)))}
 
+# Marker symbols cycled through by get_cmap_and_markers.
 MARKERS = ['o', 's', 'v', '^', '<', '>', 'p', 'P', 'X', 'D']
 
 def get_cmap_and_markers(keys):
+    """Assign a distinct colour and a marker symbol to every unique key.
+
+    Parameters
+    ----------
+    keys : array-like
+        Labels, may contain repetitions.
+
+    Returns
+    -------
+    cmap : dict
+        Label to hex colour, as `get_cmap`.
+    markers : dict
+        Label to matplotlib marker symbol, cycling through 10 symbols in the order of `cmap`.
+
+    See Also
+    --------
+    cmap_to_legendhandles_wmarker : legend handles for the result.
+    """
     cmap = get_cmap(keys)
     marker_cycle = {k: MARKERS[i % len(MARKERS)] for i, k in enumerate(cmap)}
     return cmap, marker_cycle
 
 def cmap_to_legendhandles(cmap, markersize=20, include_label=True, outline=False):
-    """ Colormap frpm get_cmap to handles for legend.
+    """Create legend handles (dots) for a colour dict such as the output of `get_cmap`.
+
+    Parameters
+    ----------
+    cmap : dict
+        Label to colour.
+    markersize : float, default 20
+        Size of the dots in the legend.
+    include_label : bool, default True
+        Label the handles with the keys of `cmap`; if False, they are unlabelled.
+    outline : bool, default False
+        Draw a black edge around each dot.
+
+    Returns
+    -------
+    list of matplotlib.lines.Line2D
+        Handles for ``ax.legend(handles=...)``, in the order of `cmap`.
     """
     return [Line2D([0], [0], label=k if include_label else '', marker='.', markersize=markersize, markeredgecolor="black" if outline else v, markerfacecolor=v, linestyle='')
                for k, v in cmap.items()]
 
 def cmap_to_legendhandles_wmarker(cmap, markermap, markersize=20, include_label=True, outline=False):
+    """Create legend handles with a colour and a marker symbol per label, e.g. from `get_cmap_and_markers`.
+
+    Parameters
+    ----------
+    cmap : dict
+        Label to colour.
+    markermap : dict
+        Label to matplotlib marker symbol; must contain every key of `cmap`.
+    markersize : float, default 20
+        Size of the markers in the legend.
+    include_label : bool, default True
+        Label the handles with the keys of `cmap`; if False, they are unlabelled.
+    outline : bool, default False
+        Draw a black edge around each marker.
+
+    Returns
+    -------
+    list of matplotlib.lines.Line2D
+        Handles for ``ax.legend(handles=...)``, in the order of `cmap`.
+    """
     return [Line2D([0], [0], label=k if include_label else '', marker=markermap[k], markersize=markersize,
                    markeredgecolor="black" if outline else v,
                    markerfacecolor=v, linestyle='')
             for k, v in cmap.items()]
 
 def labelscolors_to_legendhandles(labels, colors, markersize=20):
-    """ Label names and associated colors to handles for legend, nicer than default if point size very small etc.
+    """Create legend handles (dots) from parallel lists of labels and colours.
+
+    Useful when the plotted points are too small to be visible in the default legend.
+
+    Parameters
+    ----------
+    labels : list of str
+        Legend labels.
+    colors : list
+        Matplotlib colour of every label.
+    markersize : float, default 20
+        Size of the dots in the legend.
+
+    Returns
+    -------
+    list of matplotlib.lines.Line2D
+        Handles for ``ax.legend(handles=...)``.
     """
     return [Line2D([0], [0], label=k, marker='.', markersize=markersize, markeredgecolor=v, markerfacecolor=v, linestyle='')
                for k, v in zip(labels, colors)]
 
 def unrolled_subplots(N, Ncol=4, elsize=(6,4)):
-    """ Generate unrolled plt.subplots with N plots
+    """Create a figure with `N` subplots on a grid and return the axes as a flat sequence.
+
+    The axes are filled row by row; grid cells beyond `N` are switched off.
+
+    Parameters
+    ----------
+    N : int
+        Number of subplots.
+    Ncol : int, default 4
+        Maximum number of columns (fewer if `N` is smaller).
+    elsize : tuple of float, default (6, 4)
+        Size (width, height) of every subplot in inches.
+
+    Returns
+    -------
+    fig : matplotlib.figure.Figure
+    axes : list or numpy.ndarray of matplotlib.axes.Axes
+        `N` axes in row-major order (a 1-D array if the grid has a single row or column, else a list).
     """
     Ncol = min(N, Ncol)
     Nrow = int(np.ceil(N/Ncol))
@@ -218,31 +371,45 @@ def unrolled_subplots(N, Ncol=4, elsize=(6,4)):
     return fig, ax_unr
 
 def printwtime(text):
-    """ Print text with current time.
-    """
+    """Print `text` (str) prefixed with the current time (HH:MM:SS)."""
     print(datetime.now().strftime("%H:%M:%S"),"-",text)
 
 def silent_log(x):
-    """ Numpy logarithm, but without any errors if nan etc.
+    """Natural logarithm (``numpy.log``) without warnings for zero, negative or NaN input.
+
+    Parameters
+    ----------
+    x : array-like or float
+
+    Returns
+    -------
+    numpy.ndarray or float
+        ``log(x)``: -inf for 0, NaN for negative values.
     """
     with np.errstate(invalid='ignore', divide = 'ignore'):
         return np.log(x)
 
 def label_axis_ArcSinh(ax, cofactor, onx=True, minpower=2, mark_cofactor=False):
-    """ Takes axis on an ArcSinh scale, and relabels it such that positive and negative powers of ten are labeled.
-        Labels all powers of 10 above 10^1 and below -10^1 as major ticks, excluding powers below minpower.
-        
-        Fix zero formatting!
-        
-        :param ax: axis. The axis on which to work.
-        
-        :param cofactor: float. The cofactor of the ArcSinh transformation.
-        
-        :param onx: True. Whether to work on x axis, or y axis.
-        
-        :param minpower: float. The max power of 10 to show.
-        
-        :param mark_cofactor: bool. If true, also mark the used cofactor on the axis.
+    """Label an axis that shows ``arcsinh(x / cofactor)`` data with powers of ten of the linear values.
+
+    Places major ticks at 0 and at +-10^p for every integer power p within the current axis limits with
+    ``|p| >= minpower``, labelled ``$10^p$`` / ``$-10^p$`` / ``$0$``, and minor ticks in between (at 2..9 x 10^p
+    between neighbouring powers, at the left-out powers between 0 and +-10^minpower). Call it after plotting, since
+    it uses the current axis limits (which it keeps).
+
+    Parameters
+    ----------
+    ax : matplotlib.axes.Axes
+        Axis to relabel; the data on it must be ``arcsinh(x / cofactor)``.
+    cofactor : float
+        Cofactor of the arcsinh transform of the plotted data, in the units of the linear data.
+    onx : bool, default True
+        Relabel the x axis; if False, the y axis.
+    minpower : int, default 2
+        Smallest power of ten that is labelled: powers with ``|p| < minpower`` are left out (0 is always labelled).
+        Small powers crowd together near 0 on the arcsinh scale; e.g. 3 for a cofactor of 1500 leaves out 10 and 100.
+    mark_cofactor : bool, default False
+        Also draw short marks at the edge of the axis at x = +-`cofactor`.
     """
     axlim = ax.get_xlim() if onx else ax.get_ylim()
     axlim_real = np.sinh(axlim)*cofactor
@@ -298,42 +465,106 @@ def label_axis_ArcSinh(ax, cofactor, onx=True, minpower=2, mark_cofactor=False):
             ax.axhline(np.arcsinh(-1), 0, .05, linewidth=1, color="black")
 
 def anndata_concat(adatas, make_unique=False, join="inner", merge=None, permute=False):
+    """Concatenate AnnData objects along the events (``anndata.concat``), silencing the duplicate-name warning.
+
+    Parameters
+    ----------
+    adatas : list of anndata.AnnData
+        Objects to concatenate.
+    make_unique : bool, default False
+        Make the event names unique (``obs_names_make_unique``). Samples read with `cytovanni.io` each have the event
+        names "0", "1", ..., so set this when concatenating several samples.
+    join : {'inner', 'outer'}, default 'inner'
+        Keep only the channels shared by all objects ('inner') or all channels ('outer'), see ``anndata.concat``.
+    merge : str, optional
+        How ``.var`` (and the other variable-wise fields) are merged, see ``anndata.concat`` (e.g. ``'same'``).
+        Default None: these fields are dropped. ``.uns`` is not merged either.
+    permute : bool, default False
+        Return the events in a random order (numpy's global random state).
+
+    Returns
+    -------
+    anndata.AnnData
+        The concatenated object (a copy if `permute`).
+    """
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", message="Observation names are not unique")
         adata = anndata.concat(adatas, join=join, merge=merge)
     if make_unique:
         adata.obs_names_make_unique()
     if permute:
-        adata = adata[adata.obs.index[np.random.permutation(adata.shape[0])]].copy()
+        adata = adata[np.random.permutation(adata.shape[0])].copy()
     return adata
 
 def anndata_subsample(adata, N=20000, copy=True):
-    """ Subsample adata to at most N events (random, without replacement).
+    """Randomly subsample `adata` to at most `N` events (without replacement, numpy's global random state).
 
-        :param copy: bool. If True, always return a new object (also when adata has at most N events).
-            If False, return adata itself when it is small enough, otherwise a view of the subsample.
+    Parameters
+    ----------
+    adata : anndata.AnnData
+        Events to subsample (event names need not be unique).
+    N : int, default 20000
+        Maximum number of events. Objects with at most `N` events are returned complete.
+    copy : bool, default True
+        If True, always return a new object (also when `adata` has at most `N` events). If False, return `adata`
+        itself when it is small enough, otherwise a view of the subsample.
+
+    Returns
+    -------
+    anndata.AnnData
+        Subsample in random order (all events, in the original order, if `adata` is small enough).
     """
     if adata.shape[0]<=N:
         return adata.copy() if copy else adata
-    sind = adata.obs.index[np.random.permutation(adata.shape[0])[:int(N)]]
-    ad = adata[sind]
+    ad = adata[np.random.permutation(adata.shape[0])[:int(N)]]
     return ad.copy() if copy else ad
 
 def df_subsample(df, N=20000, copy=True):
-    """ Subsample pd DataFrame to at most N rows (random, without replacement).
+    """Randomly subsample a DataFrame to at most `N` rows (without replacement, numpy's global random state).
 
-        :param copy: bool. If True, always return a new object (also when df has at most N rows).
-            If False, return df itself when it is small enough.
+    Parameters
+    ----------
+    df : pandas.DataFrame
+        Rows to subsample (the index need not be unique).
+    N : int, default 20000
+        Maximum number of rows. DataFrames with at most `N` rows are returned complete.
+    copy : bool, default True
+        If True, always return a new object (also when `df` has at most `N` rows). If False, return `df` itself when
+        it is small enough; a subsample is always a copy.
+
+    Returns
+    -------
+    pandas.DataFrame
+        Subsample in random order (all rows, in the original order, if `df` is small enough).
     """
     if df.shape[0]<=N:
         return df.copy() if copy else df
-    sind = df.index[np.random.permutation(df.shape[0])[:int(N)]]
-    return df.loc[sind].copy()
+    return df.iloc[np.random.permutation(df.shape[0])[:int(N)]].copy()
 
 from collections import Counter
 
 def subsample_label_indices(labels, max_multiple=None):
-    """ Label-aware subsampling, fixes the maximum ratio between the rarest and the most common label
+    """Subsample events so that no label is more than `max_multiple` times as frequent as the rarest one.
+
+    E.g. to balance cell types or batches in a plot. Random choice with numpy's global random state.
+
+    Parameters
+    ----------
+    labels : array-like
+        Label of every event.
+    max_multiple : float, optional
+        Labels with more than ``max_multiple * n_rarest`` events are subsampled to ``int(max_multiple * n_rarest)``
+        events, the others are kept complete. Default None: every label is subsampled to the count of the rarest one.
+
+    Returns
+    -------
+    numpy.ndarray of int
+        Positions (not index labels) of the chosen events, in random order.
+
+    Examples
+    --------
+    >>> idx = subsample_label_indices(adata.obs["celltype"], max_multiple=2)
+    >>> adata_balanced = adata[idx]
     """
     labels = np.array(labels)
     label_counts = Counter(labels)
@@ -357,8 +588,28 @@ def subsample_label_indices(labels, max_multiple=None):
     return np.random.permutation(np.array(subsample_indices))
 
 def check_pulse_width_independence(adata, channel, layer="raw", plot=False):
-    """ Check whether the pulse width of 'channel' is measured independently.
-        Assume it is calculated if the correlation is above .999
+    """Check whether the width (-W) of a channel is measured independently or computed from area and height.
+
+    Some instruments do not measure the pulse width but compute it as area / height; then the -W channel carries no
+    additional information. The check correlates ``{channel}-W`` with ``{channel}-A / {channel}-H`` over all events
+    and treats a correlation of at least 0.999 as computed.
+
+    Parameters
+    ----------
+    adata : anndata.AnnData
+        Events, with the channels ``{channel}-A``, ``{channel}-H`` and ``{channel}-W``.
+    channel : str
+        Channel name without the -A/-H/-W suffix, e.g. ``"FSC"``.
+    layer : str, default "raw"
+        Layer to use.
+    plot : bool, default False
+        Show a scatter plot of -W against -A / -H (``plt.show()``).
+
+    Returns
+    -------
+    bool
+        True if the width appears to be measured independently (correlation < 0.999), False if it appears to be
+        computed from area and height.
     """
     A = adata[:,f"{channel}-A"].layers[layer][:,0].copy()
     H = adata[:,f"{channel}-H"].layers[layer][:,0].copy()

@@ -1,3 +1,4 @@
+"""Transformers of the overlap fit: map data of a batch to standardised, unmixed intensities."""
 import numpy as np
 import pandas as pd
 import torch
@@ -18,7 +19,22 @@ from ..torch import pdsave_expand, pdsave_collect, pdsave_expand_dict, pdsave_co
 
 
 def pick_transformer_cls(model):
-    """ Get appropriate class for saved transformers from name.
+    """Return the transformer class for its saved name (``NAME``).
+
+    Parameters
+    ----------
+    model : {'dummy', 'spectralfit', 'scaling'}
+        Name stored in an exported model (``transformer_name``).
+
+    Returns
+    -------
+    type
+        `DummyTransformer`, `SpectralFitTransformer` or `ScalingTransformer`.
+
+    Raises
+    ------
+    NotImplementedError
+        For an unknown name (custom classes are passed to `OverlapFitModel.from_saved` directly).
     """
     if model=="dummy":
         return DummyTransformer
@@ -30,6 +46,23 @@ def pick_transformer_cls(model):
         raise NotImplementedError(f"Cannot find Transformer model {model}!")
 
 def pick_panel_cls(panel):
+    """Return the panel module class for its saved name.
+
+    Parameters
+    ----------
+    panel : {'embedding', 'fixed'}
+        Saved ``class`` entry of an exported panel module.
+
+    Returns
+    -------
+    type
+        `PanelEmbeddingModule` or `FixedPanelModule`.
+
+    Raises
+    ------
+    NotImplementedError
+        For an unknown name.
+    """
     if panel=="embedding":
         return PanelEmbeddingModule
     elif panel=="fixed":
@@ -39,7 +72,14 @@ def pick_panel_cls(panel):
 
 
 class DummyTransformer(Module):
-    """ Dummy transformer to showcase necessary parts.
+    """Identity transformer that shows the interface a transformer provides to `OverlapFitModel`.
+
+    A transformer has ``NAME``, ``channels``, ``stains``, ``stain_marker_name``, ``plot_auxloss_dct`` (aux loss key
+    to plot label), the methods below, and maps data of shape (events, channel) with batch indices ``bidx`` (dict
+    of batch key to torch.Tensor of int, shape (events,) or (1,)) to standardised data of shape (events, stain).
+    Create it with `from_data`. This class itself returns its input unchanged (stains = channels) and has no
+    trainable parameters, so it works with `OverlapFitModel` for evaluation (distances between batches without
+    standardisation, `add_ad_standardised`, export and saving), but `OverlapFitModel.fit` has nothing to fit.
     """
     NAME = "dummy"
     
@@ -49,24 +89,67 @@ class DummyTransformer(Module):
         self.param_dummy = Parameter(torch.tensor([], dtype=torch.float32), requires_grad=False)
     
     @classmethod
-    def from_data(cls, channels, stains, *args, **kwargs):
-        """ Initialize from data.
+    def from_data(cls, channels, stains=None, *args, **kwargs):
+        """Create the identity transformer for the given channels.
+
+        Parameters
+        ----------
+        channels : list of str
+            Input channels.
+        stains : list of str, optional
+            Names of the output columns, one per channel (the data are passed on unchanged). Default: `channels`.
+        *args, **kwargs
+            Ignored.
+
+        Returns
+        -------
+        DummyTransformer
+
+        Raises
+        ------
+        ValueError
+            If `stains` does not have one name per channel.
         """
+        stains = list(channels) if stains is None else list(stains)
+        if len(stains)!=len(channels):
+            raise ValueError(f"DummyTransformer is the identity, it needs one stain per channel "
+                             f"({len(stains)} stains, {len(channels)} channels)!")
         dt = cls()
-        dt.channels = channels
+        dt.channels = list(channels)
         dt.stains = stains
+        dt.stain_marker_name = stains
         
         return dt
     
-    def export(self):
-        """ Export self to dict.
+    def export(self, include_history=True):
+        """Export to a dict (channels and stains).
+
+        Parameters
+        ----------
+        include_history : bool, default True
+            Ignored (there is no parameter history).
+
+        Returns
+        -------
+        dict
         """
         exported = {"channels":self.channels, "stains":self.stains}
         return exported
     
     @classmethod
     def from_exported(cls, exported, cls_smp=None):
-        """ Initialize from exported
+        """Restore from the output of `export`.
+
+        Parameters
+        ----------
+        exported : dict
+            Output of `export`.
+        cls_smp : type, optional
+            Ignored (no scale multiplier).
+
+        Returns
+        -------
+        DummyTransformer
         """
         dt = cls()
         dt.channels = exported["channels"]
@@ -76,52 +159,120 @@ class DummyTransformer(Module):
         return dt
         
     def forward(self, x, bidx):
-        """ Take input and batch idx, output standardised, unmixed and transformed version on which to apply MMD loss.
+        """Standardise and transform the data onto the scale of the loss (``apply_transformation(standardise(x))``).
+
+        Parameters
+        ----------
+        x : torch.Tensor of shape (events, channel)
+            Input data (linear scale).
+        bidx : dict of str to torch.Tensor
+            Batch indices per batch key.
+
+        Returns
+        -------
+        torch.Tensor of shape (events, stain)
         """
         return self.apply_transformation( self.standardise(x, bidx) )
     
     def apply_transformation(self, x):
-        """ Transform intensities into scale on which MMD should be calculated, e.g. ArcSinh.
+        """Transform standardised intensities onto the scale of the loss (identity here; arcsinh in the real
+        transformers).
+
+        Parameters
+        ----------
+        x : torch.Tensor of shape (events, stain)
+
+        Returns
+        -------
+        torch.Tensor of shape (events, stain)
         """
         return x
     
-    def standardise(self, x, bidx):
-        """ Return standardised version of input, i.e. if input is intensities output should be standardised and unmixed intensities.
+    @property
+    def loss_use_stain_mask(self):
+        """Stains used in the loss: torch.Tensor of bool, shape (stain,), all True here."""
+        return torch.tensor([True]*len(self.stains), dtype=bool, device=self.device)
+
+    def standardise(self, x, bidx, evl=False):
+        """Return the standardised, unmixed intensities (the input unchanged here).
+
+        Parameters
+        ----------
+        x : torch.Tensor of shape (events, channel)
+            Input data (linear scale).
+        bidx : dict of str to torch.Tensor
+            Batch indices per batch key.
+        evl : bool, default False
+            Ignored (evaluation mode of the real transformers).
+
+        Returns
+        -------
+        torch.Tensor of shape (events, stain)
         """
         return x
     
     def append_history(self):
-        """ Append current parameters to parameter history.
-        """
+        """Append the current parameters to the parameter history (nothing here)."""
         pass
     
     def get_aux_loss(self):
-        """ Auxiliary losses for regularisation etc.
+        """Return the regularisation losses.
+
+        Returns
+        -------
+        cytovanni.torch.LossContainer
+            At least ``'loss_transformer'``, the sum that is added to the fit loss (0 here).
         """
         loss = LossContainer({"loss_transformer":0.})
         return loss
     
     @property
     def device(self):
-        """ Device the module is currently on.
-        """
+        """torch.device the module is on."""
         return self.param_dummy.device
     
     def freeze(self):
-        """ Freeze all parameters.
-        """
+        """Freeze all parameters (nothing here)."""
         pass
     
     def extend(self, moe, extend_inds):
-        """ Extend parameters by new batch indices.
+        """Extend the parameters to new batches (nothing here).
+
+        Parameters
+        ----------
+        moe : MultiOrdinalEncoder
+            Extended batch encoder.
+        extend_inds : dict of str to list of int
+            New batch indices per batch key, output of `MultiOrdinalEncoder.extend`.
         """
         pass
 
 
 class ScaleFactor(Module):
-    """ Small wrapper of ExtendableParameter.
-        
-        Optionally clipped to maximum abs log value.
+    """Log scale factors of shape (batch, feature), e.g. per batch and stain or channel.
+
+    Wraps a `cytovanni.torch.ExtendableParameter` that holds the log factors (initialised at 0, i.e. factor 1).
+    With `max_abs_value`, the output log factors are clamped to [-max_abs_value, max_abs_value] by a
+    straight-through clamp (`cytovanni.torch.diffclamp`): only the forward value is clamped, the gradient passes
+    through unchanged, and the stored parameter can exceed the limit.
+
+    Parameters
+    ----------
+    Nbatch : int
+        Number of batches (rows).
+    Nchannel : int
+        Number of features (columns): stains or channels.
+    anchoridxs : list of int, default []
+        Batches whose factors are not trainable (stay at 1).
+    use_channel_mask : array-like of bool, shape (Nchannel,), optional
+        Features that are scaled; the others keep factor 1 for all batches, also for batches added later by
+        `extend`. Default: all features.
+    trainable : bool, default False
+        Whether the factors are trainable at all.
+    mean_norm : bool, default False
+        Normalise the log factors to mean 0 over batches (for every feature).
+    max_abs_value : float, optional
+        Limit of the absolute log factor (straight-through clamp, see above). Default: no limit.
     """
     def __init__(self, Nbatch, Nchannel, anchoridxs=[], use_channel_mask=None, trainable=False, mean_norm=False, max_abs_value=None):
         super().__init__()
@@ -135,16 +286,31 @@ class ScaleFactor(Module):
         self.max_abs_value = max_abs_value
     
     def anchor_bidx(self, indices):
-        """ Anchor all batch indices in iterable indices to not be trainable.
+        """Freeze the factors of the given batches at their current values.
+
+        Parameters
+        ----------
+        indices : int or list of int
+            Batch indices.
         """
         self.parameter.freeze_selective((indices, slice(None)))
 
     def add_to_fixed(self, values, bidx=None, cidx=None):
-        """ Add values to the fixed part of the log-scale parameter.
+        """Add values to the fixed (non-trainable) part of the log factors.
 
-            :param values: torch.Tensor. Values to add.
-            :param bidx: index expression, optional. Batch indices to update. Defaults to all batches.
-            :param cidx: index expression, optional. Channel indices to update. Defaults to all channels.
+        Parameters
+        ----------
+        values : torch.Tensor
+            Log values to add, shape of the indexed part (batch, feature).
+        bidx : index expression, optional
+            Batch indices to update. Default: all batches.
+        cidx : index expression, optional
+            Feature indices to update. Default: all features.
+
+        Warns
+        -----
+        OverlapStandardisationWarning
+            If a log factor then exceeds `max_abs_value` (its output is clamped).
         """
         if bidx is None and cidx is None:
             sl = None
@@ -156,17 +322,26 @@ class ScaleFactor(Module):
             warnings.warn(f"Log scale exceeds max_abs_value={self.max_abs_value} after adding values, it is clipped!", OverlapStandardisationWarning)
     
     def forward(self):
+        """Return the log factors, torch.Tensor of shape (batch, feature), clamped if `max_abs_value` is set."""
         if self.max_abs_value is None:
             return self.parameter()
         else:
             return diffclamp(self.parameter(), -self.max_abs_value, self.max_abs_value)
     
     def freeze(self):
+        """Make all current factors non-trainable."""
         self.parameter.freeze()
     
     def extend(self, inds):
-        """ Extend by new batch indices inds. New batches are trainable, except for the features excluded by
-            use_channel_mask at construction, which stay fixed (factor 1) for the new batches as well.
+        """Add rows for new batches; the existing factors are frozen.
+
+        New batches start at factor 1 and are trainable, except for the features excluded by `use_channel_mask`,
+        which stay fixed at factor 1.
+
+        Parameters
+        ----------
+        inds : list of int
+            New batch indices (the parameter grows to ``max(inds) + 1`` rows).
         """
         Nold = self.parameter.shape[0]
         self.parameter.extend(inds)
@@ -175,29 +350,55 @@ class ScaleFactor(Module):
     
     @property
     def shape(self):
+        """Shape (batch, feature) of the factors."""
         return self.parameter.shape
     
     @property
     def device(self):
+        """torch.device of the factors."""
         return self.parameter.device
     
     @property
     def logfactor(self):
+        """Log factors (natural log), torch.Tensor of shape (batch, feature), with gradient."""
         return self()
     
     @property
     def factor(self):
+        """Factors, ``exp(logfactor)``, torch.Tensor of shape (batch, feature)."""
         return self().exp()
     
     @property
     def L1(self):
+        """L1 regularisation: absolute log factors, mean over batches, summed over features (scalar tensor)."""
         return self.logfactor.abs().mean(0).sum()
 
 class SpectralFitTransformer(Module):
-    """ Fits the single stain spectra, optionally scaling factors per stain and channel.
-        Transforms data into ArcSinh scale for MMD.
-        
-        
+    """Transformer that fits the dye spectra per batch (panel embedding) and optional scale factors.
+
+    Standardisation of data x (events, channel) of a batch b, on the calibrated (linear) scale::
+
+        standardise(x) = unmix(x * channel_factor[b], spectra(embedding[b])) * stain_factor[b]
+
+    with the spectra generated from the fitted embedding by the `PanelEmbeddingModule` (`pem`), one channel factor
+    per batch of `key_scale_channels` and channel, and one stain factor per batch of `key_scale_stains` and stain.
+    The loss is computed on ``arcsinh(standardise(x) / arcsinh_cofactor)``, over all stains. The anchor batches
+    (`anchor_bidx`) keep their parameters fixed.
+
+    Create it with `from_data` (which builds the `config` dict) or restore it with `from_exported`.
+
+    Parameters
+    ----------
+    moe : MultiOrdinalEncoder
+        Batch encoder for all batch keys of the model.
+    pem : PanelEmbeddingModule
+        Panel module that generates the spectra from the per-batch embedding.
+    config : dict
+        Settings, as built by `from_data` (keys ``scale_stains``, ``key_scale_stains``, ``scale_channels``,
+        ``key_scale_channels``, ``arcsinh_cofactor``, ``L1weight_embedding``, ``L1weight_stainscale``,
+        ``L1weight_channelscale``, ``max_abslogstain``, ``max_abslogchannel``, ``anchor_bidx``).
+    smp : ScaleMultiplier, optional
+        Applies the stain factors; default `DefaultMultiplier`. See `set_smp`.
     """
     NAME = "spectralfit"
     
@@ -224,6 +425,7 @@ class SpectralFitTransformer(Module):
         self.anchor_batches(self.config["anchor_bidx"])
     
     def init_parameters(self):
+        """Create the stain and channel scale factors (`ScaleFactor`, factor 1) from `config`."""
         self.param_stainscale = ScaleFactor(len(self.moe[self.config["key_scale_stains"]]),
                                             len(self.stains),
                                             use_channel_mask=self.config["scale_stains"], trainable=True,
@@ -236,13 +438,17 @@ class SpectralFitTransformer(Module):
     
     @property
     def loss_use_stain_mask(self):
-        """ Mask which stains should be used for the loss, here just everything.
-        """
+        """Stains used in the loss: torch.Tensor of bool, shape (stain,), all True here."""
         return torch.tensor([True]*len(self.stains), dtype=bool, device=self.device)
     
     def anchor_batches(self, anchor_bidx):
-        """ Anchor batches to be not trainable, also passes this through to self.pem.
-            E.g. {"a":[0,1]} disables training for all parameters associated with indices [0,1] in batch "a".
+        """Freeze the parameters of the given batches (scale factors and, via `pem`, the embedding).
+
+        Parameters
+        ----------
+        anchor_bidx : dict of str to list of int
+            Batch indices per batch key, e.g. ``{"a": [0, 1]}`` freezes all parameters indexed by batches 0 and 1 of
+            key "a" (build it with `MultiOrdinalEncoder.transform_dict_simple`).
         """
         if self.config["key_scale_stains"] in anchor_bidx:
             self.param_stainscale.anchor_bidx(anchor_bidx[self.config["key_scale_stains"]])
@@ -251,9 +457,23 @@ class SpectralFitTransformer(Module):
         self.pem.anchor_batches(anchor_bidx)
 
     def add_stain_logscale_toself(self, logscale):
-        """ Add different stain logscale to self.
-    
-            logscale should be the output of another transformer.learned_stainlogscale
+        """Add log stain factors (e.g. of another transformer) to the fixed part of the stain scaling, in place.
+
+        Parameters
+        ----------
+        logscale : pandas.DataFrame of shape (batch, stain)
+            Natural-log factors, e.g. ``other.learned_stainlogscale``: index the batch labels of `key_scale_stains`
+            (the same set as here), columns stains of this transformer (a subset is allowed).
+
+        Raises
+        ------
+        OverlapStandardisationException
+            If the batch labels differ or `logscale` has stains that this transformer does not have.
+
+        Warns
+        -----
+        OverlapStandardisationWarning
+            If a combined log factor exceeds `max_abslogstain` (its output is clamped).
         """
         logscale_self = self.learned_stainlogscale
         
@@ -274,35 +494,56 @@ class SpectralFitTransformer(Module):
                   scale_stains=False, key_scale_stains="batch", scale_channels=False, key_scale_channels=None,
                   arcsinh_cofactor=5000, L1weight_embedding=0., L1weight_stainscale=0., L1weight_channelscale=0.,
                   max_abslogstain=None, max_abslogchannel=None, anchor_bidx={}):
-        """ 
-            
-            :param moe: MultiOrdinalEncoder. Batch encoder for all relevant batch keys.
-            
-            :params pem: PanelEmbeddingModule. Module that does the spectral embedding and fit.
-            
-            :params smp: None, ScaleMultiplier. Optional class that takes unmixed values and stain scaling and multiplies them; can be used to selectively detach gradients for the scaling factors if necessary. Can be set here, but usually requires transformer at instantiation! Better to set using .set_smp after creating transformer!
-            
-            :params scale_stains: bool, pd.Series. Whether model should include a scaling factor for the stains. Either bool, or Series with index stains and entry bool.
-            
-            :param key_scale_stains: str. Batch key that affects the stain scaling.
-            
-            :params scale_channels: bool, pd.Series. Whether model should include a scaling factor for the channels. Either bool, or Series with index channels and entry bool.
-            
-            :param key_scale_channels: str. Batch key that affects the channel scaling.
-            
-            :param arcsinh_cofactor: float. Cofactor of ArcSinh used for MMD. Should be set to a multiple (3x or so) of the normal cofactor; setting this higher encourages the fit to focus on the markers with high abundances instead of fitting the noise.
-            
-            :param L1weight_embedding: float. Weighting of L1 embedding regularisation, set to zero to disable.
-            
-            :param L1weight_stainscale: float. Weighting of L1 stain scaling regularisation, set to zero to disable.
-            
-            :param L1weight_channelscale: float. Weighting of L1 channel scaling regularisation, set to zero to disable.
-            
-            :param max_abslogstain: None, float. If not None, log of stain scale factor is clipped to +- this.
-            
-            :param max_abslogchannel: None, float. If not None, log of channel scale factor is clipped to +- this.
-            
-            :params anchor_bidx: dict. Anchor all batch indices in dict to not be trainable. E.g. {"a":[0,1]} disables training for all parameters associated with indices [0,1] in batch "a"; also passes this through to pem.
+        """Create a spectral-fit transformer.
+
+        Parameters
+        ----------
+        moe : MultiOrdinalEncoder
+            Batch encoder for all batch keys of the model.
+        pem : PanelEmbeddingModule
+            Panel module that generates the spectra per batch; defines ``stains`` and ``channels``.
+        smp : ScaleMultiplier, optional
+            Applies the stain factors. Default `DefaultMultiplier`. Multipliers like `UnmxErrorExclusionMultiplier`
+            need the transformer itself, so set them with `set_smp` after creating the transformer.
+        scale_stains : bool or pandas.Series of bool, default False
+            Fit a factor per stain: True/False for all stains, or a Series with index the stains (``pem.stains``).
+            Stains that are not scaled keep factor 1.
+        key_scale_stains : str, default "batch"
+            Batch key of the stain factors (one factor per batch of this key and stain).
+        scale_channels : bool or pandas.Series of bool, default False
+            Fit a factor per channel, as `scale_stains` (Series index: the channels).
+        key_scale_channels : str, optional
+            Batch key of the channel factors. Default: `key_scale_stains`.
+        arcsinh_cofactor : float, default 5000
+            Cofactor (raw intensity units) of the arcsinh transform the loss is computed on. A cofactor several
+            times (about 3x) the usual one puts more weight on the high-abundance markers and less on the noise
+            around zero.
+        L1weight_embedding : float, default 0
+            Weight of the L1 regularisation of the embedding (``pem.get_L1``); 0 disables it.
+        L1weight_stainscale : float, default 0
+            Weight of the L1 regularisation of the log stain factors (`ScaleFactor.L1`); 0 disables it.
+        L1weight_channelscale : float, default 0
+            Weight of the L1 regularisation of the log channel factors; 0 disables it.
+        max_abslogstain : float, optional
+            Limit of the absolute log stain factor: the output is clamped, straight-through (the gradient passes
+            and the stored parameter can exceed the limit, see `ScaleFactor`). Default: no limit.
+        max_abslogchannel : float, optional
+            The same for the log channel factors.
+        anchor_bidx : dict of str to list of int, default {}
+            Batches whose parameters stay fixed, e.g. ``{"a": [0, 1]}`` for batches 0 and 1 of key "a"; applied to
+            the scale factors of the matching keys and passed on to `pem`. Build it with
+            `MultiOrdinalEncoder.transform_dict_simple`.
+
+        Returns
+        -------
+        SpectralFitTransformer
+
+        Examples
+        --------
+        >>> anchor_bidx = moe.transform_dict_simple({"batch": ["18-APR-2024"]})
+        >>> transformer = SpectralFitTransformer.from_data(moe, pem, scale_stains=True, key_scale_stains="batch",
+        ...                                                 L1weight_embedding=2e-7, L1weight_stainscale=1e-7,
+        ...                                                 anchor_bidx=anchor_bidx)
         """
         config = {}
         config["scale_stains"] = pd.Series(scale_stains, index=pem.stains) if isinstance(scale_stains, bool) else scale_stains.loc[pem.stains]
@@ -324,7 +565,17 @@ class SpectralFitTransformer(Module):
         return sft
     
     def export(self, include_history=True):
-        """ Export self to dict.
+        """Export the transformer (panel module, encoder, scale multiplier, config, parameters) to a dict.
+
+        Parameters
+        ----------
+        include_history : bool, default True
+            Include the parameter history (``paramhistory``).
+
+        Returns
+        -------
+        dict
+            Restore with `from_exported`.
         """
         exportdct = {}
         exportdct["pem"] = self.pem.export()
@@ -340,7 +591,19 @@ class SpectralFitTransformer(Module):
     
     @classmethod
     def from_exported(cls, exported, cls_smp=None):
-        """ Initialize from exported. Optionally needs smp class if custom implementation is used.
+        """Restore a transformer from the output of `export`.
+
+        Parameters
+        ----------
+        exported : dict
+            Output of `export`.
+        cls_smp : type, optional
+            Scale multiplier class, for a custom one. Default: chosen by its saved name.
+
+        Returns
+        -------
+        SpectralFitTransformer or ScalingTransformer
+            The restored transformer, of the class this is called on (on the CPU).
         """
         pem = pick_panel_cls(exported["pem"]["class"]).from_exported(exported["pem"])
         moe = MultiOrdinalEncoder.from_exported(exported["moe"])
@@ -358,23 +621,69 @@ class SpectralFitTransformer(Module):
         return sft
     
     def set_smp(self, smp):
-        """ Optionally set scale multiplier; i.e. class that takes unmixed values and stain scaling and multiplies them,
-            E.g. use UnmxErrorExclusionMultiplier to selectively detach gradients for the scaling factors if necessary.
+        """Set the scale multiplier that applies the stain factors to the unmixed data.
+
+        E.g. `UnmxErrorExclusionMultiplier`, to block the gradient of some stain factors for selected events.
+
+        Parameters
+        ----------
+        smp : ScaleMultiplier
+            The multiplier (created with this transformer).
         """
         self.smp = smp
         
     def forward(self, x, bidx):
-        """ Take input and batch idx, output standardised, unmixed and transformed version on which to apply MMD loss.
+        """Standardise the data and transform it onto the scale of the loss.
+
+        Parameters
+        ----------
+        x : torch.Tensor of shape (events, channel)
+            Input data on the scale the model is fitted on (usually calibrated, linear).
+        bidx : dict of str to torch.Tensor of int
+            Batch indices per batch key, shape (events,) or (1,) (e.g. from `SampleOverlapDataset.sample_single`
+            or `MultiOrdinalEncoder.transform_ad`).
+
+        Returns
+        -------
+        torch.Tensor of shape (events, stain)
+            ``arcsinh(standardise(x, bidx) / arcsinh_cofactor)``.
         """
         return self.apply_transformation( self.standardise(x, bidx) )
     
     def apply_transformation(self, x):
-        """ Transform intensities into scale on which MMD should be calculated, e.g. ArcSinh.
+        """Transform standardised intensities onto the scale of the loss: ``arcsinh(x / arcsinh_cofactor)``.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Standardised, unmixed intensities (linear scale).
+
+        Returns
+        -------
+        torch.Tensor
+            Same shape as `x`.
         """
         return torch.arcsinh(x/self.config["arcsinh_cofactor"])
     
     def standardise(self, x, bidx, evl=False):
-        """ Return standardised version of input, i.e. if input is intensities output should be standardised and unmixed intensities.
+        """Return the standardised, unmixed intensities.
+
+        Applies the channel factors, unmixes with the batch's spectra and applies the stain factors (via the scale
+        multiplier).
+
+        Parameters
+        ----------
+        x : torch.Tensor of shape (events, channel)
+            Input data on the scale the model is fitted on (usually calibrated, linear).
+        bidx : dict of str to torch.Tensor of int
+            Batch indices per batch key, shape (events,) or (1,).
+        evl : bool, default False
+            Not used here (same signature as `ScalingTransformer.standardise`).
+
+        Returns
+        -------
+        torch.Tensor of shape (events, stain)
+            Standardised, unmixed intensities (linear scale).
         """
         x = x * self.param_channelscale.factor[bidx[self.config["key_scale_channels"]]]
         xc = self.pem.get_unmixed(x, bidx)
@@ -382,10 +691,29 @@ class SpectralFitTransformer(Module):
         return xc
     
     def get_freeparam_standardisetransf(self, bidx):
-        """ For given idx_batch, returns both embedding and log scale factors as gradient accumulating parameters,
-            as well as function to do the standardisation and transformation that doesn't mask any part of the embedding or scale factors.
-            
-            Ignores effects of scale multiplier.
+        """Return detached copies of a batch's parameters and a function that applies them, for gradient analyses.
+
+        The copies (embedding and log channel and stain factors of the batch) are leaf tensors that accumulate
+        gradients. Unused components and unscaled stains or channels enter with their current value, but are not
+        masked, so the gradient with respect to every parameter can be read off. The scale multiplier is not used
+        (plain multiplication).
+
+        Parameters
+        ----------
+        bidx : dict of str to torch.Tensor of int
+            Batch indices of one batch per batch key, shape (1,).
+
+        Returns
+        -------
+        params : dict of str to torch.Tensor
+            ``'embedding'``, ``'channellogscale'``, ``'stainlogscale'``.
+        fct_standardisetransf : callable
+            Maps x (events, channel) to ``arcsinh(standardised / arcsinh_cofactor)`` (events, stain).
+
+        Raises
+        ------
+        NotImplementedError
+            For a `FixedPanelModule` (no embedding).
         """
         channellogscale = self.param_channelscale.logfactor[bidx[self.config["key_scale_channels"]]].detach()
         channellogscale.requires_grad = True
@@ -408,8 +736,18 @@ class SpectralFitTransformer(Module):
         return params, fct_standardisetransf
     
     def get_freeparam_collect(self, paramlist):
-        """ Takes list of 'params' output of get_freeparam_standardisetransf,
-            collects gradients and returns dict of numpy arrays of shape (len(paramlist), param_components).
+        """Collect the gradients accumulated in the `params` of several `get_freeparam_standardisetransf` calls.
+
+        Parameters
+        ----------
+        paramlist : list of dict
+            ``params`` outputs of `get_freeparam_standardisetransf` after backward passes.
+
+        Returns
+        -------
+        dict of str to pandas.DataFrame
+            ``'channellogscale'`` (columns channels), ``'stainlogscale'`` (columns stains) and ``'embedding'``
+            (columns the panel components); one row per entry of `paramlist`.
         """
         graddict = {}
         graddict["channellogscale"] = pd.DataFrame(np.vstack([p["channellogscale"].grad.detach().cpu().numpy() for p in paramlist]),
@@ -422,6 +760,10 @@ class SpectralFitTransformer(Module):
     
     @property
     def learned_channellogscale(self):
+        """Log channel factors (natural log), pandas.DataFrame of shape (batch, channel).
+
+        Index: the batch labels of `key_scale_channels`; columns: the channels.
+        """
         logfactor = pd.DataFrame(self.param_channelscale.logfactor.detach().cpu().numpy(),
                                  index=self.moe.labels[self.config["key_scale_channels"]],
                                  columns=self.channels)
@@ -429,20 +771,29 @@ class SpectralFitTransformer(Module):
     
     @property
     def learned_stainlogscale(self):
+        """Log stain factors (natural log), pandas.DataFrame of shape (batch, stain).
+
+        Index: the batch labels of `key_scale_stains`; columns: the stains (dyes).
+        """
         logfactor = pd.DataFrame(self.param_stainscale.logfactor.detach().cpu().numpy(),
                                  index=self.moe.labels[self.config["key_scale_stains"]],
                                  columns=self.stains)
         return logfactor
     
     def append_history(self):
-        """ Append current parameters to parameter history.
-        """
+        """Append the current embedding and log scale factors to ``paramhistory`` (called once per fit step)."""
         self.paramhistory["embedding"].append(self.pem.get_learned_embedding())
         self.paramhistory["stainlogscale"].append(self.learned_stainlogscale)
         self.paramhistory["channellogscale"].append(self.learned_channellogscale)
     
     def get_aux_loss(self):
-        """ Auxiliary L1 losses for regularisation etc.
+        """Return the weighted L1 regularisation losses.
+
+        Returns
+        -------
+        cytovanni.torch.LossContainer
+            ``'l1_embedding'``, ``'l1_stainlogscale'``, ``'l1_channellogscale'`` and their sum
+            ``'loss_transformer'`` (added to the fit loss).
         """
         L1_emb = self.config["L1weight_embedding"] * self.pem.get_L1()
         L1_stain = self.config["L1weight_stainscale"] * self.param_stainscale.L1
@@ -456,20 +807,26 @@ class SpectralFitTransformer(Module):
     
     @property
     def device(self):
-        """ Device the module is currently on.
-        """
+        """torch.device the module is on."""
         return self.param_stainscale.device
     
     def freeze(self):
-        """ Freeze all parameters.
-        """
+        """Make all parameters (embedding, scale factors) non-trainable."""
         self.pem.freeze()
         self.param_stainscale.freeze()
         self.param_channelscale.freeze()
     
     def extend(self, moe, extend_inds):
-        """ Extend parameters by new batch indices.
-            All new batches are trainable by default, use .anchor_batches is this should be modified.
+        """Extend the parameters to new batches; the existing parameters are frozen.
+
+        New batches start at the initial values and are trainable; use `anchor_batches` to freeze some of them.
+
+        Parameters
+        ----------
+        moe : MultiOrdinalEncoder
+            Extended batch encoder (after `MultiOrdinalEncoder.extend`).
+        extend_inds : dict of str to list of int
+            New batch indices per batch key, the output of `MultiOrdinalEncoder.extend`.
         """
         self.moe = moe
         self.pem.extend(moe, extend_inds)
@@ -479,7 +836,14 @@ class SpectralFitTransformer(Module):
             self.param_channelscale.extend(extend_inds[self.config["key_scale_channels"]])
     
     def plot_history_embedding(self, legend=False):
-        """ Plot embedding history.
+        """Plot the embedding of every (component, batch) per fit step, coloured by batch key and batch.
+
+        Needs the parameter history (fit in this session, or saved with ``include_history=True``).
+
+        Parameters
+        ----------
+        legend : bool, default False
+            Show a legend of the colours.
         """
         history_embedding = {key:np.asarray([ph[key] for ph in self.paramhistory["embedding"]]) for key in self.pem.batch_keys}
 
@@ -497,7 +861,10 @@ class SpectralFitTransformer(Module):
         if legend: ax.legend(handles=cmap_to_legendhandles(cmap), loc="upper left")
     
     def plot_history_embedding_byexpvar(self):
-        """ Plot embedding history.
+        """Plot the embedding history as `plot_history_embedding`, coloured by the explained variance of the component.
+
+        Darker lines are components with a larger (log) PCA explained variance
+        (``pem.panelconfig.pca_explained_variance``).
         """
         history_embedding = {key:np.asarray([ph[key] for ph in self.paramhistory["embedding"]]) for key in self.pem.batch_keys}
         
@@ -519,7 +886,14 @@ class SpectralFitTransformer(Module):
         ax.set_ylabel("Embedding", size=20)
 
     def plot_logscale_history(self, legend=False):
-        """ Plot scale factor history.
+        """Plot the log stain factors (left) and log channel factors (right) of every batch per fit step.
+
+        Needs the parameter history. Colours: stains resp. channels.
+
+        Parameters
+        ----------
+        legend : bool, default False
+            Show legends of the colours.
         """
         history_logscale_stain = {key:np.asarray([ph.loc[key] for ph in self.paramhistory["stainlogscale"]]) for key in self.moe.labels[self.config["key_scale_stains"]]}
         history_logscale_channel = {key:np.asarray([ph.loc[key] for ph in self.paramhistory["channellogscale"]]) for key in self.moe.labels[self.config["key_scale_channels"]]}
@@ -550,16 +924,28 @@ class SpectralFitTransformer(Module):
             ax[1].legend(handles=cmap_to_legendhandles(cmap_channel), loc="upper left")
     
     def get_standardisationparams_fromad(self, ad, label_include_stain=False):
-        """ Get all relevant standardisation parameters from adata, uses adata.uns to get the batch indices.
-            
-            If label_include_stain, name also includes the fluorophore, otherwise just the marker.
+        """Return the standardisation parameters of one sample's batches (batch labels from ``ad.uns``).
 
-            returns:
-                - channel scaling, pd.Series with index channels.
-                - stain scaling, pd.Series with index stain_marker_name.
-                - spectra, pd.DataFrame with index channels and columns stain_marker_name.
-                - unmx_int_matrix, pd.DataFrame with index channels, columns stain_marker_name; multiplying raw data (after rainbow calibration) with this matrix yields standardised unmixed marker abundances.
-                - spectra_embedding, np.array of component embedding of spectra (empty for a FixedPanelModule).
+        Parameters
+        ----------
+        ad : anndata.AnnData
+            Sample; ``ad.uns`` needs the keys of ``moe.necessary_keys``.
+        label_include_stain : bool, default False
+            Name the stains by ``stain_marker_name`` (dye and marker); otherwise by the marker names only.
+
+        Returns
+        -------
+        channelscale : pandas.Series
+            Channel factor per channel (index the channels).
+        stainscale : pandas.Series
+            Stain factor per stain (index the stain names, see `label_include_stain`).
+        spectra : pandas.DataFrame of shape (channel, stain)
+            Spectra of the sample's batch (index the channels, columns the stain names).
+        unmx_int_matrix : pandas.DataFrame of shape (channel, stain)
+            Combined standardisation and unmixing matrix: calibrated data (events, channel) @ this matrix gives the
+            standardised, unmixed intensities, the same as `standardise`.
+        spectra_embedding : numpy.ndarray of shape (component,)
+            Embedding of the spectra (empty for a `FixedPanelModule`).
         """
         bidx = self.moe.transform_ad(ad)
 
@@ -582,14 +968,29 @@ class SpectralFitTransformer(Module):
         return channelscale, stainscale, spectra, unmx_int_matrix, spectra_embedding
     
     def add_standardisation_parameters(self, adata, rbint_key="rainbow_calibration_factor", label_include_stain=False):
-        """ Add standardisation parameters to adata.
+        """Store the standardisation parameters of the sample's batches in `adata` (in place).
 
-                - adata.var["sfm_calibration_factor"]: channel calibration factor, padded by nan for other vars
-                - adata.varm["sfm_stain_factor"]: stain standardisation factor, column stain, repeated for all vars for easier storage
-                - adata.varm["sfm_spectra"]: fitted stain spectra, padded by nan for other vars
-                - adata.varm["sfm_standardise_unmx"]: matrix for standardisation and unmixing on calibrated data, adata.to_df(layer="calibrated") @ adata.varm["sfm_standardise_unmx"] yields properly unmixed and calibrated data
-                - adata.varm["rb_sfm_standardise_unmx"]: as above but also including the rainbow calibration factors, adata.to_df(layer="raw") @ adata.varm["rb_sfm_standardise_unmx"] yields properly standardised and calibrated data, only added if adata.var[rbint_key] is present
-                - adata.uns["panel_embedding"]: np.array of component embedding of spectra (empty for a FixedPanelModule)
+        Writes (from `get_standardisationparams_fromad`):
+
+        - ``adata.var['sfm_calibration_factor']``: channel factor, NaN for the other variables.
+        - ``adata.varm['sfm_stain_factor']``: DataFrame (var, stain), the stain factors repeated in every row.
+        - ``adata.varm['sfm_spectra']``: DataFrame (var, stain), the batch's spectra, NaN rows for other variables.
+        - ``adata.varm['sfm_standardise_unmx']``: DataFrame (var, stain), standardisation and unmixing matrix on the
+          calibrated data, 0 rows for other variables: ``adata.to_df(layer='calibrated') @
+          adata.varm['sfm_standardise_unmx']`` gives the standardised, unmixed intensities.
+        - ``adata.varm['rb_sfm_standardise_unmx']``, only if ``adata.var[rbint_key]`` exists: the same matrix with the
+          rainbow calibration factors included (channels without factor: 0), for the raw data:
+          ``adata.to_df(layer='raw') @ adata.varm['rb_sfm_standardise_unmx']``.
+        - ``adata.uns['panel_embedding']``: numpy.ndarray, embedding of the spectra.
+
+        Parameters
+        ----------
+        adata : anndata.AnnData
+            Sample; ``adata.uns`` needs the keys of ``moe.necessary_keys``, ``adata.var`` the transformer's channels.
+        rbint_key : str, default "rainbow_calibration_factor"
+            Column of ``adata.var`` with the rainbow calibration factors (`RainbowCalibrator.add_calibration_factor`).
+        label_include_stain : bool, default False
+            Stain names, see `get_standardisationparams_fromad`.
         """
         channelscale, stainscale, spectra, unmx_int_matrix, spectra_embedding = self.get_standardisationparams_fromad(adata, label_include_stain=label_include_stain)
 
@@ -608,10 +1009,38 @@ class SpectralFitTransformer(Module):
 
 
 class ScalingTransformer(Module):
-    """ Fits the scaling factors per stain.
-        Transforms data into ArcSinh scale for MMD.
-        
-        Doesn't do the anchoring in the normal way, but instead normalizes the parameters at eval time.
+    """Transformer that fits only one scale factor per batch and stain, with fixed spectra.
+
+    Standardisation of data x (events, channel) of a batch b: ``unmix(x, spectra) * stain_factor[b]``, with the
+    same spectra for all batches (`FixedPanelModule`). On data that is already unmixed (e.g. after a
+    `SpectralFitTransformer`), identity spectra (`SampleOverlapDataset.make_dummy_spectra`) make it a pure
+    rescaling of the markers, typically fitted with ``DDIST_separate=True`` (one loss per marker) in the
+    `OverlapFitModel`. The loss uses only the scaled stains (`loss_use_stain_mask`), on
+    ``arcsinh(standardise(x) / arcsinh_cofactor)``.
+
+    The anchoring differs from `SpectralFitTransformer`: during the fit, the log factors are normalised to mean 0
+    over batches (for every stain) and no batch is frozen. The anchor batch (at most one) only rescales the result:
+    `standardise` with ``evl=True``, `learned_stainlogscale`, `learned_stainscale` and the standardisation
+    parameters express all factors relative to the anchor batch (anchor factor 1).
+
+    Create it with `from_data` or restore it with `from_exported`.
+
+    Parameters
+    ----------
+    moe : MultiOrdinalEncoder
+        Batch encoder for all batch keys of the model.
+    pem : FixedPanelModule
+        Panel module with the fixed spectra; defines ``stains`` and ``channels``.
+    config : dict
+        Settings, as built by `from_data` (keys ``scale_stains``, ``key_scale_stains``, ``arcsinh_cofactor``,
+        ``L1weight_stainscale``, ``max_abslogstain``, ``anchor_bidx``).
+    smp : ScaleMultiplier, optional
+        Applies the stain factors; default `DefaultMultiplier`. See `set_smp`.
+
+    Warns
+    -----
+    OverlapStandardisationWarning
+        If no stain is scaled (the model can be created, but not fitted).
     """
     NAME = "scaling"
     
@@ -640,6 +1069,7 @@ class ScalingTransformer(Module):
         self.anchor_batches(self.config["anchor_bidx"])
     
     def init_parameters(self):
+        """Create the stain scale factors (`ScaleFactor`, mean-normalised over batches) and `loss_use_stain_mask`."""
         self.param_stainscale = ScaleFactor(len(self.moe[self.config["key_scale_stains"]]),
                                             len(self.stains),
                                             use_channel_mask=self.config["scale_stains"], trainable=True,
@@ -650,8 +1080,18 @@ class ScalingTransformer(Module):
         self.loss_use_stain_mask = Parameter(torch.tensor(self.config["scale_stains"].to_numpy()), requires_grad=False)
     
     def anchor_batches(self, anchor_bidx):
-        """ Anchor batches to be not trainable.
-            E.g. {"a":0} sets scaling to one for batch 0 in "a". 
+        """Set the anchor batch, relative to which the factors are expressed after the fit (nothing is frozen).
+
+        Parameters
+        ----------
+        anchor_bidx : dict of str to int or list of int
+            Batch index per batch key, e.g. ``{"a": 0}`` or ``{"a": [0]}``: batch 0 of "a" gets factor 1. Only the
+            entry for `key_scale_stains` is used, other keys are ignored.
+
+        Raises
+        ------
+        ValueError
+            If the entry for `key_scale_stains` is not a single integer index.
         """
         if self.config["key_scale_stains"] in anchor_bidx:
             idx = np.atleast_1d(anchor_bidx[self.config["key_scale_stains"]])
@@ -660,9 +1100,29 @@ class ScalingTransformer(Module):
             self.anchor_idx = [int(idx[0])]
 
     def add_stain_logscale_toself(self, logscale):
-        """ Add different stain logscale to self.
-    
-            logscale should be the output of another transformer.learned_stainlogscale
+        """Add log stain factors (e.g. of another transformer) to the fixed part of the stain scaling, in place.
+
+        Parameters
+        ----------
+        logscale : pandas.DataFrame of shape (batch, stain)
+            Natural-log factors, e.g. ``other.learned_stainlogscale``: index the batch labels of `key_scale_stains`
+            (the same set as here), columns stains of this transformer (a subset is allowed).
+
+        Raises
+        ------
+        OverlapStandardisationException
+            If the batch labels differ or `logscale` has stains that this transformer does not have.
+
+        Notes
+        -----
+        The factors here are normalised to mean 0 over batches and expressed relative to the anchor batch, so only
+        the differences of `logscale` between batches take effect: its mean over batches (without anchor) or its
+        value at the anchor batch cancels.
+
+        Warns
+        -----
+        OverlapStandardisationWarning
+            If a combined log factor exceeds `max_abslogstain` (its output is clamped).
         """
         logscale_self = self.learned_stainlogscale
         
@@ -681,25 +1141,54 @@ class ScalingTransformer(Module):
 
     @classmethod
     def from_data(cls, moe, panel_spectra, smp=None, scale_stains=False, key_scale_stains="batch", arcsinh_cofactor=5000, L1weight_stainscale=0., max_abslogstain=None, anchor_bidx={}):
-        """ 
-            
-            :param moe: MultiOrdinalEncoder. Batch encoder for all relevant batch keys.
-            
-            :param panel_spectra: pd.DataFrame. DataFrame containing the dye spectra, where the dyes are the index, and columns the fluorescence channels.
-            
-            :params smp: None, ScaleMultiplier. Optional class that takes unmixed values and stain scaling and multiplies them; can be used to selectively detach gradients for the scaling factors if necessary. Can be set here, but usually requires transformer at instantiation! Better to set using .set_smp after creating transformer!
-            
-            :params scale_stains: bool, pd.Series. Whether model should include a scaling factor for the stains. Either bool, or Series with index stains and entry bool.
-            
-            :param key_scale_stains: str. Batch key that affects the stain scaling.
-            
-            :param arcsinh_cofactor: float. Cofactor of ArcSinh used for MMD. Should be set to a multiple (3x or so) of the normal cofactor; setting this higher encourages the fit to focus on the markers with high abundances instead of fitting the noise.
-            
-            :param L1weight_stainscale: float. Weighting of L1 stain scaling regularisation, set to zero to disable.
-            
-            :param max_abslogstain: None, float. If not None, log of stain scale factor is clipped to +- this.
-            
-            :params anchor_bidx: dict. Anchor the stain scaling to one batch, e.g. {"batch":0} or {"batch":[0]} scales all stains relative to batch index 0 of key_scale_stains. Only a single batch can be anchored.
+        """Create a scaling transformer.
+
+        Parameters
+        ----------
+        moe : MultiOrdinalEncoder
+            Batch encoder for all batch keys of the model.
+        panel_spectra : pandas.DataFrame of shape (stain, channel)
+            Fixed spectra, index the stain (dye) names, columns the channels; e.g.
+            `SampleOverlapDataset.make_dummy_spectra` for already unmixed data.
+        smp : ScaleMultiplier, optional
+            Applies the stain factors. Default `DefaultMultiplier`. Multipliers that need the transformer are set
+            with `set_smp` after creating it.
+        scale_stains : bool or pandas.Series of bool, default False
+            Fit a factor per stain: True/False for all stains, or a Series with index the stains. Only scaled stains
+            enter the loss; the others keep factor 1. With no scaled stain the model cannot be fitted.
+        key_scale_stains : str, default "batch"
+            Batch key of the factors (one factor per batch of this key and stain).
+        arcsinh_cofactor : float, default 5000
+            Cofactor (raw intensity units) of the arcsinh transform the loss is computed on. A cofactor several
+            times (about 3x) the usual one puts more weight on the high-abundance markers and less on the noise
+            around zero.
+        L1weight_stainscale : float, default 0
+            Weight of the L1 regularisation of the log factors; 0 disables it.
+        max_abslogstain : float, optional
+            Limit of the absolute log factor: the output is clamped, straight-through (the gradient passes and the
+            stored parameter can exceed the limit, see `ScaleFactor`). The limit applies to the mean-normalised
+            factors, before they are expressed relative to the anchor. Default: no limit.
+        anchor_bidx : dict of str to int or list of int, default {}
+            Anchor batch, e.g. ``{"batch": 0}`` or ``{"batch": [0]}``: all factors are expressed relative to batch
+            index 0 of `key_scale_stains`. Only a single batch can be anchored. Default: no anchor, factors with
+            geometric mean 1 over batches.
+
+        Returns
+        -------
+        ScalingTransformer
+
+        Raises
+        ------
+        ValueError
+            If `anchor_bidx` holds more than one batch index for `key_scale_stains`.
+
+        Examples
+        --------
+        >>> anchor_bidx = moe.transform_dict_simple({"batchmix": "18-APR-2024"})
+        >>> transformer = ScalingTransformer.from_data(moe, dataset.make_dummy_spectra(), scale_stains=True,
+        ...                                            key_scale_stains="batchmix", anchor_bidx=anchor_bidx)
+        >>> sfm = OverlapFitModel.from_data(moe, transformer, dataset, DDIST_separate=True).to(device)
+        >>> sfm.fit(Niter=800, lr=5e-3)
         """
         pem = FixedPanelModule.from_data(panel_spectra)
         
@@ -719,7 +1208,17 @@ class ScalingTransformer(Module):
         return sft
 
     def export(self, include_history=True):
-        """ Export self to dict.
+        """Export the transformer (panel module, encoder, scale multiplier, config, parameters) to a dict.
+
+        Parameters
+        ----------
+        include_history : bool, default True
+            Include the parameter history (``paramhistory``).
+
+        Returns
+        -------
+        dict
+            Restore with `from_exported`.
         """
         exportdct = {}
         exportdct["pem"] = self.pem.export()
@@ -735,7 +1234,19 @@ class ScalingTransformer(Module):
     
     @classmethod
     def from_exported(cls, exported, cls_smp=None):
-        """ Initialize from exported. Optionally needs smp class if custom implementation is used.
+        """Restore a transformer from the output of `export`.
+
+        Parameters
+        ----------
+        exported : dict
+            Output of `export`.
+        cls_smp : type, optional
+            Scale multiplier class, for a custom one. Default: chosen by its saved name.
+
+        Returns
+        -------
+        SpectralFitTransformer or ScalingTransformer
+            The restored transformer, of the class this is called on (on the CPU).
         """
         pem = pick_panel_cls(exported["pem"]["class"]).from_exported(exported["pem"])
         moe = MultiOrdinalEncoder.from_exported(exported["moe"])
@@ -753,23 +1264,67 @@ class ScalingTransformer(Module):
         return sft
     
     def set_smp(self, smp):
-        """ Optionally set scale multiplier; i.e. class that takes unmixed values and stain scaling and multiplies them,
-            E.g. use UnmxErrorExclusionMultiplier to selectively detach gradients for the scaling factors if necessary.
+        """Set the scale multiplier that applies the stain factors to the unmixed data.
+
+        E.g. `UnmxErrorExclusionMultiplier`, to block the gradient of some stain factors for selected events.
+
+        Parameters
+        ----------
+        smp : ScaleMultiplier
+            The multiplier (created with this transformer).
         """
         self.smp = smp
         
     def forward(self, x, bidx):
-        """ Take input and batch idx, output standardised, unmixed and transformed version on which to apply MMD loss.
+        """Standardise the data and transform it onto the scale of the loss.
+
+        Parameters
+        ----------
+        x : torch.Tensor of shape (events, channel)
+            Input data on the scale the model is fitted on (usually calibrated, linear).
+        bidx : dict of str to torch.Tensor of int
+            Batch indices per batch key, shape (events,) or (1,) (e.g. from `SampleOverlapDataset.sample_single`
+            or `MultiOrdinalEncoder.transform_ad`).
+
+        Returns
+        -------
+        torch.Tensor of shape (events, stain)
+            ``arcsinh(standardise(x, bidx) / arcsinh_cofactor)``.
         """
         return self.apply_transformation( self.standardise(x, bidx) )
     
     def apply_transformation(self, x):
-        """ Transform intensities into scale on which MMD should be calculated, e.g. ArcSinh.
+        """Transform standardised intensities onto the scale of the loss: ``arcsinh(x / arcsinh_cofactor)``.
+
+        Parameters
+        ----------
+        x : torch.Tensor
+            Standardised, unmixed intensities (linear scale).
+
+        Returns
+        -------
+        torch.Tensor
+            Same shape as `x`.
         """
         return torch.arcsinh(x/self.config["arcsinh_cofactor"])
     
     def standardise(self, x, bidx, evl=False):
-        """ Return standardised version of input, i.e. if input is intensities output should be standardised and unmixed intensities.
+        """Return the standardised, unmixed intensities: unmixing with the fixed spectra, then the stain factors.
+
+        Parameters
+        ----------
+        x : torch.Tensor of shape (events, channel)
+            Input data on the scale the model is fitted on.
+        bidx : dict of str to torch.Tensor of int
+            Batch indices per batch key, shape (events,) or (1,).
+        evl : bool, default False
+            Express the factors relative to the anchor batch, for applying the fitted model
+            (`OverlapFitModel.add_ad_standardised` sets it). False uses the mean-normalised factors of the fit.
+
+        Returns
+        -------
+        torch.Tensor of shape (events, stain)
+            Standardised, unmixed intensities (linear scale).
         """
         xc = self.pem.get_unmixed(x, bidx).detach() # detach here, but there shouldn't be any gradients anyway
         factor = self.param_stainscale.factor
@@ -780,6 +1335,10 @@ class ScalingTransformer(Module):
 
     @property
     def learned_stainlogscale(self):
+        """Log stain factors (natural log) relative to the anchor batch, pandas.DataFrame of shape (batch, stain).
+
+        Index: the batch labels of `key_scale_stains`; columns: the stains. Without anchor: mean 0 over batches.
+        """
         logfactor = self.param_stainscale.logfactor.detach().cpu()
         if self.anchor_idx is not None:
             logfactor = logfactor - logfactor[self.anchor_idx]
@@ -790,15 +1349,20 @@ class ScalingTransformer(Module):
 
     @property
     def learned_stainscale(self):
+        """Stain factors, ``exp(learned_stainlogscale)``, pandas.DataFrame of shape (batch, stain)."""
         return np.exp(self.learned_stainlogscale)
     
     def append_history(self):
-        """ Append current parameters to parameter history.
-        """
+        """Append the current log stain factors to ``paramhistory`` (called once per fit step)."""
         self.paramhistory["stainlogscale"].append(self.learned_stainlogscale)
     
     def get_aux_loss(self):
-        """ Auxiliary L1 losses for regularisation etc.
+        """Return the weighted L1 regularisation loss.
+
+        Returns
+        -------
+        cytovanni.torch.LossContainer
+            ``'l1_stainlogscale'`` and ``'loss_transformer'`` (the same value, added to the fit loss).
         """
         L1_stain = self.config["L1weight_stainscale"] * self.param_stainscale.L1
         loss = LossContainer({"l1_stainlogscale":L1_stain,
@@ -808,25 +1372,38 @@ class ScalingTransformer(Module):
     
     @property
     def device(self):
-        """ Device the module is currently on.
-        """
+        """torch.device the module is on."""
         return self.param_stainscale.device
     
     def freeze(self):
-        """ Freeze all parameters.
-        """
+        """Make all scale factors non-trainable."""
         self.param_stainscale.freeze()
     
     def extend(self, moe, extend_inds):
-        """ Extend parameters by new batch indices.
-            All new batches are trainable by default, use .anchor_batches is this should be modified.
+        """Extend the factors to new batches; the existing factors are frozen.
+
+        New batches start at factor 1 and are trainable; they do not enter the mean normalisation.
+
+        Parameters
+        ----------
+        moe : MultiOrdinalEncoder
+            Extended batch encoder (after `MultiOrdinalEncoder.extend`).
+        extend_inds : dict of str to list of int
+            New batch indices per batch key, the output of `MultiOrdinalEncoder.extend`.
         """
         self.moe = moe
         if self.config["key_scale_stains"] in extend_inds:
             self.param_stainscale.extend(extend_inds[self.config["key_scale_stains"]])
 
     def plot_logscale_history(self, legend=False):
-        """ Plot scale factor history.
+        """Plot the log stain factors (relative to the anchor) of every batch per fit step, coloured by stain.
+
+        Needs the parameter history (fit in this session, or saved with ``include_history=True``).
+
+        Parameters
+        ----------
+        legend : bool, default False
+            Show a legend of the colours.
         """
         history_logscale_stain = {key:np.asarray([ph.loc[key] for ph in self.paramhistory["stainlogscale"]]) for key in self.moe.labels[self.config["key_scale_stains"]]}
         
@@ -847,14 +1424,27 @@ class ScalingTransformer(Module):
             ax.legend(handles=cmap_to_legendhandles(cmap_stain), loc="upper left")
 
     def get_standardisationparams_fromad(self, ad, label_include_stain=False):
-        """ Get all relevant standardisation parameters from adata, uses adata.uns to get the batch indices.
-            
-            If label_include_stain, name also includes the fluorophore, otherwise just the marker.
+        """Return the standardisation parameters of one sample's batch (batch labels from ``ad.uns``).
 
-            returns:
-                - stain scaling, pd.Series with index stain_marker_name.
-                - spectra, pd.DataFrame with index channels and columns stain_marker_name.
-                - unmx_int_matrix, pd.DataFrame with index channels, columns stain_marker_name; multiplying raw data (after rainbow calibration) with this matrix yields standardised unmixed marker abundances.
+        The factors are relative to the anchor batch. For a `FixedPanelModule` the marker names and
+        ``stain_marker_name`` are both the index of the spectra, so `label_include_stain` makes no difference.
+
+        Parameters
+        ----------
+        ad : anndata.AnnData
+            Sample; ``ad.uns`` needs the keys of ``moe.necessary_keys``.
+        label_include_stain : bool, default False
+            Name the stains by ``stain_marker_name``; otherwise by the marker names.
+
+        Returns
+        -------
+        stainscale : pandas.Series
+            Stain factor per stain (index the stain names).
+        spectra : pandas.DataFrame of shape (channel, stain)
+            The fixed spectra (index the channels, columns the stain names).
+        unmx_int_matrix : pandas.DataFrame of shape (channel, stain)
+            Combined unmixing and scaling matrix: data (events, channel) @ this matrix gives the standardised,
+            unmixed intensities, the same as ``standardise(..., evl=True)``.
         """
         bidx = self.moe.transform_ad(ad)
 
@@ -872,11 +1462,26 @@ class ScalingTransformer(Module):
         return stainscale, spectra, unmx_int_matrix
     
     def add_standardisation_parameters(self, adata, label_include_stain=False):
-        """ Add standardisation parameters to adata.
+        """Store the standardisation parameters of the sample's batch in `adata` (in place).
 
-                - adata.varm["sfm_stain_factor"]: stain standardisation factor, column stain, repeated for all vars for easier storage
-                - adata.varm["sfm_spectra"]: stain spectra, padded by nan for other vars
-                - adata.varm["sfm_standardise_unmx"]: matrix for standardisation and unmixing on calibrated data, adata.to_df(layer="calibrated") @ adata.varm["sfm_standardise_unmx"] yields properly unmixed and calibrated data
+        Writes (from `get_standardisationparams_fromad`):
+
+        - ``adata.varm['sfm_stain_factor']``: DataFrame (var, stain), the stain factors repeated in every row.
+        - ``adata.varm['sfm_spectra']``: DataFrame (var, stain), the spectra, NaN rows for other variables.
+        - ``adata.varm['sfm_standardise_unmx']``: DataFrame (var, stain), unmixing and scaling matrix, 0 rows for
+          other variables: ``adata.to_df(layer='calibrated') @ adata.varm['sfm_standardise_unmx']`` gives the
+          standardised, unmixed intensities.
+
+        The rows are matched to ``adata.var`` by channel name. For a transformer on already unmixed data (identity
+        spectra over marker names, `SampleOverlapDataset.make_dummy_spectra`), the channels are marker names that
+        are usually not in ``adata.var``, so the matrices are then all NaN / 0; use `learned_stainscale` instead.
+
+        Parameters
+        ----------
+        adata : anndata.AnnData
+            Sample; ``adata.uns`` needs the keys of ``moe.necessary_keys``.
+        label_include_stain : bool, default False
+            Stain names, see `get_standardisationparams_fromad`.
         """
         stainscale, spectra, unmx_int_matrix = self.get_standardisationparams_fromad(adata, label_include_stain=label_include_stain)
 

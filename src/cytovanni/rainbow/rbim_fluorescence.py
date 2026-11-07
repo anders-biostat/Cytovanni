@@ -1,3 +1,4 @@
+"""Fluorescence part of the rainbow calibration: joint mixture model of all rainbow measurements, and its trainer."""
 import numpy as np
 import pandas as pd
 import torch
@@ -20,30 +21,59 @@ from ..torch import pdsave_expand, pdsave_collect
 
 
 class RainbowFluorescenceGMMCalibrationModule(Module):
-    """
-        Calibration Module on the fluorescence of rainbow beads.
-        Models every type of bead as a Sinh transformed multivariate Normal distribution with a sample dependent covariance matrix.
-        The mean positions are fixed per type of rainbow bead, and only scaled (batch-dependent) and shifted (sampmle-dependent)
-        such that they reproduce the positions in the samples.
-        For peaks that are off-scale and no longer linear, fits the mean position freely (batch-dependent).
+    """Joint mixture model of the fluorescence of all rainbow bead measurements, with per-batch channel factors.
+
+    Every rainbow type is a mixture with one component per peak. With the cofactor f of the type, the raw data x of a
+    bead in measurement m (batch b) and the shift s_m, ``arcsinh(x / f + sinh(a_m))`` is normal for every peak p, with
+    mean ``arcsinh(mu_p * g_b / f)`` and precision ``A A^T`` (per measurement and peak, arcsinh scale). The fitted
+    parameters are
+
+    - ``mu_p = exp(param_peakpos)``: peak positions of the type (raw units), shape (peak, channel);
+    - ``g_b = exp(param_logscalefactor)``: gain of batch b, shape (batch, channel), ``ln g`` constrained to mean 0 per
+      channel over the batches of the first fit; the calibration factor is ``1 / g_b``;
+    - ``a_m = param_shift_asinh``: shift per measurement (uid) and channel, ``s_m = sinh(a_m) * f`` in raw units
+      (trainable only with `include_shift`);
+    - per type: the precision factor A per (uid, peak) (`PrecisionExtendableParameter`, initialised to 5 I), the
+      peak share logits per (uid, peak), and free positions ``exp(param_peakpos_nonlinear)`` per (batch, peak).
+
+    Peaks that are not usable (above ``max_linear_range`` or in a missing channel, see
+    `RainbowFluorescenceGMMCalibrationDataset.peak_usemask`) use the free per-batch position instead of
+    ``mu_p * g_b`` and no shift, so they do not inform the factors. The likelihood includes the Jacobian of the
+    arcsinh transform unless `log_prob_onbase`.
+
+    Parameters
+    ----------
+    rboe : RainbowBatchOrdinalEncoder
+        Batch encoder with all batches, types and uids of the training data.
+    dct_Npeak : dict of str to int
+        Number of peaks per rainbow type.
+    channels : list of str
+        Fluorescence channels of the model (order of all channel axes).
+    class_cofactor : dict of str to float
+        Arcsinh cofactor (raw units) per rainbow type.
+    include_shift : bool, default True
+        Fit the shift per measurement and channel; if False it stays 0.
+    log_prob_onbase : bool, default False
+        Compute the likelihood of the underlying normal distribution only (no Jacobian), i.e. as for a normal
+        distribution on the arcsinh-transformed data instead of the transformed distribution on the raw scale.
+
+    Attributes
+    ----------
+    df_batch_trained : pandas.DataFrame
+        Boolean, shape (batch, channel), index the batch ordinals: factors that were trained (see
+        `remember_trainable_batches`).
+    frozen_batches : list of int
+        Batch ordinals whose parameters are frozen.
+    is_trained : bool
+        True once the full fit has started.
+
+    See Also
+    --------
+    RainbowCalibrator : user interface (builds, fits and applies this module).
+    RainbowFluorescenceGMMCalibrationTrainer : training schedule.
     """
     def __init__(self, rboe, dct_Npeak, channels, class_cofactor,
                  include_shift=True, log_prob_onbase=False):
-        """
-            Module for the fluorescence calibration with rainbow beads.
-            
-            :param rboe: RainbowBatchOrdinalEncoder. Batch encoder, set up.
-            
-            :param dct_Npeak: dict. Dictionary of number of peaks for every bead type.
-            
-            :param Nchannels: int. Number of fluorescence channels.
-            
-            :param class_cofactor: dict. Dictionary of arcsinh cofactor for every bead type.
-            
-            :param include_shift: bool. Whether to include a shift in addition to the scaling in the fit.
-            
-            :param log_prob_onbase: bool. Whether to get the likelihood directly on the underlying Gaussian instead of the Sinh transformed Gaussian. If True, effectively the same as using a normal Gaussian on the arcsinh transformed data instead of ASinhMultivariateNormal on the raw data.
-        """
         super().__init__()
         self.rboe = rboe
         self.dct_Npeak = dct_Npeak
@@ -60,7 +90,12 @@ class RainbowFluorescenceGMMCalibrationModule(Module):
         self.init_params()
     
     def init_params_tp(self, tp):
-        """ Initialize parameters that are type dependent for one type tp.
+        """Create the parameters of type `tp`: precision factors, peak positions, nonlinear positions, share logits.
+
+        Parameters
+        ----------
+        tp : str
+            Rainbow type (a key of `dct_Npeak`).
         """
         # covariance decomposition, (uid, peak, channel, channel) for simplicity even though most entries will be unused
         #self.param_cov[tp] = CovarianceTrilExtendableParameter((len(self.rboe.oes["uid"]), self.dct_Npeak[tp], self.Nchannels, self.Nchannels), 0, .2, allow_grad=True)
@@ -76,8 +111,7 @@ class RainbowFluorescenceGMMCalibrationModule(Module):
         self.param_logclassweights[tp] = ExtendableParameter((len(self.rboe.oes["uid"]), self.dct_Npeak[tp]), 0, 0., allow_grad=True)
     
     def init_params(self):
-        """ Initialize all parameters.
-        """
+        """Create all parameters for the types, batches and uids of `rboe`, and reset `df_batch_trained`."""
         self.param_logclassweights = ParameterDict()
         self.param_cov = ParameterDict()
         self.param_peakpos = ParameterDict()
@@ -100,21 +134,28 @@ class RainbowFluorescenceGMMCalibrationModule(Module):
         self.df_batch_trained = pd.DataFrame(False, index=np.arange(len(self.rboe.oes["rainbow_batch"])), columns=self.channels)
     
     def init_classshares_from_dataset(self, dataset):
-        """ Init classshares from dataset.
-            
-            :param dataset: RainbowFluorescenceGMMCalibrationDataset. Data to extract init from.
+        """Initialise the peak share logits with the log GMM peak shares of the dataset (trainable entries only).
+
+        Parameters
+        ----------
+        dataset : RainbowFluorescenceGMMCalibrationDataset
+            Training data.
         """
         for tp in self.param_logclassweights:
             if (tp in dataset.peak_shares_uididx) and (tp in dataset.peak_shares):
                 self.param_logclassweights[tp].set_trainable_part(torch.log(dataset.peak_shares[tp]), dataset.peak_shares_uididx[tp])
     
     def init_peakpos_from_dataset(self, dataset):
-        """ Init peakpos as mean across all in dataset.
-            
-            Initialize as log of clipped GMM mean (after cofactor scaling), since it has to be positive.
-            Initialise such that frozen value cannot be overwritten.
-            
-            :param dataset: RainbowFluorescenceGMMCalibrationDataset. Data to extract init from.
+        """Initialise the peak positions from the GMM means of the dataset (trainable entries only).
+
+        The log peak position of a type is initialised as the mean over its measurements of ``ln(GMM mean)`` (raw
+        units, clipped at 1 since the position is positive); the nonlinear position of a batch as ``ln(GMM mean)`` of
+        its measurement (one of them if the batch has several). Frozen entries are not overwritten.
+
+        Parameters
+        ----------
+        dataset : RainbowFluorescenceGMMCalibrationDataset
+            Training data.
         """
         for tp in self.param_peakpos:
             if tp in dataset.GMM_means:
@@ -124,9 +165,16 @@ class RainbowFluorescenceGMMCalibrationModule(Module):
                 self.param_peakpos_nonlinear[tp].set_trainable_part(torch.tensor(val), dataset.peak_shares_batchidx[tp])
     
     def remember_trainable_batches(self, df_):
-        """ Remember which scaling factors are trained and which aren't.
-            Would be nicer to do this in the parameter itself, but messes up the normalizations.
-            Only relevant for scale, shift doesn't get trained anyway.
+        """Mark the trainable (batch, channel) factors of a dataset as trained in `df_batch_trained`.
+
+        Kept as a separate table rather than in the parameter, whose mean normalisation would be affected. Entries of
+        frozen batches are not changed. Only the factors use it: an untrained factor is set to 1 by
+        `get_calibration_factor`.
+
+        Parameters
+        ----------
+        df_ : pandas.DataFrame
+            `RainbowFluorescenceGMMCalibrationDataset.df_channel_train` (index batch names, columns channels).
         """
         df = df_.copy()
         df.index = self.rboe.oes["rainbow_batch"].transform(df.index)
@@ -134,20 +182,16 @@ class RainbowFluorescenceGMMCalibrationModule(Module):
     
     
     def parameters_covariance(self):
-        """ Only parameters that affect the covariance.
-        """
+        """Iterator over the covariance (precision) parameters, used by the initial covariance fit."""
         return self.param_cov.parameters()
     
     def parameters_peak(self):
-        """ Only parameters that affect the peak positions.
-        """
+        """Iterator over the parameters of the peak positions: positions, nonlinear positions, gains and shifts."""
         return itertools.chain(*[self.param_peakpos.parameters(), self.param_peakpos_nonlinear.parameters(),
                                  self.param_logscalefactor.parameters(), self.param_shift_asinh.parameters()])
 
     def freeze(self):
-        """ Freeze all parameters of self.
-            Also remember which batches were frozen.
-        """
+        """Freeze all parameters (no longer trained, also after `extend`) and add all batches to `frozen_batches`."""
         for key_paramdict in self.keys_paramdict:
             for param in getattr(self, key_paramdict).values(): param.freeze()
         for key_param in self.keys_param:
@@ -155,11 +199,27 @@ class RainbowFluorescenceGMMCalibrationModule(Module):
         self.frozen_batches = list(set(self.frozen_batches) | set(self.df_batch_trained.index))
     
     def extend(self, rboe, extend_inds, dct_Npeak={}, class_cofactor={}):
-        """ Replace rboe by new, extend all parameters by extend_inds.
-            
-            :param rboe: RainbowBatchOrdinalEncoder. Extended batch encoder.
-            
-            :param extend_inds: dict. Extended indices dict, outout of rboe.extend.
+        """Extend the module to new batches, uids and rainbow types; the existing entries become fixed.
+
+        Parameters
+        ----------
+        rboe : RainbowBatchOrdinalEncoder
+            Extended batch encoder (replaces `rboe`).
+        extend_inds : dict of str to list of int
+            New ordinals per key, the output of `RainbowBatchOrdinalEncoder.extend`.
+        dct_Npeak : dict of str to int, default {}
+            Number of peaks per rainbow type of the new data; new types are added.
+        class_cofactor : dict of str to float, default {}
+            Arcsinh cofactor per rainbow type; only new types are added, known types keep their cofactor.
+
+        Returns
+        -------
+        None
+
+        Raises
+        ------
+        CalibrationModuleException
+            If a known type has a different number of peaks in `dct_Npeak`.
         """
         self.rboe = rboe
         
@@ -197,9 +257,12 @@ class RainbowFluorescenceGMMCalibrationModule(Module):
     
     
     def update_params(self, no_cov=False):
-        """ Update self.param with current peak positions etc.
-            
-            :param no_cov: bool. Whether to include covariance parameters, unnecessary for the initial mean fit.
+        """Compute the current model quantities from the parameters into `params` (with gradients).
+
+        Parameters
+        ----------
+        no_cov : bool, default False
+            Skip the precision matrices (not needed for the initial peak fit).
         """
         
         # scale factor, (batch, channel)
@@ -217,7 +280,7 @@ class RainbowFluorescenceGMMCalibrationModule(Module):
         self.params["peak_position"] = {}
         for tp in self.param_peakpos:
             self.params["peak_position"][tp] = self.param_peakpos[tp]().exp()
-        # non-linear peak positions, (uid, peak, channel) for every type
+        # non-linear peak positions, (batch, peak, channel) for every type
         self.params["peak_position_nonlinear"] = {}
         for tp in self.param_peakpos:
             self.params["peak_position_nonlinear"][tp] = self.param_peakpos_nonlinear[tp]().exp()
@@ -237,18 +300,29 @@ class RainbowFluorescenceGMMCalibrationModule(Module):
             self.params["has_cov"] = False
     
     def get_dist_parameters_type(self, tp, uidx, batchidx, peak_islinear=None, update=True):
-        """ For index tensors uidx and batchidx, get all the peak positions, precisions etc.
-            If peak_islinear is given, replace respective means bei their nonlinear position for the batch.
-            
-            :param tp: str. Bead type key.
-            
-            :param uidx: torch.Tensor. Unique identifier index.
-            
-            :param batchids: torch.Tensor. Batch index.
-            
-            :param peak_islinear: torch.Tensor. Optional, mask of which peaks are in the linear range.
-            
-            :param update: bool. Whether to update self.params first.
+        """Model parameters for every event (or measurement) of one rainbow type.
+
+        Parameters
+        ----------
+        tp : str
+            Rainbow type.
+        uidx : torch.Tensor
+            Encoded uid per event, shape (events,).
+        batchidx : torch.Tensor
+            Encoded batch per event, shape (events,).
+        peak_islinear : torch.Tensor, optional
+            Boolean usable-peak mask, shape (events, peak, channel). Where False, the positions are replaced by the
+            free position of the batch and the shift is 0. Default: all peaks use ``mu_p * g_b`` and the shift.
+        update : bool, default True
+            Recompute `params` first (`update_params`).
+
+        Returns
+        -------
+        dict of str to torch.Tensor
+            'shift' (``sinh(a)``, in units of the cofactor, shape (events, 1 or peak, channel)), 'scale' (gain g,
+            (events, 1, channel)), 'peak_position' and 'peak_position_scaled' (raw units, without and with the gain,
+            (events, peak, channel)), 'log_classshares' ((events, peak)), and if available 'precision' ((events, peak,
+            channel, channel), arcsinh scale) and 'logdet_precision' ((events, peak)).
         """
         if update: self.update_params()
         
@@ -277,18 +351,30 @@ class RainbowFluorescenceGMMCalibrationModule(Module):
         return params
     
     def get_dist_parameters(self, uidx, batchidx, peak_islinear=None, update=True, no_cov=False):
-        """ For dicts uidx and batchidx, get all the peak positions, precisions etc.
-            If peak_islinear is given, replace respective means bei their nonlinear position for the batch.
-            
-            :param uidx: dict. Unique identifier index for every type.
-            
-            :param batchids: dict. Batch index for every type.
-            
-            :param peak_islinear: dict. Optional, mask of which peaks are in the linear range, for every type.
-            
-            :param update: bool. Whether to update self.params first.
-            
-            :param no_cov: bool. Whether to not update covariance parameters.
+        """`get_dist_parameters_type` for several rainbow types at once.
+
+        Parameters
+        ----------
+        uidx : dict of str to torch.Tensor
+            Encoded uid per event, per type.
+        batchidx : dict of str to torch.Tensor
+            Encoded batch per event, per type (same keys as `uidx`).
+        peak_islinear : dict of str to torch.Tensor, optional
+            Usable-peak mask per type, see `get_dist_parameters_type`.
+        update : bool, default True
+            Recompute `params` first.
+        no_cov : bool, default False
+            Skip the precision matrices when updating.
+
+        Returns
+        -------
+        dict of str to dict
+            Output of `get_dist_parameters_type` per type.
+
+        Raises
+        ------
+        ValueError
+            If `uidx` and `batchidx` have different keys.
         """
         if set(uidx.keys()) != set(batchidx.keys()):
             raise ValueError
@@ -302,20 +388,29 @@ class RainbowFluorescenceGMMCalibrationModule(Module):
     
     
     def get_nll_batch(self, batch, tp, accumulate=True, accumulate_weight=1.):
-        """ Get nll for single bead batch of type tp.
-            
-            If accumulate, already performs the backward pass and doesn't return anything.
-            If accumulating, make sure you pass the appropriate accumulate_weight to emulate single pass with .mean!
-            
-            If not accumulate, doesn't call .update_params(), otherwise needs to as it deletes the graph.
-            
-            :param batch: dict. Batched data for one type of peak.
-            
-            :param tp: str. Bead type.
-            
-            :param accumulate: bool. Whether to directly accumulate gradients instead of returning the full llh.
-            
-            :param accumulate_weight: float. For accumulation, proper weight of batch gradients.
+        """Negative log-likelihood of a batch of beads of one rainbow type under the mixture.
+
+        The per-bead NLL is ``-logsumexp_p(log share_p + log density_p)``, clamped to [-1000, 1000] with a
+        straight-through clamp (forward value clamped, gradient passed through).
+
+        Parameters
+        ----------
+        batch : dict
+            Batch as returned by `RainbowFluorescenceGMMCalibrationDataset.get_batch`.
+        tp : str
+            Rainbow type.
+        accumulate : bool, default True
+            Recompute the parameters (`update_params`), compute ``mean(nll * accumulate_weight)`` and backpropagate it
+            (gradients accumulate in the parameters). If False, use the current `params` (no update) and return the
+            per-bead NLL without backward pass.
+        accumulate_weight : float, default 1.0
+            Weight of this batch when accumulating, e.g. ``batch size / total`` so that the accumulated gradient equals
+            that of the mean over all batches.
+
+        Returns
+        -------
+        torch.Tensor
+            If `accumulate`: the weighted mean loss (scalar, after backward). Else: NLL per bead, shape (events,).
         """
         NLL_CLIP_MIN, NLL_CLIP_MAX = -1e3, 1e3
         
@@ -340,9 +435,17 @@ class RainbowFluorescenceGMMCalibrationModule(Module):
             return nll
     
     def accumulate_nll_gradients(self, dataset):
-        """ Accumulate gradients over one sample from dataset, batched for memory conservation.
-            
-            :param dataset: RainbowFluorescenceGMMCalibrationDataset. Data to get the sample from.
+        """Draw a new subsample, accumulate the gradients of its mean NLL batch by batch, and return the loss.
+
+        Parameters
+        ----------
+        dataset : RainbowFluorescenceGMMCalibrationDataset
+            Training data.
+
+        Returns
+        -------
+        float
+            Mean NLL per bead of the subsample (over all types).
         """
         loaders = dataset.sample_loaders()
         total = sum([len(v) for v in loaders.values()])
@@ -359,8 +462,7 @@ class RainbowFluorescenceGMMCalibrationModule(Module):
     
     
     def export(self):
-        """ Export self to dict.
-        """
+        """Export the module (settings, trained/frozen batches, state dict, encoder) as a dict for `from_exported`."""
         exported = {}
         exported["rboe"] = self.rboe.export()
         
@@ -374,11 +476,19 @@ class RainbowFluorescenceGMMCalibrationModule(Module):
     
     @classmethod
     def from_exported(cls, exported, rboe=None):
-        """ Construct new from exported.
-            
-            :param exported: dict. Output of previous .export().
-            
-            :param rboe: RainbowBatchOrdinalEncoder. Optional, batch encoder, already setup.
+        """Rebuild a module from the output of `export`.
+
+        Parameters
+        ----------
+        exported : dict
+            Output of `export`.
+        rboe : RainbowBatchOrdinalEncoder, optional
+            Batch encoder to use (shared with the other modules of a `RainbowCalibrator`). Default: rebuilt from
+            ``exported['rboe']``.
+
+        Returns
+        -------
+        RainbowFluorescenceGMMCalibrationModule
         """
         rboe = rboe if rboe is not None else RainbowBatchOrdinalEncoder.from_exported(exported["rboe"])
         
@@ -399,18 +509,27 @@ class RainbowFluorescenceGMMCalibrationModule(Module):
     
     
     def get_calibration_factor(self, rainbow_batch=None, adata=None, fct_hash_settings=None, fix_untrained=True, warn_untrained=True, return_mask=False):
-        """ Get calibration scale factor from rainbow_batch into common units.
-            Calibrating from batch into common is done by multiplying with factor.
+        """Fluorescence calibration factors (``1 / g_b``) of one batch: multiply its raw data by them.
 
-            :param rainbow_batch: str. Optional, batch for which to get the calibration factor.
+        Parameters
+        ----------
+        rainbow_batch : str, optional
+            Batch name (preferred if given).
+        adata : anndata.AnnData, optional
+            Sample whose batch is used, see `RainbowBatchOrdinalEncoder.transform_adata_batch`.
+        fct_hash_settings : callable, optional
+            Settings hash function for the batch inference. Default: ``adata.uns['cytoconfig'].fct_hash_settings``.
+        fix_untrained : bool, default True
+            Set factors that were not trained for the batch to 1.
+        warn_untrained : bool, default True
+            Warn (`CalibrationModuleUntrainedParameterWarning`) if some factors of the batch were not trained.
+        return_mask : bool, default False
+            Also return the mask of the trained factors.
 
-            :param adata: AnnData. Optional, AnnData from which to get the batch for the calibration factor.
-            
-            :param fix_untrained: bool. Whether to fix untrained scale factors to 1.
-            
-            :param warn_untrained: bool. Whether to warn if some factors are untrained.
-            
-            :param return_mask: bool. Whether to also return the mask which factors were trained.
+        Returns
+        -------
+        pandas.Series or tuple of pandas.Series
+            Factor per channel (index: `channels`); with `return_mask` also the boolean trained mask (same index).
         """
         batchidx = self.rboe.transform_adata_batch(adata=adata, rainbow_batch=rainbow_batch, fct_hash_settings=fct_hash_settings)
         with torch.no_grad():
@@ -433,15 +552,36 @@ class RainbowFluorescenceGMMCalibrationModule(Module):
             return scalefactor
     
     def get_calibration_rainbow_shift(self, adata=None, uid=None, tp=None):
-        """ Get calibration rainbow sample shift, to be added before scaling.
-            Since the shift is applied after the asinh cofactor, also needs rainbow type to calculate correct shift for sample 'uid'.
-            Calibrating from batch into common is done by adding shift, and afterwards multiplying with factor.
+        """Fitted shift of one rainbow bead measurement, in raw units: add it to the raw data before the factors.
 
-            :param adata: AnnData. Optional, AnnData from which to get the uid and rainbow type for the sample shift.
+        The shift is fitted in units of the cofactor of the measurement's rainbow type (``sinh(a)``) and returned as
+        ``sinh(a) * f``, so the rainbow type is needed besides the uid. A calibrated rainbow measurement including the
+        shift is ``(raw + shift) * factor``.
 
-            :param uid: str. Optional, uid for which to get the calibration factor.
+        Parameters
+        ----------
+        adata : anndata.AnnData, optional
+            Rainbow bead measurement whose ``uns['uid']`` and ``uns['rainbow_type']`` are used where `uid` or `tp` are
+            not given or not known.
+        uid : str, optional
+            Uid of the measurement.
+        tp : str, optional
+            Rainbow type of the measurement.
 
-            :param tp: str. Optional, rainbow type for which to get the calibration factor.
+        Returns
+        -------
+        pandas.Series
+            Shift per channel (index: `channels`), raw units.
+
+        Raises
+        ------
+        CalibrationModuleException
+            If neither `adata` nor both `uid` and `tp` are given, or the uid or type cannot be found.
+
+        Warns
+        -----
+        CalibrationModuleWarning
+            If the given `uid` or `tp` is unknown and `adata` is used instead.
         """
         if (adata is None) and ((uid is None) or (tp is None)):
             raise CalibrationModuleException(f"Getting the rainbow calibration shift requires either adata or both 'uid' and 'tp'!")
@@ -491,31 +631,45 @@ class RainbowFluorescenceGMMCalibrationModule(Module):
 
     
 class RainbowFluorescenceGMMCalibrationTrainer():
-    """ 
-        Simple trainer for RainbowFluorescenceGMMCalibrationModule.
+    """Training schedule of `RainbowFluorescenceGMMCalibrationModule` (as run by `RainbowCalibrator.fit_fluorescence`).
+
+    `fit_init` fits the peak positions to the GMM means (`fit_init_peak`), then the covariances alone
+    (`fit_init_cov`); `fit` then fits all parameters by maximum likelihood.
+
+    Parameters
+    ----------
+    module : RainbowFluorescenceGMMCalibrationModule
+        Module to train (in place).
     """
     def __init__(self, module):
-        """ 
-            :param module: RainbowFluorescenceGMMCalibrationModule. Module to train.
-        """
         self.module = module
         self.is_trained = False
         
     def fit_init_peak(self, dataset, Niter=1000, lr=1e-3, momentum=.6, showprogress=False):
-        """ 
-            Initial fit of only the peak positions.
-            
-            Fit longer than necessary from loss itself to get better shift initialisation!
-            
-            :param dataset: RainbowFluorescenceGMMCalibrationDataset. Data to train on.
-            
-            :param Niter: int. Numer of iterations.
-            
-            :param lr: float. Learning rate for SGD.
-            
-            :param momentum: float. Momentum of SGD.
-            
-            :param showprogress: bool. Whether to show progress bar.
+        """Initial fit of the peak positions, gains and shifts to the GMM peak means.
+
+        Initialises the peak shares and positions from the dataset, then minimises the summed squared difference on the
+        arcsinh scale between ``arcsinh(GMM mean / f + sinh(a))`` and the modelled peak positions of every measurement
+        (SGD). Runs longer than the loss alone would need, which gives a better initialisation of the shifts.
+        Interrupting with Ctrl-C stops the loop early.
+
+        Parameters
+        ----------
+        dataset : RainbowFluorescenceGMMCalibrationDataset
+            Training data.
+        Niter : int, default 1000
+            Number of SGD steps.
+        lr : float, default 1e-3
+            SGD learning rate.
+        momentum : float, default 0.6
+            SGD momentum.
+        showprogress : bool, default False
+            Show a progress bar.
+
+        Returns
+        -------
+        None
+            Sets `losshistory_init_means` and `losshistory_init_means_absshift` (mean absolute shift per step).
         """
         self.module.init_classshares_from_dataset(dataset)
         self.module.init_peakpos_from_dataset(dataset)
@@ -555,16 +709,26 @@ class RainbowFluorescenceGMMCalibrationTrainer():
         do_loss(False)
     
     def fit_init_cov(self, dataset, Niter=1000, lr=1e-2, showprogress=False):
-        """ 
-            Initial fit of only the covariances.
-            
-            :param dataset: RainbowFluorescenceGMMCalibrationDataset. Data to train on.
-            
-            :param Niter: int. Numer of iterations.
-            
-            :param lr: float. Learning rate for Adam.
-            
-            :param showprogress: bool. Whether to show progress bar.
+        """Initial fit of the covariances alone, by maximum likelihood with all other parameters fixed.
+
+        Every step uses a new subsample of the dataset (Adam on the precision parameters). Interrupting with Ctrl-C
+        stops the loop early.
+
+        Parameters
+        ----------
+        dataset : RainbowFluorescenceGMMCalibrationDataset
+            Training data.
+        Niter : int, default 1000
+            Number of Adam steps.
+        lr : float, default 1e-2
+            Adam learning rate.
+        showprogress : bool, default False
+            Show a progress bar.
+
+        Returns
+        -------
+        None
+            Sets `losshistory_init_cov` (mean NLL per step).
         """
         optimizer_full = torch.optim.SGD(self.module.parameters(), lr=0.) # only for zero_grad so they don't accumulate to infinity
         optimizer = torch.optim.Adam(self.module.parameters_covariance(), lr=lr)
@@ -585,13 +749,18 @@ class RainbowFluorescenceGMMCalibrationTrainer():
         self.losshistory_init_cov.append(loss)
     
     def fit_init(self, dataset, showprogress=False):
-        """ First fit means separately, then fit covariance separately.
-            
-            :param dataset: RainbowFluorescenceGMMCalibrationDataset. Data to train on.
-            
-            :param plot: bool. Whether to plot losses after fitting is finished.
-            
-            :param showprogress: bool. Whether to show progress bar.
+        """Record the trainable factors, then run `fit_init_peak` and `fit_init_cov` with their defaults.
+
+        Parameters
+        ----------
+        dataset : RainbowFluorescenceGMMCalibrationDataset
+            Training data; its `df_channel_train` is stored with `remember_trainable_batches`.
+        showprogress : bool, default False
+            Show progress bars.
+
+        Returns
+        -------
+        None
         """
         self.module.remember_trainable_batches(dataset.df_channel_train)
         self.fit_init_peak(dataset, showprogress=showprogress)
@@ -600,8 +769,7 @@ class RainbowFluorescenceGMMCalibrationTrainer():
         torch.cuda.empty_cache()
     
     def plot_fit_init(self):
-        """ Plot initialisation losses.
-        """
+        """Plot the losses of `fit_init_peak` (squared error, log scale) and `fit_init_cov` (mean NLL) per step."""
         fig, ax = plt.subplots(1,2,figsize=(20,5))
         ax[0].plot(self.losshistory_init_means)
         ax[0].set_yscale("log")
@@ -616,17 +784,30 @@ class RainbowFluorescenceGMMCalibrationTrainer():
         plt.show()
 
     def fit(self, dataset, Niter=10000, lr=1e-2, warmup=40, showprogress=True):
-        """ Fit full model.
-            
-            :param dataset: RainbowFluorescenceGMMCalibrationDataset. The data to fit with.
-            
-            :param Niter: int. Number of iterations for the fit.
-            
-            :param lr: float. Learning rate for the fit.
-            
-            :param warmup: float. Increase learning rate from zero to lr over first warmup iterations.
-            
-            :param showprogress: bool. Whether to show progress bar.
+        """Fit all trainable parameters by maximum likelihood (Adam, a new subsample every step).
+
+        The first call creates the optimizer and marks trainer and module as trained; later calls continue with the
+        same optimizer and append to `fit_losshistory`. Interrupting with Ctrl-C stops the loop early.
+
+        Parameters
+        ----------
+        dataset : RainbowFluorescenceGMMCalibrationDataset
+            Training data.
+        Niter : int, default 10000
+            Number of Adam steps.
+        lr : float, default 1e-2
+            Adam learning rate.
+        warmup : int, default 40
+            Increase the learning rate linearly from ``lr / warmup`` to `lr` over the first `warmup` steps (of every
+            call); 0 disables it. In a later call with ``warmup=0``, the learning rate of the previous call is kept
+            and `lr` has no effect.
+        showprogress : bool, default True
+            Show a progress bar.
+
+        Returns
+        -------
+        None
+            Sets `fit_losshistory` (mean NLL per step).
         """
         if not self.is_trained:
             self.optimizer = torch.optim.Adam(self.module.parameters(), lr=0 if warmup>0 else lr)
@@ -649,8 +830,7 @@ class RainbowFluorescenceGMMCalibrationTrainer():
         torch.cuda.empty_cache()
     
     def plot_fit(self):
-        """ Plot fit loss.
-        """
+        """Plot the loss (mean NLL) of `fit` per step."""
         fig, ax = plt.subplots(1,1,figsize=(20,5))
         ax.plot(self.fit_losshistory)
         ax.set_title("Full Fit")

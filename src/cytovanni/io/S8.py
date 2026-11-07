@@ -1,3 +1,4 @@
+"""BD FACSDiscover S8: spillover matrix, gating strategy from the file metadata, and image-based cell size/shape."""
 import flowio
 import flowutils
 import flowkit as fk
@@ -9,7 +10,26 @@ from .utils import readfcs_metadata
 
 
 def read_spill_S8(samplepath, safe=True):
-    """ Read spillover matrix from .fcs file that was recorded on an S8 cytometer.
+    """Read the spectra (spillover matrix) of the BD spectral unmixing from an .fcs file of a FACSDiscover S8.
+
+    Parameters
+    ----------
+    samplepath : str
+        Path to the .fcs file.
+    safe : bool, default True
+        Check that the file comes from an S8 ($CYT is "FACSDiscover S8").
+
+    Returns
+    -------
+    pandas.DataFrame
+        Spectra of shape (channel, dye): index the detector channels of $SPILL, columns the probes listed in the
+        'BDSPECTRAL PROBES' keyword (with the suffix "-A (SW-unmix)" removed). Column j is row j of the $SPILL
+        matrix.
+
+    Raises
+    ------
+    ValueError
+        If `safe` and the file does not come from an S8.
     """
     metadata = flowio.FlowData(samplepath, only_text=True).text
     if safe:
@@ -22,6 +42,28 @@ def read_spill_S8(samplepath, safe=True):
 
 
 class Gate():
+    """One polygon gate of the gating strategy that the S8 software stores in the .fcs metadata.
+
+    Parameters
+    ----------
+    g : dict
+        One entry of ``["RecordingConfiguration"]["AnalysisModel"]["Gates"]`` of the 'BDCHORUSDATARECORD' JSON
+        keyword, with at least two 'Parameters' (the gate axes).
+
+    Attributes
+    ----------
+    id, id_gate, id_parent : str
+        Population ID of the gated population, gate ID, and population ID of the parent ("root" for the top level).
+    name : str
+        Name of the gated population.
+    key_x, key_y : str
+        Channel names of the axes: "<fluorochrome>-<measurement>" for colour parameters,
+        "<measurement id>-<measurement>" for scatter, else the measurement ID.
+    vertices : numpy.ndarray
+        Polygon vertices of shape (vertices, 2), as stored by the S8 software.
+    name_parent, gate_order : str, tuple of str
+        Set by `add_parent_name` and `add_order`.
+    """
     def __init__(self, g):
         self.id_parent = g["ParentPopulationId"]
         if self.id_parent=="0-1":
@@ -48,15 +90,31 @@ class Gate():
         return ret
     
     def add_parent_name(self, gatekey):
+        """Set `name_parent` from `gatekey` (pandas.Series: population ID -> population name); "root" stays."""
         self.name_parent = gatekey.loc[self.id_parent] if self.id_parent!="root" else self.id_parent
     
     def add_order(self, connectkey):
+        """Set `gate_order`, the gate path from "root" to the parent population (names), as flowkit expects it.
+
+        Parameters
+        ----------
+        connectkey : pandas.Series
+            Population name -> parent population name, for all gates. The path is followed for at most 10 levels.
+        """
         order = [self.name_parent]
         while order[-1]!="root" and len(order)<10:
             order.append(connectkey.loc[order[-1]])
         self.gate_order = tuple(order[::-1])
     
     def to_fk(self):
+        """Convert to a flowkit gate (uncompensated dimensions); needs `add_order` first.
+
+        Returns
+        -------
+        gate : flowkit.gates.PolygonGate
+        gate_path : tuple of str
+            `gate_order`, for ``flowkit.GatingStrategy.add_gate``.
+        """
         dim_x = fk.Dimension(self.key_x, compensation_ref='uncompensated')
         dim_y = fk.Dimension(self.key_y, compensation_ref='uncompensated')
         
@@ -64,6 +122,17 @@ class Gate():
         return gate, self.gate_order
 
 def load_gates(g_list):
+    """`Gate` objects for the entries of an S8 gate list that have parameters (axes); others are skipped.
+
+    Parameters
+    ----------
+    g_list : list of dict
+        ``["RecordingConfiguration"]["AnalysisModel"]["Gates"]`` of the 'BDCHORUSDATARECORD' JSON keyword.
+
+    Returns
+    -------
+    list of Gate
+    """
     gates = []
     for g in g_list:
         if len(g["Parameters"])>0:
@@ -71,6 +140,7 @@ def load_gates(g_list):
     return gates
 
 def sort_gates(gates):
+    """Reorder `gates` (in place, also returned) so that every parent gate comes before its children."""
     for it in range(len(gates)):
         for i in range(len(gates)):
             for j in range(i):
@@ -79,10 +149,46 @@ def sort_gates(gates):
     return gates
 
 def load_gates_fromfile(filepath):
+    """Sorted `Gate` objects from the 'bdchorusdatarecord' keyword of an S8 .fcs file.
+
+    Parent names and gate paths are not set (`load_S8_metadata_gatingstrategy` adds those).
+
+    Parameters
+    ----------
+    filepath : str
+        Path to the .fcs file.
+
+    Returns
+    -------
+    list of Gate
+        Parents before children (see `sort_gates`).
+    """
     metadct = readfcs_metadata(filepath)
     return sort_gates(load_gates(json.loads(metadct['bdchorusdatarecord'])["RecordingConfiguration"]["AnalysisModel"]["Gates"]))
 
 def load_S8_metadata_gatingstrategy(filepath, verbose=False):
+    """Read the gating strategy that the S8 software stores in an .fcs file into a flowkit GatingStrategy.
+
+    The gates are taken from the JSON keyword 'BDCHORUSDATARECORD' (``RecordingConfiguration.AnalysisModel.Gates``);
+    all gates with axes become polygon gates on uncompensated data.
+
+    Parameters
+    ----------
+    filepath : str
+        Path to the .fcs file.
+    verbose : bool, default False
+        Print the gate hierarchy.
+
+    Returns
+    -------
+    flowkit.GatingStrategy
+        The gating strategy, with the population names of the S8 software as gate names.
+
+    Examples
+    --------
+    >>> g_strat = load_S8_metadata_gatingstrategy(path)
+    >>> res = g_strat.gate_sample(flowkit.Sample(path))
+    """
     metadct = readfcs_metadata(filepath)
     jsn = json.loads(metadct['bdchorusdatarecord']) if 'bdchorusdatarecord' in metadct else json.loads(metadct['BDCHORUSDATARECORD'])
     gatestr = jsn["RecordingConfiguration"]["AnalysisModel"]["Gates"]
@@ -107,38 +213,46 @@ S8_PIXEL_HEIGHT_RATIO = 1/1.3 # eccentricity of comp beads seems minimal with th
 S8_PIXEL_AREA = S8_PIXEL_WIDTH**2 * S8_PIXEL_HEIGHT_RATIO
 
 def S8_size_to_surface(size):
-    """ S8 records cross-section, x4 for full surface
-    """
+    """Surface of a sphere with cross-section area `size` (4 x the cross-section, units squared as `size`)."""
     return 4*size
 
 def S8_size_to_diameter(size):
-    """ S8 records cross-section A, A=pi/4 D²
-    """
+    """Diameter of a circle with area `size`: A = pi/4 D^2 (units: square root of those of `size`)."""
     return np.sqrt(4/np.pi*size)
 
 def S8_size_to_volume(size):
-    """ S8 records cross-section A, sphere volume is 4/(3 sqrt(pi)) * A^(3/2)
-    """
+    """Volume of a sphere with cross-section area `size`: 4 / (3 sqrt(pi)) * A^(3/2)."""
     return 4/(3*np.sqrt(np.pi)) * size**(3/2)
 
 
 def calculate_single_eccentricity_angle(mask, pixel_aspect_ratio=S8_PIXEL_HEIGHT_RATIO):
-    """
-    Calculate eccentricity and major axis angle with pixel aspect ratio correction.
-    
-    Parameters:
-    mask: 2D boolean array
-    pixel_aspect_ratio: height/width of pixels (dy/dx)
-                       1.0 = square pixels
-                       1.2 = pixels are 1.2x taller than wide
-    
-    Returns:
-    eccentricity: float in [0, 1), 0 = circle, 1 = line
-    angle: angle in degrees, range [-90, 90]
-           0° = vertical (aligned with y-axis)
-           90° = horizontal (aligned with x-axis)
-           positive = clockwise from vertical
-    Both return np.nan if mask touches boundary
+    """Eccentricity and major-axis angle of a cell mask, from its second moments, with pixel aspect correction.
+
+    Parameters
+    ----------
+    mask : numpy.ndarray
+        2-D boolean mask of shape (rows, columns).
+    pixel_aspect_ratio : float, default S8_PIXEL_HEIGHT_RATIO
+        Pixel height / width (row spacing / column spacing): 1.0 for square pixels, 1.2 for pixels 1.2 x taller than
+        wide. Row coordinates are multiplied by it before the moments are computed.
+
+    Returns
+    -------
+    eccentricity : float
+        sqrt(1 - lambda_min / lambda_max) of the second-moment matrix, in [0, 1]: 0 for a circle, close to 1 for a
+        line.
+    angle : float
+        Angle of the major axis in degrees, in [-90, 90]: 0 along the rows axis ("vertical", image rows running
+        downwards), 90 along the columns axis. Positive when the major axis runs from low row and column indices to
+        high ones. Not meaningful for eccentricity 0 (a circle gives 90).
+
+    Notes
+    -----
+    Both are NaN if the mask touches the image boundary (cell cut off); an empty mask gives (0, 0).
+
+    See Also
+    --------
+    calculate_batched_eccentricity_angle : the same for a list of masks.
     """
     # return nan if mask touches the boundary, cell cut off
     if mask[0,:].sum() + mask[-1,:].sum() + mask[:,0].sum() + mask[:,-1].sum() > 0:
@@ -189,6 +303,7 @@ def calculate_single_eccentricity_angle(mask, pixel_aspect_ratio=S8_PIXEL_HEIGHT
     return eccentricity, angle_from_vertical
 
 def _pad_masks(mask_list):
+    """Stack masks of equal width into one array of shape (masks, max height, width), zero-padded at the bottom."""
     max_h = max(m.shape[0] for m in mask_list)
     width = mask_list[0].shape[1]
     masks_padded = np.zeros((len(mask_list), max_h, width), dtype=bool)
@@ -199,13 +314,19 @@ def _pad_masks(mask_list):
     return masks_padded
 
 def calculate_batched_eccentricity_angle(mask_list, pixel_aspect_ratio=S8_PIXEL_HEIGHT_RATIO):
-    """
-    Fast vectorized version of calculate_single_eccentricity_angle for a list of masks; gives the same results.
-    
-    Parameters:
-    mask_list: list of 2D boolean masks, same width, heights may differ
-    
-    Returns arrays (eccentricity, angle), NaN where a mask touches its own boundary (cell cut off).
+    """`calculate_single_eccentricity_angle` for a list of masks; gives the same results.
+
+    Parameters
+    ----------
+    mask_list : list of numpy.ndarray
+        2-D boolean masks of the same width; heights may differ.
+    pixel_aspect_ratio : float, default S8_PIXEL_HEIGHT_RATIO
+        Pixel height / width, see `calculate_single_eccentricity_angle`.
+
+    Returns
+    -------
+    eccentricity, angle : numpy.ndarray
+        Arrays of shape (masks,); NaN where a mask touches its own boundary (cell cut off).
     """
     heights = np.asarray([m.shape[0] for m in mask_list])
     masks = _pad_masks(mask_list)
@@ -273,17 +394,26 @@ def calculate_batched_eccentricity_angle(mask_list, pixel_aspect_ratio=S8_PIXEL_
     return eccentricities, angles
 
 def add_S8_singlet_maskfeatures(ad, imgcont, pixel_aspect_ratio=S8_PIXEL_HEIGHT_RATIO):
-    """ Add size and shape features of singlet cells (S8 image segmentation) to ad.obs: 'cell_crosssection',
-        'cell_volume', 'cell_diameter', 'cell_surface', 'cell_eccentricity', 'cell_deformangle' (NaN unless
-        ad.obs['seg_cell_count']==1; eccentricity/angle also NaN for cells cut off at the image boundary).
+    """Add size and shape features of singlet cells from the S8 image segmentation to ``ad.obs`` (in place).
 
-        :param ad: AnnData. S8 events with ad.obs['seg_cell_totsize'] and ad.obs['seg_cell_count'].
+    Adds 'cell_crosssection' (``seg_cell_totsize`` x `S8_PIXEL_AREA`, in um^2), 'cell_volume' (um^3),
+    'cell_diameter' (um) and 'cell_surface' (um^2) of a sphere with that cross-section, and 'cell_eccentricity' and
+    'cell_deformangle' (degrees) from the cell masks (see `calculate_single_eccentricity_angle`). All are NaN unless
+    ``ad.obs['seg_cell_count'] == 1``; eccentricity and angle are also NaN for cells cut off at the image boundary.
+    The physical units rest on approximate pixel dimensions (`S8_PIXEL_WIDTH` from the line width stated by BD,
+    `S8_PIXEL_HEIGHT_RATIO` estimated from compensation beads).
 
-        :param imgcont: image container, duck-typed and not part of this package: any object with
-            load_masks_batched(index) returning a list of 2D boolean cell masks in the order of index, such as the
-            ImageContainer of arges (cytovanni.arges.imgh5 in the full version).
-
-        :param pixel_aspect_ratio: float. Pixel height/width, see calculate_single_eccentricity_angle.
+    Parameters
+    ----------
+    ad : anndata.AnnData
+        S8 events with ``ad.obs['seg_cell_totsize']`` (segmented cell area in pixels) and
+        ``ad.obs['seg_cell_count']``.
+    imgcont : object
+        Image container, duck-typed and not part of this package: any object with a method
+        ``load_masks_batched(index)`` that returns a list of 2-D boolean cell masks in the order of `index`
+        (here ``ad.obs.index``).
+    pixel_aspect_ratio : float, default S8_PIXEL_HEIGHT_RATIO
+        Pixel height / width, see `calculate_single_eccentricity_angle`.
     """
     ad.obs["cell_crosssection"] = ad.obs["seg_cell_totsize"] * S8_PIXEL_AREA
     ad.obs.loc[ad.obs["seg_cell_count"]!=1, "cell_crosssection"] = np.nan # mask everything except singlets

@@ -1,3 +1,4 @@
+"""NxN grids of pairwise scatter plots of all markers, with matplotlib or rasterised with datashader."""
 import numpy as np
 import pandas as pd
 
@@ -11,6 +12,7 @@ from PIL import Image, ImageDraw, ImageFont
 from .misc import labelscolors_to_legendhandles, palette_20
 
 def _base_plot_NxN_single(datas, colors, labels, xkey, ykey, ax, axlim=None, s=.01, arglist=None, mark_zero=True, legend=False, fct_label_axis=None):
+    """Scatter `ykey` against `xkey` for every DataFrame in `datas` that has both columns, into `ax`."""
     for di, data in enumerate(datas):
         if xkey in data and ykey in data:
             x, y = data[xkey], data[ykey]
@@ -37,23 +39,43 @@ def _base_plot_NxN_single(datas, colors, labels, xkey, ykey, ax, axlim=None, s=.
         fct_label_axis(ax)
 
 def base_plot_NxN(datas, colors, labels=None, colors_df=None, savepath="", suptitle="", axlim=None, s=.01, dpi=150, arglist=None, mark_zero=True):
-    """ Base for NxN plots of all stains.
-        
-        :param datas: list. List of dataframes with the data to be plotted, index event, column stain.
-        
-        :param colors: list. Colors for the different datas.
+    """Draw an NxN grid of pairwise scatter plots of all markers with matplotlib, overlaying several datasets.
 
-        :param colors_df: pd.Dataframe of lists. If given, gets color palette separately as colors_df.loc[xkey, ykey] for every individual plot.
-        
-        :param labels: list. Labels for the different datas.
-        
-        :param axlim: None, tuple. If not None, set both x and y axis limits to this.
-        
-        :param savepath: str. If given, saves the plot to file, closes it, and tries to clear as much of the used memory as possible. See https://stackoverflow.com/questions/28757348/how-to-clear-memory-completely-of-all-matplotlib-plots and https://github.com/matplotlib/matplotlib/issues/20300
-        
-        :param arglist: None, iterable. Either None, or list of kwarg dicts for ax.scatter.
+    The markers are the sorted union of the columns of all `datas`. Panel (i, j) for i <= j (upper triangle and
+    diagonal) shows marker j (y) against marker i (x); a dataset is skipped in panels whose markers it lacks. The
+    diagonal panels carry the legend if `labels` is given. The figure is 6 x 6 inches per panel.
 
-        :param mark_zero: bool. If True, highlight zero along each axis.
+    Parameters
+    ----------
+    datas : list of pandas.DataFrame
+        Datasets to overlay, each of shape (events, stain), usually on the arcsinh scale. Drawn in list order (later
+        ones on top).
+    colors : list
+        Matplotlib colour of every dataset.
+    labels : list of str, optional
+        Legend label of every dataset. Default None: no legend.
+    colors_df : pandas.DataFrame, optional
+        Per-panel colours instead of `colors`: ``colors_df.loc[xkey, ykey]`` is the list of dataset colours for the
+        panel of markers xkey (x) and ykey (y).
+    savepath : str, default ""
+        If given, save the figure there, then clear and close it to free memory. Otherwise the figure stays open
+        (no ``plt.show()``).
+    suptitle : str, default ""
+        Figure title.
+    axlim : tuple of float, optional
+        Limits for both axes of every panel. Default None: matplotlib's automatic limits.
+    s : float, default 0.01
+        Marker size of the scatter points.
+    dpi : int, default 150
+        Resolution of the saved figure.
+    arglist : list of dict, optional
+        Extra keyword arguments for ``ax.scatter``, one dict per dataset (they override `s` and the colour).
+    mark_zero : bool, default True
+        Draw thin black lines at x = 0 and y = 0.
+
+    See Also
+    --------
+    base_plot_NxN_ds : rasterised with datashader, much faster for many events.
     """
     channels = sorted(list(set().union(*[set(d.columns) for d in datas])))
     N = len(channels)
@@ -79,6 +101,39 @@ def base_plot_NxN(datas, colors, labels=None, colors_df=None, savepath="", supti
 
 
 def rasterize_data(df, xkey, ykey, gkey, drange=None, shift_out=.02, plot_pxl=300, palette=palette_20, common_norm=True):
+    """Rasterise a scatter plot of `ykey` against `xkey` with datashader, coloured by the group column `gkey`.
+
+    Needs datashader (optional dependency, extra ``plot``).
+
+    Parameters
+    ----------
+    df : pandas.DataFrame
+        Events with the columns `xkey`, `ykey` and `gkey` (categorical for several groups).
+    xkey, ykey : str
+        Columns for the x and y axis.
+    gkey : str
+        Group column. With more than one group, every group gets its colour from `palette` (``ds.count_cat``);
+        with a single group, datashader's default colour map shows the event density and `palette` is not used.
+    drange : tuple of float, optional
+        Range (min, max) of both axes, widened by `shift_out` x its width on both sides. Default None: datashader
+        takes the range from the data, separately for x and y.
+    shift_out : float, default 0.02
+        Relative margin added to `drange` on both sides.
+    plot_pxl : int, default 300
+        Width and height of the image in pixels.
+    palette : list of str, default palette_20
+        Colour of every group, in category order.
+    common_norm : bool, default True
+        If False, normalise the counts of every group to its own maximum, so that groups of different size get
+        roughly equal visual weight.
+
+    Returns
+    -------
+    agg : xarray.DataArray
+        The datashader aggregate (counts per pixel, per group for several groups).
+    img_array : numpy.ndarray
+        RGBA image, shape (plot_pxl, plot_pxl, 4), uint8; row 0 is the top (highest y).
+    """
     # load here as datashader throws some warnings if CUDA is not available
     import datashader as ds
     import datashader.transfer_functions as tf
@@ -100,6 +155,20 @@ def rasterize_data(df, xkey, ykey, gkey, drange=None, shift_out=.02, plot_pxl=30
     return agg, img_array
 
 def draw_lines_origin(agg, img_array):
+    """Draw black, opaque lines at x = 0 and y = 0 into the image of `rasterize_data`, if they lie inside it.
+
+    Parameters
+    ----------
+    agg : xarray.DataArray
+        Aggregate from `rasterize_data` (its ``x_range`` and ``y_range`` locate the origin).
+    img_array : numpy.ndarray
+        RGBA image of shape (height, width, 4); modified in place.
+
+    Returns
+    -------
+    numpy.ndarray
+        `img_array`.
+    """
     x_range = agg.x_range
     y_range = agg.y_range
     height, width, _ = img_array.shape
@@ -115,6 +184,20 @@ def draw_lines_origin(agg, img_array):
     return img_array
 
 def pad_border(img_array, share=200):
+    """Add an opaque black frame around an RGBA image.
+
+    Parameters
+    ----------
+    img_array : numpy.ndarray
+        RGBA image of shape (height, width, 4).
+    share : int, default 200
+        The frame is ``size // share`` pixels thick (at least 1) along each axis.
+
+    Returns
+    -------
+    numpy.ndarray
+        Padded copy.
+    """
     pad_x, pad_y = max(img_array.shape[0]//share, 1), max(img_array.shape[1]//share, 1)
     img_array_pad = img_array.copy()
     img_array_pad[...,-1] = 255-img_array_pad[...,-1]
@@ -123,6 +206,24 @@ def pad_border(img_array, share=200):
     return img_array_pad
 
 def render_text_image(text, size=(300, 40), font_size=None, font_path=None):
+    """Render `text` in black, centred, on a transparent image.
+
+    Parameters
+    ----------
+    text : str
+        Text to render.
+    size : tuple of int, default (300, 40)
+        Image size (width, height) in pixels.
+    font_size : float, optional
+        Font size in pixels. Default: height / 1.3 (floored).
+    font_path : str, optional
+        Path of a TrueType font. Default: matplotlib's DejaVu Sans.
+
+    Returns
+    -------
+    PIL.Image.Image
+        RGBA image.
+    """
     img = Image.new('RGBA', size, (255, 255, 255, 0))  # Transparent background
     draw = ImageDraw.Draw(img)
 
@@ -138,6 +239,22 @@ def render_text_image(text, size=(300, 40), font_size=None, font_path=None):
     return img
 
 def label_img_array(img_array, xlabel, ylabel, share=10):
+    """Add an x label below and a rotated y label left of a square RGBA image.
+
+    Parameters
+    ----------
+    img_array : numpy.ndarray
+        RGBA image of shape (height, width, 4), uint8; the labels are sized for a square image.
+    xlabel, ylabel : str
+        Axis labels.
+    share : int, default 10
+        The label strips are ``size // share`` pixels high.
+
+    Returns
+    -------
+    numpy.ndarray
+        Labelled RGBA image, larger by the label strips (transparent background).
+    """
     ximg_array = np.array(render_text_image(xlabel, size=(img_array.shape[0], img_array.shape[0]//share)))
     yimg_array = np.array(render_text_image(ylabel, size=(img_array.shape[1], img_array.shape[1]//share))).swapaxes(0,1)[::-1]
     
@@ -149,6 +266,18 @@ def label_img_array(img_array, xlabel, ylabel, share=10):
     return cimg_array
 
 def combine_images(image_grid):
+    """Tile a grid of equally sized images into one image.
+
+    Parameters
+    ----------
+    image_grid : list of list of numpy.ndarray
+        Rows of images, all with the shape of ``image_grid[0][0]``, (height, width, channels).
+
+    Returns
+    -------
+    numpy.ndarray
+        Combined image, uint8, shape (rows * height, columns * width, channels).
+    """
     img_height, img_width, channels = image_grid[0][0].shape
     total_height = img_height * len(image_grid)
     total_width = img_width * len(image_grid[0])
@@ -163,28 +292,44 @@ def combine_images(image_grid):
     return combined_image
 
 def base_plot_NxN_ds(datas, colors=palette_20, colors_df=None, axlim=None, pixel_per_channel=300, mark_zero=True, savepath="", common_norm=False, parallel=False):
-    """ Base for NxN plots of all stains.
+    """Draw an NxN grid of pairwise scatter plots of all markers as one image, rasterised with datashader.
 
-        - Maybe implement grid of fixed step to allow better automatic axlim?
-        - Scaling of groups for equal visual impact!
-        
-        :param datas: list. List of dataframes with the data to be plotted, index event, column stain.
-        
-        :param colors: list. Colors for the different datas, can just be a longer palette.
+    Like `base_plot_NxN`, but much faster for many events: every panel is a datashader image with a black frame and
+    the two marker names as labels (no axis ticks). The markers are the sorted union of the columns of all `datas`;
+    panel (i, j) for i <= j shows marker j (y) against marker i (x), the lower triangle is left empty (transparent,
+    white in the saved file). Needs datashader (optional dependency, extra ``plot``).
 
-        :param colors_df: pd.Dataframe of lists. If given, gets color palette separately as colors_df.loc[xkey, ykey] for every individual plot.
-        
-        :param axlim: None, tuple. Limit for both x and y axis, can be inferred automatically but not that this can be confusing as there are no axis ticks.
-        
-        :param savepath: str. If given, doesn't return the image but instead saves it to file.
+    Parameters
+    ----------
+    datas : list of pandas.DataFrame
+        Datasets to overlay, each of shape (events, stain), usually on the arcsinh scale. With a single dataset,
+        the panels show the event density with datashader's default colour map instead of `colors`.
+    colors : list of str, default palette_20
+        Colour of every dataset (a longer palette is fine).
+    colors_df : pandas.DataFrame, optional
+        Per-panel colours instead of `colors`: ``colors_df.loc[xkey, ykey]`` is the list of dataset colours for the
+        panel of markers xkey (x) and ykey (y).
+    axlim : tuple of float, optional
+        Range (min, max) of both axes in every panel. Values outside are clipped to it, so they pile up at the edge
+        of the panel. Default None: the range of every panel is taken from its data, which can be confusing since
+        there are no axis ticks.
+    pixel_per_channel : int, default 300
+        Width and height of every panel in pixels (before frame and labels).
+    mark_zero : bool, default True
+        Draw black lines at x = 0 and y = 0.
+    savepath : str, default ""
+        If given, save the image there (on a white background; JPEG with quality 85 for .jpg/.jpeg) and return
+        None.
+    common_norm : bool, default False
+        If False, normalise every dataset to its own maximum count per panel, so that datasets of different size get
+        roughly equal visual weight. If True, plot the counts as they are.
+    parallel : bool, default False
+        Render the rows in parallel with joblib (10 jobs, one row per task); usually not worth the overhead.
 
-        :param common_norm: bool. If True, simply plots the data, if False normalizes each group to (roughly) equal visual weight.
-
-        :param mark_zero: bool. If True, highlight zero along each axis.
-
-        :param pixel_per_channel: int. Number of pixels per axis for each individual scatter plot.
-
-        :param parallel: bool. Can run in parallel (joblib, one row per task), usually not actually worth the overhead.
+    Returns
+    -------
+    PIL.Image.Image or None
+        The RGBA image (transparent background) if no `savepath` is given, else None.
     """
     channels = sorted(list(set().union(*[set(d.columns) for d in datas])))
     N = len(channels)
@@ -241,7 +386,22 @@ def base_plot_NxN_ds(datas, colors=palette_20, colors_df=None, axlim=None, pixel
 
 
 def single_datashader_plot(ax, vx, vy, Nh=800, Nw=800, range_x=None, range_y=None, cmap=None):
-    """ 
+    """Draw a rasterised scatter plot (event density) of `vy` against `vx` into a matplotlib axis.
+
+    Needs datashader and colorcet (optional dependencies, extra ``plot``).
+
+    Parameters
+    ----------
+    ax : matplotlib.axes.Axes
+        Axis to draw into (``ax.imshow``, with the data ranges as extent).
+    vx, vy : array-like of float
+        x and y values of the events, same length.
+    Nh, Nw : int, default 800
+        Height and width of the raster in pixels.
+    range_x, range_y : tuple of float, optional
+        Data range (min, max) of the raster. Default None: the range of the data.
+    cmap : list or matplotlib colormap, optional
+        Colour map for the density. Default None: colorcet's ``fire``.
     """
     import datashader as ds, colorcet as cc
     cvs = ds.Canvas(plot_width=Nw, plot_height=Nh, x_range=range_x, y_range=range_y)

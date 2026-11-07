@@ -1,3 +1,4 @@
+"""Encoder of the rainbow bead metadata (cytometer, batch, bead type, measurement) shared by the calibration modules."""
 import numpy as np
 import pandas as pd
 import warnings
@@ -6,7 +7,20 @@ from ..exceptions import AutoBatchException, InconsistentBatchException, Repeate
 from ..utils import CustomOrdinalEncoder
 
 class RainbowBatchOrdinalEncoder():
-    """ Ordinal encoder for the rainbow bead sample metadata.
+    """Ordinal encoder of the rainbow bead metadata, and assignment of samples to rainbow batches.
+
+    Holds one `CustomOrdinalEncoder` per key of `encode_keys` ('cytometer', 'rainbow_batch', 'rainbow_type', 'uid')
+    and the metadata table of all training measurements. Ensures that every batch has one settings hash and lives on
+    one cytometer. Unknown labels encode to -1. Construct it with `from_data` or `from_exported`.
+
+    Attributes
+    ----------
+    oes : dict of str to CustomOrdinalEncoder
+        Encoder per key; ``oes[key].labels`` are the known labels in ordinal order.
+    data_df : pandas.DataFrame
+        Metadata of all training measurements (encode_keys, 'set_hash', 'UTC' (float, seconds), 'date').
+    WARN_UTC_DIFFERENCE : float
+        Time difference (seconds, 2 h) to the closest rainbow measurement above which `find_closest_batch` warns.
     """
     encode_keys = ["cytometer", "rainbow_batch", "rainbow_type", "uid"]
     WARN_UTC_DIFFERENCE = 2*60*60
@@ -15,8 +29,7 @@ class RainbowBatchOrdinalEncoder():
         pass
     
     def _process_df(self, df):
-        """ Process df. Keep encode_keys, try adding UTC and date.
-        """
+        """Copy of the encode_keys and 'set_hash' columns of df, with 'UTC' (float) and 'date' (NaN if absent)."""
         data_df = df[self.encode_keys].copy()
         data_df["set_hash"] = df["set_hash"]
         # Try adding UTC
@@ -30,8 +43,7 @@ class RainbowBatchOrdinalEncoder():
         return data_df
     
     def _ensure_batch_consistency(self, add=""):
-        """ Ensure that all samples within a batch have the same settings, and that batch names are only present on one cytometer each.
-        """
+        """Raise InconsistentBatchException/RepeatedBatchException unless each batch has one hash and one cytometer."""
         for cyt in np.unique(self.data_df["cytometer"]):
             for batch in np.unique(self.data_df["rainbow_batch"][self.data_df["cytometer"]==cyt]):
                 df = self.data_df.loc[(self.data_df["rainbow_batch"]==batch) & (self.data_df["cytometer"]==cyt)]
@@ -44,24 +56,32 @@ class RainbowBatchOrdinalEncoder():
                 raise RepeatedBatchException(f"Found rainbow batch {batch} on multiple cytometers ({cytos}){add}, make sure batch names are not shared across cytometers!")
     
     def _set_data_df_types(self):
-        """ Ensure proper types for some of the metadata.
-        """
+        """Cast data_df['UTC'] to float."""
         self.data_df["UTC"] = self.data_df["UTC"].astype(float)
         #self.data_df["set_hash"] = self.data_df["set_hash"].astype(str)
     
     @classmethod
     def from_data(cls, df):
-        """ Initialise from data.
-            Requires:
-                'cytometer': name of the cytometer
-                'rainbow_batch': batch name
-                'rainbow_type': type of the rainbow bead (lot etc.)
-                'uid': rainbow bead sample unique identifier
-                'set_hash': hash of relevant cytometer settings (voltages etc.) to ensure no changes in batches
-            to be present in df.
-            If available also uses 'UTC' and 'date'.
-            
-            :param df: DataFrame. Dataframe containing the data to initialise with.
+        """Build the encoder from the metadata of the training measurements.
+
+        Parameters
+        ----------
+        df : pandas.DataFrame
+            One row per rainbow bead measurement, with the columns 'cytometer' (name of the cytometer),
+            'rainbow_batch' (batch name), 'rainbow_type' (bead type, e.g. lot), 'uid' (unique measurement id) and
+            'set_hash' (hash of the cytometer settings, e.g. voltages); optional 'UTC' (seconds) and 'date', used
+            by `find_closest_batch`.
+
+        Returns
+        -------
+        RainbowBatchOrdinalEncoder
+
+        Raises
+        ------
+        InconsistentBatchException
+            If a batch contains measurements with different settings hashes.
+        RepeatedBatchException
+            If a batch name occurs on several cytometers.
         """
         rboe = cls()
         rboe.data_df = rboe._process_df(df)
@@ -71,8 +91,7 @@ class RainbowBatchOrdinalEncoder():
         return rboe
     
     def export(self):
-        """ Export self to dictionary.
-        """
+        """Export the labels of all encoders and the metadata table as a dict for `from_exported`."""
         exported = {}
         exported["labels"] = {k:v.labels for k, v in self.oes.items()}
         exported["data_df"] = {"columns":self.data_df.columns.to_numpy(), "data":self.data_df.to_numpy()}
@@ -80,7 +99,16 @@ class RainbowBatchOrdinalEncoder():
     
     @classmethod
     def from_exported(cls, exported):
-        """ Initialises from ouput of .export().
+        """Rebuild an encoder from the output of `export` (label order is preserved).
+
+        Parameters
+        ----------
+        exported : dict
+            Output of `export`.
+
+        Returns
+        -------
+        RainbowBatchOrdinalEncoder
         """
         rboe = cls()
         rboe.data_df = pd.DataFrame(exported["data_df"]["data"], columns=exported["data_df"]["columns"])
@@ -90,14 +118,26 @@ class RainbowBatchOrdinalEncoder():
         return rboe
     
     def check_orphan_types(self, df):
-        """ Raise CalibrationModuleException if df contains new rainbow types without overlap to the trained data.
+        """Check that every new rainbow type in df is linked to the known data; call before `extend`.
 
-            Call before extend. A new rainbow type can only be calibrated consistently with the known types if it was
-            measured in a known batch, or in a new batch in which a known type was measured as well (in df). Otherwise
-            the type and batch parameters of the new type are degenerate (scatter and fluorescence alike) and the
-            calibration factors of its batches are arbitrary.
+        A new rainbow type can only be calibrated consistently with the known types if it was measured in a known
+        batch, or in a new batch in which a known type was measured as well (in `df`). Otherwise the parameters of
+        the new type and its batches are degenerate (scatter and fluorescence alike) and the calibration factors of
+        its batches are arbitrary.
 
-            :param df: pd.DataFrame. New metadata (columns 'rainbow_type', 'rainbow_batch'), as passed to extend.
+        Parameters
+        ----------
+        df : pandas.DataFrame
+            New metadata (columns 'rainbow_type', 'rainbow_batch'), as passed to `extend`.
+
+        Returns
+        -------
+        None
+
+        Raises
+        ------
+        CalibrationModuleException
+            If a new type has no such link.
         """
         initial_types, initial_batches = self.oes["rainbow_type"].labels, self.oes["rainbow_batch"].labels
         new_orphan_types = []
@@ -112,8 +152,24 @@ class RainbowBatchOrdinalEncoder():
             raise CalibrationModuleException(f"Newly added rainbow types {sorted(new_orphan_types)} have no overlap with previously trained on data! Final calibration for these types will not be consistent with the others, aborting.")
 
     def extend(self, df):
-        """ Same as from_data, but extend by all unseen labels present in df.
-            Returns a dict with all newly added ordinals.
+        """Add the measurements of df to the metadata and their unseen labels to the encoders.
+
+        Known labels keep their ordinals; new ones are appended.
+
+        Parameters
+        ----------
+        df : pandas.DataFrame
+            Metadata of the new measurements, as for `from_data`.
+
+        Returns
+        -------
+        dict of str to list of int
+            Newly added ordinals per key of `encode_keys`.
+
+        Raises
+        ------
+        InconsistentBatchException, RepeatedBatchException
+            As in `from_data`, for the combined metadata (the metadata table is already extended when this is raised).
         """
         self._ensure_batch_consistency()
         self.data_df = pd.concat([self.data_df, self._process_df(df)])
@@ -123,13 +179,38 @@ class RainbowBatchOrdinalEncoder():
         return new_ords
     
     def find_closest_batch(self, adata, fct_hash_settings=None, max_hour_difference_across_days=4):
-        """ Attempt to find the closest rainbow batch for adata, using 'cytometer', 'date' and 'UTC' from .uns.
-            Requires using the same settings hash function fct_hash_settings as for the training data.
-            Throws an error if unsuccessful.
-            
-            Would also be possible to relax this assumption, but probably better this way?
-            
-            :param fct_hash_settings: function, None. Function to get settings hash, if None expects 'set_hash' in adata.uns.
+        """Find the rainbow batch of a sample from its cytometer, measurement time and settings.
+
+        Candidates are the training measurements on the same cytometer, from the same date or less than
+        `max_hour_difference_across_days` hours apart, with the same settings hash as the sample. The batch of the
+        candidate closest in time (UTC) is returned.
+
+        Parameters
+        ----------
+        adata : anndata.AnnData
+            Sample with 'cytometer', 'date' and 'UTC' (seconds) in ``uns``.
+        fct_hash_settings : callable, optional
+            Function ``fct_hash_settings(adata)`` giving the settings hash; it must be the one used for the training
+            data. Default: ``adata.uns['set_hash']``.
+        max_hour_difference_across_days : float, default 4
+            Also consider measurements from other dates up to this many hours apart (e.g. a sample measured shortly
+            after midnight).
+
+        Returns
+        -------
+        str
+            Batch name.
+
+        Raises
+        ------
+        AutoBatchException
+            If 'date', 'UTC' or 'cytometer' is missing, there is no settings hash, no candidate is found (none in the
+            time window or none with the same settings), or the UTC of the sample or of all candidates is NaN.
+
+        Warns
+        -----
+        AutoBatchWarning
+            If the closest rainbow measurement is more than `WARN_UTC_DIFFERENCE` (2 h) away.
         """
         if not ("date" in adata.uns and "UTC" in adata.uns and "cytometer" in adata.uns):
             raise AutoBatchException("Automatically inferring rainbow batch requires 'date', 'UTC', and 'cytometer' to be present in adata.uns!")
@@ -165,9 +246,31 @@ class RainbowBatchOrdinalEncoder():
         return batch
     
     def transform_adata_batch(self, adata=None, rainbow_batch=None, fct_hash_settings=None):
-        """ Encode rainbow batch of adata.
-            If present, prefers explicit rainbow_batch, if not tries adata.uns['rainbow_batch'],
-            finally tries to infer batch from training data and current UTC etc. with .find_closest_batch.
+        """Ordinal of the rainbow batch of a sample.
+
+        Tries in this order: `rainbow_batch`, ``adata.uns['rainbow_batch']``, and `find_closest_batch` (date, time,
+        settings); a given but unknown batch falls through to the next with an `OrdinalEncoderWarning`.
+
+        Parameters
+        ----------
+        adata : anndata.AnnData, optional
+            Sample.
+        rainbow_batch : str, optional
+            Batch name.
+        fct_hash_settings : callable, optional
+            Settings hash function for `find_closest_batch`. Default: ``adata.uns['cytoconfig'].fct_hash_settings``.
+
+        Returns
+        -------
+        int
+            Batch ordinal.
+
+        Raises
+        ------
+        OrdinalEncoderException
+            If neither `adata` nor `rainbow_batch` is given, or `rainbow_batch` is unknown and there is no `adata`.
+        AutoBatchException
+            If the batch has to be inferred and `find_closest_batch` fails.
         """
         if (adata is None) and (rainbow_batch is None):
             raise OrdinalEncoderException(f"Getting scatter calibration factor requires at least either adata or explicit rainbow_batch!")
@@ -196,6 +299,16 @@ class RainbowBatchOrdinalEncoder():
         return batchidx
     
     def transform_adata(self, adata):
-        """ Encode single adata, defaults to -1 if not present in ordinal encoders, or not present in adata.uns
+        """Ordinals of the encode_keys of one AnnData.
+
+        Parameters
+        ----------
+        adata : anndata.AnnData
+            Measurement with the encode_keys in ``uns``.
+
+        Returns
+        -------
+        dict of str to int
+            Ordinal per key; -1 if the label is unknown or the key is missing in ``adata.uns``.
         """
         return {k:(self.oes[k].transform(adata.uns[k]) if k in adata.uns else -1) for k in self.oes}

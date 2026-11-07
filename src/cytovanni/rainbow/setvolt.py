@@ -1,3 +1,5 @@
+"""Semi-automated PMT voltage setting with rainbow beads: reproduce the detector settings of a reference measurement."""
+import warnings
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -5,34 +7,68 @@ import matplotlib.pyplot as plt
 from ..io import readfcs_rainbow_sample
 from ..gating import gate_scatter_bead_sample
 from ..utils import textcolor
+from ..exceptions import CytovanniWarning
 from .gmm import fit_rainbow_GMM
 from .plot import plot_rainbow_channel_GMM_single
 
 def get_config_from_rainbow_reference(cytoconfig, rainbow_reference_path, set_channels, N_rainbow_peaks,
                                       safety_factor_linear=.75, use_highest_peak=True, PMT_exponent=7., plot=True):
-    """ Generate config file for semi-automated PMT voltage setting from a reference rainbow bead sample.
-        Setting the voltages this way then reproduces the channel gains etc. from the reference.
-        
-        Reads sample, gates on scatter, fits peaks, uses highest peak per channel that is still in the (safe) linear range.
-        Simple median instead of GMM fit for the scatter channels.
-        
-        :param cytoconfig: CytometerConfiguration. Cytometer configuration for the sample.
-        
-        :param rainbow_reference_path: str. Path to thr reference .fcs sample.
-        
-        :param set_channels: iterable. List of channels for which the voltages need to be set.
-        
-        :param N_rainbow_peaks: int. Number of peaks in the rainbow data.
-        
-        :param savepath: str. Where the final config .csv should be saved.
-        
-        :param safety_factor_linear: float. Takes max linear range from cytoconfig, uses peaks up to safety_factor_linear times the max linear range as a safety offset.
-        
-        :param use_highest_peak: bool. Sometimes the highest rainbow peak may have some issues, using it can be turned off here.
-        
-        :param PMT_exponent: float, pd.Series. PMT exponent that should be assumed for the detectors. Either single value for all, or pd.Series with index set_channels if different ones should be used for every channel.
-        
-        :param plot: bool. Whether gating and GMM fit should be plotted to make sure everything worked fine.
+    """Target intensities for setting PMT voltages, from a reference rainbow bead measurement.
+
+    Reads the reference, gates it on scatter (`cytovanni.gating.gate_scatter_bead_sample`) and fits the peaks
+    (`fit_rainbow_GMM`, default settings). For every fluorescence channel, the target is the raw GMM mean of the
+    brightest peak below ``safety_factor_linear * cytoconfig.max_linear_range``; for scatter channels it is the
+    median of the gated beads. Setting the voltages so that a new rainbow measurement reaches these targets
+    (`get_voltages_from_rainbow`) reproduces the channel gains of the reference.
+
+    Parameters
+    ----------
+    cytoconfig : CytometerConfiguration
+        Configuration of the cytometer.
+    rainbow_reference_path : str
+        Path of the reference rainbow bead .fcs file.
+    set_channels : list of str
+        Channels whose voltages are set (scatter and fluorescence channels of `cytoconfig`).
+    N_rainbow_peaks : int
+        Number of peaks of the rainbow beads.
+    safety_factor_linear : float, default 0.75
+        Only peaks up to this fraction of the maximum linear range are used as targets.
+    use_highest_peak : bool, default True
+        Allow the brightest peak (last in GMM order) as target; turn off if it is unreliable.
+    PMT_exponent : float or pandas.Series, default 7.0
+        Assumed exponent of the gain in the PMT voltage (gain proportional to ``voltage ** exponent``): one value for
+        all channels, or a Series with index `set_channels` (e.g. fitted with `PMTExponentFitter`).
+    plot : bool, default True
+        Show the scatter gate and the GMM fit (to check them).
+
+    Returns
+    -------
+    pandas.DataFrame
+        Index the channels (scatter channels first, then the fluorescence channels in the order of `set_channels`) plus
+        a last row '_N_peak'. Columns 'target' (target intensity, raw units, rounded; nullable integer), 'peak'
+        (1-based peak number in GMM order for fluorescence channels, NaN for scatter channels) and 'exponent'. Row
+        '_N_peak' holds the number of peaks in 'peak' (target 0, exponent NaN). The input of `get_voltages_from_rainbow`; nothing is saved.
+
+    Raises
+    ------
+    Exception
+        If a channel of `set_channels` is neither a scatter nor a fluorescence channel of `cytoconfig`.
+
+    See Also
+    --------
+    get_voltages_from_rainbow : voltages that reach the targets.
+
+    Warns
+    -----
+    CytovanniWarning
+        If no peak of a channel in `set_channels` is below the limit; its target is then NaN (``<NA>``, 'peak' 1),
+        and `get_voltages_from_rainbow` gives NaN for its factor, error and target voltage.
+
+    Examples
+    --------
+    >>> targetconfig = get_config_from_rainbow_reference(cytoconfig, "reference_rainbow.fcs", ["FSC-A", "SSC-A",
+    ...                                                  "BV421-A"], N_rainbow_peaks=8, PMT_exponent=7.)
+    >>> targetconfig.to_csv("targetconfig.csv")
     """
     
     adata = readfcs_rainbow_sample(rainbow_reference_path, cytoconfig, N_rainbow_peaks, name="Rainbow Reference")
@@ -60,9 +96,15 @@ def get_config_from_rainbow_reference(cytoconfig, rainbow_reference_path, set_ch
     df_peakpos[df_peakpos > cytoconfig.max_linear_range*safety_factor_linear] = 0.
     if not use_highest_peak:
         df_peakpos.iloc[-1] = 0.
+    no_linear_peak = pd.Series((df_peakpos.to_numpy() <= 0).all(axis=0), index=cytoconfig.channels_fluorescence)
+    if no_linear_peak[set_channels_fluorescence].any():
+        warnings.warn(f"No rainbow peak below the linear limit for channels "
+                      f"{no_linear_peak[set_channels_fluorescence][lambda x: x].index.tolist()}, their target is NaN; "
+                      f"lower their voltage in the reference or raise safety_factor_linear.", CytovanniWarning)
 
     highest_linear_peak_ind = np.argmax(df_peakpos.to_numpy(), axis=0)
-    highest_linear_peak_val = np.round(df_peakpos.to_numpy()[highest_linear_peak_ind, np.arange(len(highest_linear_peak_ind))], 0).astype(int)
+    highest_linear_peak_val = np.round(df_peakpos.to_numpy()[highest_linear_peak_ind, np.arange(len(highest_linear_peak_ind))], 0)
+    highest_linear_peak_val[no_linear_peak.to_numpy()] = np.nan
     df_target_fluoro = pd.DataFrame([highest_linear_peak_val,
                                      1+highest_linear_peak_ind],
                                      index=["target", "peak"], columns=cytoconfig.channels_fluorescence).T
@@ -70,7 +112,7 @@ def get_config_from_rainbow_reference(cytoconfig, rainbow_reference_path, set_ch
 
     targetconfig = pd.concat([df_target_scatter,
                               df_target_fluoro.loc[set_channels_fluorescence]])
-    targetconfig["target"] = targetconfig["target"].astype(int)
+    targetconfig["target"] = targetconfig["target"].astype("Int64")
     # Some playing around to get nicer formatting
     targetconfig["peak"] = np.array([int(x) if x==x else x for x in targetconfig["peak"]], dtype=object)
     if isinstance(PMT_exponent, pd.Series):
@@ -83,19 +125,45 @@ def get_config_from_rainbow_reference(cytoconfig, rainbow_reference_path, set_ch
     return targetconfig
 
 def get_voltages_from_rainbow(cytoconfig, targetconfig, rainbow_path, plot=True):
-    """ Use newly recorded rainbow bead sample and prior config to estimate the voltages that reproduce the old settings.
-        Depending on the initial settings, a couple of iterations of measuring rainbow beads,
-        running this, and setting the PMT voltages to 'voltage_target' will yield good detector settings.
-        Convergence speed will depend on how accurate the guessed PMT exponents are.
-        'error (%)' is the error of the peak positions in percent, stop iterating if no errors are above 1-2%.
-        
-        :param cytoconfig: CytometerConfiguration. Configuration of the cytometer.
-        
-        :param targetconfig: DataFrame. Old settings config to reproduce, produced by get_config_from_rainbow_reference.
-        
-        :param rainbow_path: str. Path to the newly measured rainbow beads.
-        
-        :param plot: bool. Whether to plot stuff.
+    """Estimate the PMT voltages that reproduce the targets of `get_config_from_rainbow_reference`.
+
+    Reads a newly measured rainbow bead file, gates and fits it like the reference, and measures every channel's
+    current value (scatter: median; fluorescence: GMM mean of the target peak). With the current voltage V (from
+    ``adata.var['pnv']``) and the exponent e, the new voltage is ``V * (target / value) ** (1 / e)``. Iterate:
+    measure rainbow beads, run this, set the voltages to 'voltage_target', until no 'error (%)' is above about
+    1-2 %. How many iterations are needed depends mostly on how accurate the exponents are.
+
+    Parameters
+    ----------
+    cytoconfig : CytometerConfiguration
+        Configuration of the cytometer.
+    targetconfig : pandas.DataFrame
+        Output of `get_config_from_rainbow_reference` (or that table read back from .csv).
+    rainbow_path : str
+        Path of the new rainbow bead .fcs file.
+    plot : bool, default True
+        Show the scatter gate and the GMM fit.
+
+    Returns
+    -------
+    pandas.DataFrame
+        `targetconfig` without the '_N_peak' row, with the added columns 'value' (current intensity, raw units),
+        'voltage' (current voltage), 'factor' (voltage factor, rounded to 4 digits), 'error (%)' (``(value -
+        target) / target * 100``, rounded to 0.1) and 'voltage_target' (suggested voltage, rounded to an integer).
+
+    Warns
+    -----
+    RainbowSpilloverWarning
+        If the rainbow file contains a non-trivial spillover matrix.
+
+    See Also
+    --------
+    color_voltageconfig : coloured table for printing.
+
+    Examples
+    --------
+    >>> voltageconfig = get_voltages_from_rainbow(cytoconfig, targetconfig, "rainbow_today.fcs", plot=False)
+    >>> print(color_voltageconfig(voltageconfig, errorlevel=1))
     """
     N_rainbow_peak = targetconfig.loc["_N_peak", "peak"]
     metainds = ["_N_peak"]
@@ -130,9 +198,9 @@ def get_voltages_from_rainbow(cytoconfig, targetconfig, rainbow_path, plot=True)
 
     targetconfig["factor"] = (targetconfig["target"]/targetconfig["value"]) ** (1/targetconfig["exponent"])
     targetconfig["error (%)"] = np.round((targetconfig["value"]-targetconfig["target"]) / targetconfig["target"] *100, 1)
-    targetconfig["voltage_target"] = np.round(targetconfig["voltage"] * targetconfig["factor"], 0).astype(int)
+    targetconfig["voltage_target"] = np.round(targetconfig["voltage"] * targetconfig["factor"], 0).astype("Int64")
 
-    targetconfig["target"] = targetconfig["target"].astype(int)
+    targetconfig["target"] = targetconfig["target"].astype("Int64")
     targetconfig["value"] = targetconfig["value"].astype(int)
     targetconfig["voltage"] = targetconfig["voltage"].astype(int)
     targetconfig["factor"] = np.round(targetconfig["factor"], 4)
@@ -140,8 +208,22 @@ def get_voltages_from_rainbow(cytoconfig, targetconfig, rainbow_path, plot=True)
     return targetconfig
 
 def color_voltageconfig(voltageconfig, errorlevel=1, simplify=True):
-    """ Get simplified, colored version of voltageconfig for printing.
-        Will color all channels with error larger than errorlevel.
+    """Colour the output of `get_voltages_from_rainbow` for printing in a terminal or notebook.
+
+    Parameters
+    ----------
+    voltageconfig : pandas.DataFrame
+        Output of `get_voltages_from_rainbow`.
+    errorlevel : float, default 1
+        Channels with ``abs(error (%))`` above this value are coloured red (as needing adjustment), the others dark
+        cyan (index, 'error (%)', 'voltage_target' and a last column repeating the channel name).
+    simplify : bool, default True
+        Keep only the columns 'target', 'peak', 'voltage', 'value', 'error (%)' and 'voltage_target'.
+
+    Returns
+    -------
+    pandas.DataFrame
+        Table of strings with ANSI colour codes (NaN shown as empty), for ``print``.
     """
     if simplify:
         voltageconfig = voltageconfig[["target","peak","voltage","value","error (%)","voltage_target"]]
