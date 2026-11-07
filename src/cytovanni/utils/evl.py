@@ -1,3 +1,21 @@
+"""Evaluation metrics for paired measurements: coefficients of variation (CV) and a symmetric correlation.
+
+Paired measurements are two measurements of the same quantity, e.g. a cell type proportion or a mean fluorescence
+intensity (MFI) of the same sample measured in two batches. All paired metrics are symmetrised: every pair (x, y) is
+also used as (y, x), so the best-fit line is the diagonal by construction and neither batch is treated as the
+reference. The variance orthogonal to the diagonal measures the disagreement of the pairs (measurement error); the
+`_alongdiag` variants instead estimate the spread of the underlying values without the measurement error.
+
+Two families:
+
+- ``get_positive_*``: strictly positive quantities (proportions, standard deviations), assumed log-normal; the CV is
+  computed from the variance of the logarithm.
+- ``get_asinh_*``: arcsinh-transformed intensities ``arcsinh(z / f)``; a CV-like value that is the CV for intensities
+  well above the cofactor f and the standard deviation divided by f below it.
+
+All functions return the CV as a fraction (not in percent) and NaN, with a `CytovanniWarning`, if too few usable
+values remain.
+"""
 import numpy as np
 import warnings
 
@@ -15,7 +33,20 @@ def _positive_pairs(x, y):
     return x[mask], y[mask]
 
 def symmetric_correlation(x, y):
-    """ Symmetric correlation coefficient, i.e. correlation of [x,y] and [y,x].
+    """Pearson correlation of the symmetrised pairs, i.e. of ``[x, y]`` with ``[y, x]``.
+
+    Unlike the plain Pearson correlation, this also decreases when the pairs are shifted or scaled relative to each
+    other (it measures agreement with the diagonal, not only linear association).
+
+    Parameters
+    ----------
+    x, y : array-like of float
+        Paired values, same length. Pairs with a non-finite value are dropped.
+
+    Returns
+    -------
+    float
+        Correlation coefficient.
     """
     x, y = np.array(x), np.array(y)
     mask = np.isfinite(x) & np.isfinite(y)
@@ -24,20 +55,40 @@ def symmetric_correlation(x, y):
     return r
 
 def get_positive_paired_CV(x, y):
-    """ Get CV of strictly positive data, appropriate for e.g. (strictly positive) proportions or standard deviations.
-        Uses symmetric data, i.e. [x,y] is compared with [y,x].
-        Works by going to log scale, calculating the standard deviation around the diagonal, and translating into a CV.
-        Pairs with a value <= 0 or a non-finite value are dropped. Returns NaN (with a CytovanniWarning) if fewer than
-        2 pairs remain.
+    """CV of the disagreement of paired, strictly positive measurements (e.g. proportions).
 
-        Test with:
-            import scipy.stats
-            log_shares = np.linspace(-5,-1, 10000) # range of values
-            CV = .6 # set a CV
-            std = np.sqrt(np.log(1+CV**2)) # get standard deviation of LogNormal that corresponds to CV
-            noisex, noisey = np.random.normal(scale=std, size=10000), np.random.normal(scale=std, size=10000) # noise
-            print("Simple CV", scipy.stats.variation(np.exp(-3+noisex))) # naive CV along only one direction
-            print("Paired CV", get_positive_paired_CV(np.exp(log_shares+noisex), np.exp(log_shares+noisey))) # CV using paired measurements along a large range
+    Takes the logarithm, symmetrises the pairs, and converts the variance orthogonal to the diagonal into the CV of a
+    log-normal distribution. The result is the expected CV of a single measurement, e.g. of a proportion measured in
+    different batches.
+
+    Parameters
+    ----------
+    x, y : array-like of float
+        Paired measurements on the linear scale, same length. Pairs with a value <= 0 or a non-finite value are
+        dropped.
+
+    Returns
+    -------
+    float
+        CV as a fraction. NaN (with a `CytovanniWarning`) if fewer than 2 pairs remain.
+
+    See Also
+    --------
+    get_positive_paired_CV_alongdiag : CV of the underlying values instead of the measurement error.
+    get_asinh_paired_CV : for arcsinh-transformed intensities.
+
+    Notes
+    -----
+    With the covariance matrix Sigma of the symmetrised log values and ``u = [-1, 1] / sqrt(2)``, the variance is
+    ``sigma2 = u @ Sigma @ u`` and the CV ``sqrt(exp(sigma2) - 1)``.
+
+    Examples
+    --------
+    >>> log_shares = np.linspace(-5, -1, 10000)  # range of true log proportions
+    >>> CV = .6
+    >>> std = np.sqrt(np.log(1 + CV**2))  # log-normal standard deviation for this CV
+    >>> noisex, noisey = np.random.normal(scale=std, size=10000), np.random.normal(scale=std, size=10000)
+    >>> get_positive_paired_CV(np.exp(log_shares + noisex), np.exp(log_shares + noisey))  # about 0.6
     """
     x, y = _positive_pairs(x, y)
     if len(x) < 2:
@@ -51,23 +102,42 @@ def get_positive_paired_CV(x, y):
     return CV
 
 def get_positive_paired_CV_alongdiag(x, y):
-    """ get_positive_paired_CV, but using variance along the diagonal instead to get the CV of the underlying samples.
+    """CV of the underlying values of paired, strictly positive measurements, without the measurement error.
 
-        Needs an additional correction for this to work out correctly:
-        Because x and y share the same underlying signal, cov(x,y) = σ²_signal, which enters the along-diagonal projection twice,
-        giving var_along = 2σ²_signal + σ²_noise. The perpendicular projection cancels the covariance term, giving var_perp = σ²_noise.
-        Therefore σ²_signal = (var_along - var_perp) / 2.
-        Pairs with a value <= 0 or a non-finite value are dropped. Returns NaN (with a CytovanniWarning) if fewer than
-        2 pairs remain or if var_along < var_perp (the noise exceeds the spread of the samples).
+    Like `get_positive_paired_CV`, but estimates the spread of the true values (e.g. how much a proportion varies
+    between samples) from the variance along the diagonal, corrected for the measurement error.
 
-        Test with:
-            import scipy.stats
-            log_shares = np.linspace(-5,-1, 10000) # range of values
-            CV = .6 # set a CV
-            std = np.sqrt(np.log(1+CV**2)) # get standard deviation of LogNormal that corresponds to CV
-            noisex, noisey = np.random.normal(scale=std, size=10000), np.random.normal(scale=std, size=10000) # noise
-            print("True underlying CV", get_positive_single_CV(np.exp(log_shares)))
-            print("Estimated underlying CV", get_positive_paired_CV_alongdiag(np.exp(log_shares+noisex), np.exp(log_shares+noisey)))
+    Parameters
+    ----------
+    x, y : array-like of float
+        Paired measurements on the linear scale, same length. Pairs with a value <= 0 or a non-finite value are
+        dropped.
+
+    Returns
+    -------
+    float
+        CV as a fraction. NaN (with a `CytovanniWarning`) if fewer than 2 pairs remain, or if the variance along the
+        diagonal is smaller than the orthogonal one (the measurement error exceeds the spread of the values).
+
+    See Also
+    --------
+    get_positive_paired_CV : CV of the measurement error.
+
+    Notes
+    -----
+    With ``x = s + e_x`` and ``y = s + e_y`` on the log scale, the covariance of x and y is the variance of the
+    signal s. Projecting the covariance matrix of the symmetrised pairs onto ``[1, 1] / sqrt(2)`` gives
+    ``var_along = 2 var(s) + var(e)``, onto ``[-1, 1] / sqrt(2)`` gives ``var_perp = var(e)``, so
+    ``var(s) = (var_along - var_perp) / 2``, converted to a CV as in `get_positive_paired_CV`.
+
+    Examples
+    --------
+    >>> log_shares = np.linspace(-5, -1, 10000)
+    >>> CV = .6
+    >>> std = np.sqrt(np.log(1 + CV**2))
+    >>> noisex, noisey = np.random.normal(scale=std, size=10000), np.random.normal(scale=std, size=10000)
+    >>> get_positive_single_CV(np.exp(log_shares))  # true CV of the underlying values, about 1.67
+    >>> get_positive_paired_CV_alongdiag(np.exp(log_shares + noisex), np.exp(log_shares + noisey))  # about 1.67
     """
     x, y = _positive_pairs(x, y)
     if len(x) < 2:
@@ -89,18 +159,27 @@ def get_positive_paired_CV_alongdiag(x, y):
     return CV
 
 def get_positive_single_CV(x):
-    """ Get CV of strictly positive data, appropriate for e.g. (strictly positive) proportions or standard deviations.
-        Works on standard deviation after log for stability, otherwise the same as simple CV.
-        Values <= 0 or non-finite are dropped. Uses the sample variance (ddof=1), as the asinh variants.
-        Returns NaN (with a CytovanniWarning) if fewer than 2 values remain.
+    """CV of strictly positive values (e.g. proportions), computed on the log scale.
 
-        Test with:
-            import scipy.stats
-            CV = .6 # set a CV
-            std = np.sqrt(np.log(1+CV**2)) # get standard deviation of LogNormal that corresponds to CV
-            noise = np.random.normal(scale=std, size=10000) # noise
-            print("Simple CV", scipy.stats.variation(np.exp(noise))) # naive CV
-            print("Stable CV", get_positive_single_CV(np.exp(noise))) # more stable CV
+    Converts the sample variance (ddof=1) of the logarithm into the CV of a log-normal distribution. For log-normal
+    data this is more stable than the plain CV (standard deviation / mean), which is sensitive to the tail.
+
+    Parameters
+    ----------
+    x : array-like of float
+        Values on the linear scale. Values <= 0 or non-finite are dropped.
+
+    Returns
+    -------
+    float
+        CV as a fraction, ``sqrt(exp(var(log x)) - 1)``. NaN (with a `CytovanniWarning`) if fewer than 2 values
+        remain.
+
+    Examples
+    --------
+    >>> CV = .6
+    >>> std = np.sqrt(np.log(1 + CV**2))
+    >>> get_positive_single_CV(np.exp(np.random.normal(scale=std, size=10000)))  # about 0.6
     """
     x = np.asarray(x, dtype=float)
     x = x[np.isfinite(x) & (x>0)]
@@ -112,46 +191,53 @@ def get_positive_single_CV(x):
     return CV
 
 def get_asinh_paired_CV(x_asinh, y_asinh, f):
-    """ Get something like the CV of fluorescence intensities from paired, asinh-transformed (with cofactor f) measurements.
-        Uses symmetric data, i.e. [x,y] is compared with [y,x].
-        Like get_positive_paired_CV, gets CV from variance orthogonal to diagonal.
-        
-        Not quite the same as the CV, as this would become non-sensical for low noise, negative values etc.
-        Instead effectively takes the standard deviation after asinh-transformation,
-        and translates into CV in such a way that it actually is the CV for x>>f.
-        For x<f, not actually the CV, but a Gaussian on the asinh-transformed scale that is shifted around yields a roughly constant value,
-        that matches the CV if it is shifted to high values.
+    """CV-like measure of the disagreement of paired arcsinh-transformed intensities (e.g. MFIs).
 
-        Intentional, by design: below the cofactor the value is the additive standard deviation divided by f, not a
-        relative CV (a CV of peaks near zero or negative is meaningless). For the same relative noise, the value
-        therefore grows with the intensity as long as it is below f, and depends on the choice of f there.
+    The arcsinh analogue of `get_positive_paired_CV`: takes the variance of the symmetrised pairs orthogonal to the
+    diagonal on the arcsinh scale and translates it to the linear scale with the delta method. For intensities well
+    above the cofactor the result is the CV of a single measurement; below the cofactor, where a relative CV is not
+    meaningful (values near zero or negative), it is the additive standard deviation divided by `f`. So for the same
+    relative noise, the value grows with the intensity as long as it is below `f`, and depends on the choice of `f`
+    there. Negative values are used like all others.
 
-        Linearisation: the variance is taken in asinh space over all pairs; the translation to the linear scale uses one
-        point, the pooled mean m (z0 = f*sinh(m)), with the factor sqrt(z0**2+f**2)/max(|z0|, f). That factor lies in
-        [1, sqrt(2)], so a single global point instead of one per pair changes the result by at most a factor sqrt(2)
-        (worst case: pooled mean near f while the pairs lie far above/below it); for pooled means far above or below
-        f it is ~1.
+    Parameters
+    ----------
+    x_asinh, y_asinh : array-like of float
+        Paired measurements on the arcsinh scale, ``arcsinh(z / f)``, same length. Pairs with a non-finite value
+        are dropped.
+    f : float
+        Cofactor of the arcsinh transform of `x_asinh` and `y_asinh`, in the units of the linear data z.
 
-        Non-finite pairs are dropped. Returns NaN (with a CytovanniWarning) if fewer than 2 pairs remain.
-        
-        chatGPT:
-        Much simpler global-linearized noise estimator for arcsinh-transformed replicates.
-        - linearizes asinh^{-1} at the global mean
-        - behaves like multiplicative CV at large values
-        - becomes additive-SD / |global_mean| near zero
-        - fully signed, never excludes negative values
+    Returns
+    -------
+    float
+        CV as a fraction. NaN (with a `CytovanniWarning`) if fewer than 2 pairs remain.
 
-        Test with:
-            import scipy.stats
-            import matplotlib.pyplot as plt
-            log_shares = np.linspace(1,3, 10000) # range of values
-            CV = .5 # set a CV
-            std = np.sqrt(np.log(1+CV**2)) # get standard deviation of LogNormal that corresponds to CV
-            noisex, noisey = np.random.normal(scale=std, size=10000), np.random.normal(scale=std, size=10000) # noise
-            f, shift = 10, 0
-            print("Simple CV of lognormal", scipy.stats.variation(np.exp(noisex)))
-            print("Kind-of-CV from asinh ", get_asinh_paired_CV(log_shares+shift+noisex, log_shares+shift+noisey, f))
-            plt.hist(log_shares+shift+noisex);
+    See Also
+    --------
+    get_asinh_paired_CV_alongdiag : spread of the underlying values instead of the measurement error.
+    get_asinh_paired_CV_varcorr : with a correction for known errors of the individual values.
+    get_asinh_single_CV : for unpaired values.
+
+    Notes
+    -----
+    With the variance ``var_s`` orthogonal to the diagonal (as in `get_positive_paired_CV`, but on the arcsinh
+    scale) and the pooled mean m of all values, the linear-scale point is ``z0 = f * sinh(m)``, the derivative of the
+    inverse transform there ``sqrt(z0**2 + f**2)``, and the result
+    ``sqrt(z0**2 + f**2) * sqrt(var_s) / max(|z0|, f)``.
+
+    The linearisation uses one point, the pooled mean, for all pairs. The factor ``sqrt(z0**2 + f**2) / max(|z0|, f)``
+    lies in [1, sqrt(2)], so this changes the result by at most a factor sqrt(2) compared to linearising every pair
+    separately (worst case: pooled mean near f while the pairs lie far above or below it); for pooled means far above
+    or below f it is close to 1.
+
+    Examples
+    --------
+    >>> log_shares = np.linspace(1, 3, 10000)  # arcsinh values, i.e. z between about 1.2 f and 10 f
+    >>> CV = .5
+    >>> std = np.sqrt(np.log(1 + CV**2))
+    >>> noisex, noisey = np.random.normal(scale=std, size=10000), np.random.normal(scale=std, size=10000)
+    >>> get_asinh_paired_CV(log_shares + noisex, log_shares + noisey, f=10)  # roughly 0.5
     """
     x = np.asarray(x_asinh)
     y = np.asarray(y_asinh)
@@ -180,20 +266,34 @@ def get_asinh_paired_CV(x_asinh, y_asinh, f):
     return std_z / denom
 
 def get_asinh_paired_CV_alongdiag(x_asinh, y_asinh, f):
-    """ get_asinh_paired_CV along the diagonal, with the same correction as in get_positive_paired_CV_alongdiag.
-        Same cofactor behaviour and global linearisation as get_asinh_paired_CV (see there).
-        Returns NaN (with a CytovanniWarning) if fewer than 2 finite pairs remain or if var_along < var_perp.
+    """CV-like measure of the spread of the underlying values of paired arcsinh-transformed intensities.
 
-        Test with:
-            import scipy.stats
-            import matplotlib.pyplot as plt
-            log_shares = np.linspace(1,2, 10000) # range of values
-            CV = .2 # set a CV
-            std = np.sqrt(np.log(1+CV**2)) # get standard deviation of LogNormal that corresponds to CV
-            noisex, noisey = np.random.normal(scale=std, size=10000), np.random.normal(scale=std, size=10000) # noise
-            f, shift = 10, 0
-            print("True underlying CV", get_asinh_single_CV(log_shares+shift, f))
-            print("Estimated underlying CV", get_asinh_paired_CV_alongdiag(log_shares+shift+noisex, log_shares+shift+noisey, f))
+    The arcsinh analogue of `get_positive_paired_CV_alongdiag`: the variance of the underlying values is estimated as
+    ``(var_along - var_perp) / 2`` on the arcsinh scale and translated to the linear scale as in
+    `get_asinh_paired_CV` (same cofactor behaviour and global linearisation, see there).
+
+    Parameters
+    ----------
+    x_asinh, y_asinh : array-like of float
+        Paired measurements on the arcsinh scale, ``arcsinh(z / f)``, same length. Pairs with a non-finite value
+        are dropped.
+    f : float
+        Cofactor of the arcsinh transform, in the units of the linear data z.
+
+    Returns
+    -------
+    float
+        CV as a fraction. NaN (with a `CytovanniWarning`) if fewer than 2 pairs remain, or if the variance along the
+        diagonal is smaller than the orthogonal one.
+
+    Examples
+    --------
+    >>> log_shares = np.linspace(1, 2, 10000)
+    >>> CV = .2
+    >>> std = np.sqrt(np.log(1 + CV**2))
+    >>> noisex, noisey = np.random.normal(scale=std, size=10000), np.random.normal(scale=std, size=10000)
+    >>> get_asinh_single_CV(log_shares, f=10)  # spread of the underlying values
+    >>> get_asinh_paired_CV_alongdiag(log_shares + noisex, log_shares + noisey, f=10)  # close to the line above
     """
     x = np.asarray(x_asinh)
     y = np.asarray(y_asinh)
@@ -230,20 +330,29 @@ def get_asinh_paired_CV_alongdiag(x_asinh, y_asinh, f):
     return std_z / denom
 
 def get_asinh_single_CV(x_asinh, f):
-    """ Same as get_asinh_paired_CV, but using only one x and getting variation around mean.
-        Same cofactor behaviour and global linearisation as get_asinh_paired_CV (see there).
-        Returns NaN (with a CytovanniWarning) if fewer than 2 finite values remain.
-    
-        Test with:
-            import scipy.stats
-            import matplotlib.pyplot as plt
-            CV = .3 # set a CV
-            std = np.sqrt(np.log(1+CV**2)) # get standard deviation of LogNormal that corresponds to CV
-            noisex = np.random.normal(scale=std, size=10000) # noise
-            f, shift = 10, 2
-            print("Simple CV of lognormal", scipy.stats.variation(np.exp(noisex)))
-            print("Kind-of-CV from asinh ", get_asinh_single_CV(shift+noisex, f))
-            plt.hist(shift+noisex);
+    """CV-like measure of the spread of unpaired arcsinh-transformed intensities around their mean.
+
+    The single-sample version of `get_asinh_paired_CV`: the sample variance (ddof=1) on the arcsinh scale is
+    translated to the linear scale in the same way (same cofactor behaviour and global linearisation, see there).
+
+    Parameters
+    ----------
+    x_asinh : array-like of float
+        Values on the arcsinh scale, ``arcsinh(z / f)``. Non-finite values are dropped.
+    f : float
+        Cofactor of the arcsinh transform, in the units of the linear data z.
+
+    Returns
+    -------
+    float
+        CV as a fraction. NaN (with a `CytovanniWarning`) if fewer than 2 values remain.
+
+    Examples
+    --------
+    >>> CV = .3
+    >>> std = np.sqrt(np.log(1 + CV**2))
+    >>> noisex = np.random.normal(scale=std, size=10000)
+    >>> get_asinh_single_CV(2 + noisex, f=10)  # z around 36, well above f: roughly 0.3
     """
 
     x = np.asarray(x_asinh)
@@ -276,11 +385,28 @@ def get_asinh_single_CV(x_asinh, f):
 
 
 def get_asinh_paired_CV_varcorr(x_asinh, y_asinh, x_asinh_err, y_asinh_err, f):
-    """ Same as get_asinh_paired_CV, but with additional correction.
-        If both x and y have inherent error, subtract this variance from observed to get corrected values.
-        Errors must be finite and >= 0 (an error of 0 subtracts nothing); pairs with a negative or non-finite error are dropped.
-        If the mean error variance exceeds the observed variance, the corrected variance is clamped to 0 (with a
-        CytovanniWarning), so the result is 0. Returns NaN (with a CytovanniWarning) if fewer than 2 usable pairs remain.
+    """`get_asinh_paired_CV`, corrected for known errors of the individual values.
+
+    Subtracts the mean error variance of the values from the observed variance orthogonal to the diagonal before the
+    translation to the linear scale, e.g. to remove the sampling error of MFIs of small populations, estimated by a
+    bootstrap.
+
+    Parameters
+    ----------
+    x_asinh, y_asinh : array-like of float
+        Paired measurements on the arcsinh scale, ``arcsinh(z / f)``, same length.
+    x_asinh_err, y_asinh_err : array-like of float
+        Standard error of every value of `x_asinh` and `y_asinh`, on the arcsinh scale. Must be finite and >= 0 (an
+        error of 0 subtracts nothing). Pairs with a non-finite value or a negative or non-finite error are dropped.
+    f : float
+        Cofactor of the arcsinh transform, in the units of the linear data z.
+
+    Returns
+    -------
+    float
+        CV as a fraction. If the mean error variance ``mean(x_err**2 + y_err**2) / 2`` exceeds the observed
+        variance, the corrected variance is clamped to 0 (with a `CytovanniWarning`), so the result is 0. NaN (with
+        a `CytovanniWarning`) if fewer than 2 usable pairs remain.
     """
     x = np.asarray(x_asinh)
     y = np.asarray(y_asinh)
@@ -318,10 +444,27 @@ def get_asinh_paired_CV_varcorr(x_asinh, y_asinh, x_asinh_err, y_asinh_err, f):
     return std_z / denom
 
 def get_asinh_single_CV_varcorr(x_asinh, x_asinh_err, f):
-    """ get_asinh_single_CV with variance correction as in get_asinh_paired_CV_varcorr.
-        Errors must be finite and >= 0 (an error of 0 subtracts nothing); values with a negative or non-finite error are dropped.
-        If the mean error variance exceeds the observed variance, the corrected variance is clamped to 0 (with a
-        CytovanniWarning), so the result is 0 instead of NaN.
+    """`get_asinh_single_CV`, corrected for known errors of the individual values.
+
+    Subtracts the mean error variance ``mean(x_err**2)`` from the sample variance on the arcsinh scale before the
+    translation to the linear scale, as in `get_asinh_paired_CV_varcorr`.
+
+    Parameters
+    ----------
+    x_asinh : array-like of float
+        Values on the arcsinh scale, ``arcsinh(z / f)``.
+    x_asinh_err : array-like of float
+        Standard error of every value, on the arcsinh scale. Must be finite and >= 0 (an error of 0 subtracts
+        nothing). Values with a non-finite value or a negative or non-finite error are dropped.
+    f : float
+        Cofactor of the arcsinh transform, in the units of the linear data z.
+
+    Returns
+    -------
+    float
+        CV as a fraction. If the mean error variance exceeds the observed variance, the corrected variance is
+        clamped to 0 (with a `CytovanniWarning`), so the result is 0. NaN (with a `CytovanniWarning`) if fewer than 2
+        usable values remain.
     """
 
     x = np.asarray(x_asinh)
