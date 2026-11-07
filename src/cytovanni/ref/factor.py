@@ -101,7 +101,7 @@ def fit_factor_Sinkhorn(datadct, arcsinh_cofactor=5000, Nsamp=2000, Niter=150, l
     Notes
     -----
     The fitted parameters are the log factors, constrained to mean 0 over batches (so the factors have geometric mean
-    1); this fixes the otherwise free common scale. `anchor` only rescales the result.
+    1); this fixes the otherwise free common scale and keeps the fit stable. `anchor` only rescales the result.
 
     The loss is the debiased Sinkhorn divergence of ``geomloss.SamplesLoss`` (via `cytovanni.torch.GeomSampleLoss`)
     with p=2 (squared Euclidean cost), blur 0.5 (entropic regularisation eps = blur^2), reach 1 (unbalanced transport,
@@ -377,7 +377,7 @@ def fit_factors_Sinkhorn(datadct, fit_markers=None, arcsinh_cofactor=5000, Nsamp
     datadct : dict of str to pandas.DataFrame
         Events per batch, DataFrame of shape (events, stain) with intensities on a linear scale (raw or calibrated,
         unmixed; not arcsinh-transformed), e.g. ``{ad.uns["date"]: ad.obsm["unmx"] for ad in adatas}``. All frames
-        must have the same, unique marker columns; they are aligned to the column order of the first frame.
+        must have the same, unique marker columns; they are aligned to the column order of the first frame (R2d-D1).
         The dict order sets the row order of the result.
     fit_markers : list of str, optional
         Markers that enter the loss. The others keep factor 1 (they are still returned). Names not among the columns
@@ -441,7 +441,8 @@ def fit_factors_Sinkhorn(datadct, fit_markers=None, arcsinh_cofactor=5000, Nsamp
     -----
     The log factors are constrained to mean 0 over batches for every marker; `anchor` only rescales the result.
     Loss settings are as in `fit_factor_Sinkhorn` (p=2, blur 0.5, reach 1, scaling 0.5, debiased; tuned for a
-    23-colour panel at cofactor 5000). Unfitted markers are scaled with their factor 1 but are not part of the loss.
+    23-colour panel at cofactor 5000). The aggregate loss is divided by the number of batches, as in
+    `fit_factor_Sinkhorn`. Unfitted markers are scaled with their factor 1 but are not part of the loss.
 
     Examples
     --------
@@ -610,8 +611,7 @@ def fit_factor_PercentileMatching(datadct, percentile=95, anchor=None, dummy=Fal
     """Fit one scaling factor per batch by matching a percentile of the batch distributions.
 
     Each factor scales its batch's `percentile` to the average over batches: ``factor_b = mean_k(q_k) / q_b``.
-    A high percentile mostly reflects the positive population of a marker, as long as it lies within that
-    population in every batch.
+    A high percentile matches the positive population of a marker, independent of the negative events.
 
     Parameters
     ----------
