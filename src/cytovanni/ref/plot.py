@@ -91,7 +91,8 @@ def plot_eval_NxN(adatas, unmxkey, uid, key_uid, key_color=None, key_subset=None
         adatas_use = [ad for ad in adatas_use if ad.uns[key_subset] in subset]
     xs = [np.arcsinh(ad.obsm[unmxkey] / cofactor) for ad in adatas_use]
     labels = np.arange(len(xs)) if key_color is None else np.asarray([ad.uns[key_color] for ad in adatas_use])
-    colors = list(get_cmap(labels).values())
+    cmap = get_cmap(labels)
+    colors = [cmap[l] for l in labels] # one colour per dataset, datasets with the same label share it
     axlim_ash = (np.arcsinh(axlim[0]/cofactor), np.arcsinh(axlim[1]/cofactor))
 
     if datashader:

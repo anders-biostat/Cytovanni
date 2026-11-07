@@ -75,10 +75,12 @@ class UnmxErrorExclusionMultiplier(ScaleMultiplier):
     def requires_grad_(self, requires_grad=False):
         """ Set requires_grad properly on all parameters.
         """
+        if self.is_dummy: return self
         self.group_stain_idx.requires_grad_(False)
         self.group_arange.requires_grad_(False)
-        self.group_value.requires_grad_(False)
+        self.group_threshold.requires_grad_(False)
         self.block_mask.requires_grad_(False)
+        return self
     
     def forward(self, xc, scale):
         """ Take data that was standardised by transformer, return weighting for every event.

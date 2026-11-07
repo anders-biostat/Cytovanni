@@ -131,6 +131,8 @@ class MultiOrdinalEncoder():
     def transform_df(self, df, astorch=True):
         """ Transform full dataframe, taking into account nested batches.
             Needs to contain all relevant batches etc. as columns.
+            Rows with an unknown nested (minor) batch get the known minor batch of the same major batch with the
+            nearest order value; the key k+"_imputed" marks them.
         """
         outdct = {}
         fct_torch = (lambda x: torch.tensor(x, dtype=torch.long)) if astorch else (lambda x: x)
@@ -145,8 +147,9 @@ class MultiOrdinalEncoder():
                     mask_major = refdata["major"].to_numpy()[None]==curdata["major"].to_numpy()[:,None]
                     diff = np.abs(refdata["order"].to_numpy()[None]-curdata["order"].to_numpy()[:,None]).astype(float)
                     diff[~mask_major] = np.inf
-                    curdata["minor_idx"] = refdata["minor_idx"].to_numpy()[np.argmin(diff, axis=1)]
-                    outdct[k] = fct_torch(curdata["minor_idx"].to_numpy())
+                    # impute only the unknown rows, known rows keep their own label
+                    imputed = np.where(impmask, refdata["minor_idx"].to_numpy()[np.argmin(diff, axis=1)], trfd)
+                    outdct[k] = fct_torch(imputed)
                 else:
                     outdct[k] = fct_torch(trfd)
                 outdct[k+"_imputed"] = torch.tensor(trfd==-1)

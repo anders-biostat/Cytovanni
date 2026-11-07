@@ -30,6 +30,26 @@ A fix can change results relative to one of these and not the other; both are st
 | R2-E13 | peak share init sized by labels present; empty sample NaN | only if a sample or its brightest peak had no beads | rainbow fluorescence fit init |
 | R2-E14 | `Sampler.sample(split=True)` for non-contiguous groups | no for current callers (contiguous) | non-contiguous index groups |
 | R2-K6 | `RainbowScatterCalibrationModule.from_data(scatter_calibration=...)` NameError | no (crash -> works) | explicit `scatter_calibration` |
+| R2-A3 | `ScalingTransformer.add_standardisation_parameters` stain factor all NaN | no (stored factor becomes usable) | `ScalingTransformer` only |
+| R2-A4 | nested batch imputation overwrote known labels | yes, multi-row `transform_df` with mixed known/unknown rows | `MultiOrdinalEncoder.transform_df` with nested keys |
+| R2-A6 | `RareMarkerWeights` truncated fractional weights | yes, non-integer weights only | `RareMarkerWeights` groups with weights like 1.5 |
+| R2-B1 | `PanelModule` components allocated (channel, channel, comp) | no (crash -> works) | spectral panels (fewer stains than channels) |
+| R2-B2 | spectra inverted transposed in `get_standardisationparams_fromad` | no for square panels (identical); spectral crashed before | spectral panels |
+| R2-C2 | `ScalingTransformer` warning NameError | no (crash -> warning) | `scale_stains=False` |
+| R2-C9 | default `DDIST_mode="sinnkhorn"` typo | no (crash -> works) | direct `OverlapFitModel(...)` without `DDIST_mode` |
+| R2-C10 | `fit_factors_Sinkhorn(dummy=True)` ran the fit | yes, `dummy=True` callers get 1.0 | `dummy=True` |
+| R2-C12 | MMD with `DDIST_separate`; flag not exported | yes, MMD + separate only; **saved models need the new key** | `DDIST_mode="MMD", DDIST_separate=True`; loading any saved model |
+| R2-C13 | batches without path to an anchor trained as anchors | yes, disconnected designs only | `ConnectionSampler` with anchors and disconnected batches |
+| R2-D2 | `get_unmixing_resistance(single_step=True)` set instead of added the step | yes, for non-zero embeddings | default `single_step=True` |
+| R2-D6 | `plot_eval_NxN(key_color=...)` colours | plot only | `key_color` given |
+| R2-E1 | `requires_grad_` overrides (undefined names, return None) | no | `.requires_grad_()` on these modules |
+| R2-E8 | `ConnectionSampler` without connections: obscure error | no (clear error) | no cross-batch connections |
+| R2-E11 | `fit_factor_PercentileMatching` only took ndarrays | no (crash -> works) | Series/list input |
+| R2-E17 | `ScalingTransformer` anchor rejected lists | no (crash -> works) | `anchor_bidx={"batch":[0]}` |
+| R2-K1 | `raise NotImplemented` (ref/factor.py) | no (TypeError -> NotImplementedError) | unknown `init` |
+| R2-K2 | `incorporate_stain_scaling` lost the class / `cls_smp`; silent clipping | no (warning added) | subclasses, custom smp, `max_abslogstain` |
+| R2-K4 | `fit_factor_Sinkhorn_grouped` without shared samples | no (clear error, warning for unconstrained batches) | no sample in two batches |
+| R2-C15b | dependencies: `pandas<3` pinned, `joblib` declared | no | installation |
 
 Entry format: see the review notes (todo/00_CONVENTIONS.md "Fix log" in the review project).
 
@@ -238,3 +258,132 @@ merged.
 - **What was wrong:** an explicit `scatter_calibration` referenced the undefined `scatter_calibrate`, and the result
   of `check_scatter_calibration` (None) was assigned to `scatter_calibration`. The check is now only called.
 - **Effect on results:** none (crash -> works). **Action:** nothing. **Test:** v_all.py K6.
+
+### R2 ref group (OverlapFitModel, transformers, encoders, factor fits)
+All bugs of this group are also present in the repro copy, so "vs publish" and "vs repro copy" are the same.
+Commit: R2-ref (`git log --grep R2-ref`), 2026-11-07. Approvals: R2_approval.md, same IDs.
+
+### R2-A3 `ScalingTransformer` stain factor all NaN
+- **Where:** `ref/model_transformer.py`, `ScalingTransformer.add_standardisation_parameters`.
+- **What was wrong:** a stain-indexed Series was assigned to `adata.var` (channel index), giving all NaN;
+  `varm["sfm_stain_factor"]`, which the docstring promises, was never written. Padding of `sfm_spectra` /
+  `sfm_standardise_unmx` used row-by-row `.loc` (pandas FutureWarning), now `reindex` (both transformers).
+- **Now:** writes `varm["sfm_stain_factor"]` as `SpectralFitTransformer` does; no `var["sfm_stain_factor"]` any more.
+- **Affected when:** `ScalingTransformer` only. **Effect on results:** the stored factor becomes usable; unmixing
+  matrices unchanged. **Affected analyses:** none found (reproducibility reads `varm["sfm_stain_factor"]` written by
+  `SpectralFitTransformer`, which was correct). **Action:** nothing. **Test:** v_all.py A3; f_ref.py.
+
+### R2-A4 nested batch imputation overwrote known labels
+- **Where:** `ref/moe.py`, `MultiOrdinalEncoder.transform_df`.
+- **What was wrong:** if any row needed imputation of a nested (minor) batch, *all* rows got the nearest-order label,
+  including rows with a known label.
+- **Affected when:** multi-row `transform_df` calls whose frame mixes known and unknown minor batches. Single-row calls
+  (`transform_ad`, `transform_dict`) and training datasets (all known) are unaffected.
+- **Effect on results:** batch indices of known rows in such calls (they now keep their own label).
+- **Affected analyses:** `figures/plots_batchintHD7/lib/parameters.py:43` (`moe.transform_df(meta_B)`); `meta_B` is
+  filtered to known `batch_ref`/`batch` labels first, so it is unaffected unless another nested key has unknown values.
+- **Action:** none expected; re-run that figure only if its nested keys contain unknown labels. **Test:** v_all.py A4; f_ref.py.
+
+### R2-A6 `RareMarkerWeights` truncated fractional weights
+- **Where:** `ref/model_weight.py`, `RareMarkerWeights.__init__` (`group_weight` dtype long -> float32); also E1.
+- **Affected when:** group weights that are not integers (1.5 became 1, i.e. no upweighting).
+- **Effect on results:** event weights and therefore the fit change for such configurations.
+- **Affected analyses:** none found (`RareMarkerWeights` not used in reproducibility). **Action:** re-fit models that
+  used fractional rare-marker weights. **Test:** v_all.py A6; f_ref.py.
+
+### R2-B1 `PanelModule` component array shape
+- **Where:** `ref/panel.py`, `PanelModule.from_panelconfig`. **What was wrong:** allocated (channel, channel, component)
+  instead of (stain, channel, component). **Affected when:** spectral panels (fewer stains than channels); square panels
+  are identical. **Effect on results:** none (crash -> works). **Action:** nothing. **Test:** v_all.py B1.
+
+### R2-B2 spectra inverted transposed
+- **Where:** `ref/model_transformer.py`, `get_standardisationparams_fromad` of `SpectralFitTransformer` and `ScalingTransformer`.
+- **What was wrong:** `invert_spectra(spectra).T` on (channel, stain) spectra; `invert_spectra` expects (stain, channel).
+- **Now:** `invert_spectra(spectra.T)`. For square panels the result is mathematically identical (inv(S^T)^T = inv(S)).
+- **Effect on results:** none for square panels (all reproducibility panels); spectral panels crashed before. Verified
+  that the spectral unmixing matrix now reproduces the abundances exactly (f_ref.py). **Action:** nothing. **Test:** v_all.py B2.
+
+### R2-C2 `ScalingTransformer` warning
+- **Where:** `ref/model_transformer.py`. **What was wrong:** `warnings` not imported, so `scale_stains=False` crashed.
+  **Now:** imported, warning category `OverlapStandardisationWarning`. **Effect on results:** none. **Test:** v_all.py C2.
+
+### R2-C9 default `DDIST_mode` typo
+- **Where:** `ref/model.py`, `OverlapFitModel.__init__`: `"sinnkhorn"` -> `"sinkhorn"` (as in `from_data`). Direct
+  construction without `DDIST_mode` crashed. **Effect on results:** none. **Test:** v_all.py C9; f_ref.py.
+
+### R2-C10 `fit_factors_Sinkhorn(dummy=True)`
+- **Where:** `ref/factor.py`. **What was wrong:** the frame of ones was built and discarded, so the full fit ran.
+- **Effect on results:** callers with `dummy=True` now get the documented 1.0 instead of fitted factors.
+- **Affected analyses:** none found (no `dummy=True` in reproducibility). **Action:** nothing. **Test:** v_all.py C10; f_ref.py.
+
+### R2-C12 MMD with `DDIST_separate`; flag not exported
+- **Where:** `ref/model.py`, `OverlapFitModel` (`__init__`, new `setup_ddist`, `estimate_MMD_bandwidth`,
+  `set_MMD_bandwidth_from_dataset`, `export`, `from_exported`).
+- **What was wrong:** `set_MMD_bandwidth_from_dataset` replaced the loss by a plain joint `MMDLoss`, dropping the
+  per-marker wrapper; the batched per-marker helper does not work with `MMDLoss`; `export` did not store
+  `DDIST_separate`, so a reloaded model continued training with the joint loss.
+- **Now:** one `setup_ddist` builds the loss in both places; MMD uses a per-marker loop; with `DDIST_separate` the MMD
+  bandwidth is estimated per marker (median over markers and samples), matching the 1-D loss; `DDIST_separate` is
+  exported and restored.
+- **Affected when:** `DDIST_mode="MMD"` with `DDIST_separate=True` (results change: the loss was silently joint), and
+  continued training of reloaded models that used `DDIST_separate=True` with any mode.
+- **Breaking change (no compatibility layer, user rule):** `from_exported`/`from_saved` require the `DDIST_separate` key.
+  Models saved before this fix must be re-saved with the key added (`exported["DDIST_separate"] = False` unless the
+  model was trained with True). Reproducibility loads saved models at `processing/batchint_data/lib/sources.py:284`,
+  `figures/plots_batchintHD7/lib/parameters.py:34`, `figures/plots_dye/lib/dye.py:843` (see USER_REMINDERS).
+- **Action:** re-save existing saved OverlapFitModels (R7). **Test:** v_all.py C12; f_ref.py.
+
+### R2-C13 batches without path to an anchor
+- **Where:** `ref/data.py`, `graph_shortest_path` and `ConnectionSampler`.
+- **What was wrong:** unreachable batches got distance 0 (the zero initialisation), so they were treated as anchors.
+- **Now:** distances start at inf; unreachable non-anchor batches get no connections, a warning lists them, and
+  `find_nontraining_batches` reports them.
+- **Affected when:** anchor designs whose batch graph is disconnected from every anchor.
+- **Effect on results:** those batches are no longer trained as (fixed-reference-like) anchors; their parameters stay
+  untrained. Connected designs are unchanged (verified: chain distances 0/1/2).
+- **Affected analyses:** none found directly (reproducibility loads trained models); any training on such a design
+  changes. **Action:** check warnings when re-training. **Test:** v_all.py C13; f_ref.py.
+
+### R2-D2 `get_unmixing_resistance(single_step=True)`
+- **Where:** `ref/panel.py`, `PanelModule.get_unmixing_resistance` (default `single_step=True`).
+- **What was wrong:** the perturbed embedding component was *set* to ±step instead of shifted by ±step (the
+  multi-step sibling adds).
+- **Effect on results:** unmixing resistance values for non-zero embeddings (zero embeddings unchanged).
+- **Affected analyses:** none found (not used in reproducibility; internal caller `get_unmixing_resistance_fromad`).
+- **Action:** re-compute stored unmixing resistances if any. **Test:** v_all.py D2.
+
+### R2-D6 `plot_eval_NxN(key_color=...)`
+- **Where:** `ref/plot.py`. **What was wrong:** one colour per unique label was passed where one per dataset was
+  expected. **Effect:** plot colours only. **Affected analyses:** none found. **Test:** v_all.py D6.
+
+### R2-E1 `requires_grad_` overrides
+- **Where:** `ref/panel.py` (PanelModule, PanelEmbeddingModule, FixedPanelModule), `ref/model_weight.py`
+  (RareMarkerWeights), `ref/model_transformer_smp.py` (UnmxErrorExclusionMultiplier), `torch/parameter.py`
+  (ExtendableParameter).
+- **What was wrong:** `FixedPanelModule` used the undefined `pem`, `UnmxErrorExclusionMultiplier` the missing
+  `group_value`, dummy instances (no groups) failed, and all returned None instead of `self` (torch convention).
+- **Effect on results:** none. **Test:** v_all.py E1; f_ref.py.
+
+### R2-E8 / R2-E11 / R2-E17 / R2-K1 / R2-K4 (robustness, no result change)
+- **E8** `ref/data.py` `ConnectionSampler`: no cross-batch connections now raises a clear `ValueError` (was `max()` of
+  an empty array).
+- **E11** `ref/factor.py` `fit_factor_PercentileMatching`: accepts any array-like (`np.asarray(v).ravel()`).
+- **E17** `ref/model_transformer.py` `ScalingTransformer.anchor_batches`: accepts an int or a one-element list (bare
+  `except` removed); several anchors raise `ValueError` as before. Docstring corrected (only one batch can be anchored).
+- **K1** `ref/factor.py`: `raise NotImplemented(...)` -> `NotImplementedError` (4 places).
+- **K4** `ref/factor.py` `fit_factor_Sinkhorn_grouped`: no sample shared between batches raises `ValueError` (was
+  ZeroDivisionError); batches that share no sample are named in a warning (their factor is unconstrained).
+- **Test:** v_all.py E8 E11 E17 K1 K4; f_ref.py.
+
+### R2-K2 `incorporate_stain_scaling`
+- **Where:** `ref/model.py`, `OverlapFitModel.incorporate_stain_scaling`; `ref/model_transformer.py`, `ScaleFactor.add_to_fixed`.
+- **What was wrong:** the copy was always an `OverlapFitModel` (subclasses lost), a custom `cls_smp` could not be
+  passed, and the combined scale was clipped by `max_abslogstain` without notice.
+- **Now:** `type(self).from_exported(..., cls_smp=cls_smp)`; `ScaleFactor.add_to_fixed` warns
+  (`OverlapStandardisationWarning`) when the result exceeds `max_abs_value`. Clipping itself is unchanged.
+- **Effect on results:** none. **Affected analyses:** none found. **Test:** v_all.py K2; f_ref.py.
+
+### R2-C15b dependencies
+- **Where:** `pyproject.toml`. `pandas<3` pinned until the test suite (R4) runs on pandas 3 (copy-on-write may turn
+  chained assignments into silent no-ops; user decision 2026-11-07 "Fix + pin <3 for now"); `joblib` declared (used by
+  `utils/nxn.py`, so far only installed through scikit-learn). No change to the installed environment.

@@ -11,10 +11,10 @@ from ..rainbow.rbim_data import Sampler
 
 import sklearn
 def graph_shortest_path(graph, filldiag=True):
-    """ Shortest path in symmetric graph
+    """ Shortest path lengths in symmetric graph, np.inf for unreachable pairs.
         filldiag: if True, fill diag with 1
     """
-    dist = np.zeros(graph.shape)
+    dist = np.full(graph.shape, np.inf)
     for i in range(graph.shape[0]):
         dct = sklearn.utils.graph.single_source_shortest_path_length(graph, i)
         arr = np.asarray([(k,v) for k,v in dct.items()])
@@ -103,6 +103,10 @@ class ConnectionSampler():
             shortest_connection = graph_shortest_path(self.batch_connections_diffbatch)
             shortest_connection[self.batch_is_anchor, self.batch_is_anchor] = 0.
             self.batch_anchor_distance = shortest_connection[self.batch_is_anchor].min(0)
+            unreachable = np.setdiff1d(np.where(np.isinf(self.batch_anchor_distance))[0], np.where(self.batch_is_anchor)[0])
+            unreachable = np.intersect1d(unreachable, self.idx_batch)
+            if len(unreachable)>0:
+                warnings.warn(f"Batches {unreachable.tolist()} have no connection to any anchor batch and are not trained (see find_nontraining_batches)!")
             self.idx_anchor_distance = self.batch_anchor_distance[self.idx_batch]
             
             connections = (self.connections_diffbatch>0) & ((self.idx_anchor_distance[None]==0) | (self.idx_anchor_distance[:,None]==0))
@@ -124,6 +128,8 @@ class ConnectionSampler():
         
         # find connections
         self.cidx_left, self.cidx_right = self.connections.nonzero()
+        if len(self.cidx_left)==0:
+            raise ValueError("No connections between samples of different batches (and, with anchors, within max_anchor_dist of an anchor), nothing to train on!")
         
         # split connections into fixed if not many, und sampled if many
         u, c = np.unique(self.cidx_left, return_counts=True)
@@ -170,7 +176,7 @@ class ConnectionSampler():
         return df
     
     def find_nontraining_batches(self):
-        """ Return indices for all batches that have no connections.
+        """ Return indices for all batches that have no connections, e.g. batches without a path to an anchor batch.
         """
         batch_connections = np.zeros(self.idx_batch.max()+1)
         csum = self.connections.sum(0)

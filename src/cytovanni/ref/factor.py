@@ -45,7 +45,7 @@ def fit_factor_Sinkhorn_LBFGS(datadct, arcsinh_cofactor=5000, Nsamp=2000, Niter=
     elif init=="mean":
         logfactor_init = torch.tensor(fit_factor_MeanMatching(datadct).loc[keys].to_numpy(), dtype=torch.float32).log()
     else:
-        raise NotImplemented(f"Initialisation '{init}' not available!")
+        raise NotImplementedError(f"Initialisation '{init}' not available!")
 
     param_logfactor = ExtendableParameter((Nbatch,),0,0, allow_grad=True, axis_norm=0)
     param_logfactor.set_trainable_part(logfactor_init)
@@ -143,7 +143,7 @@ def fit_factor_Sinkhorn(datadct, arcsinh_cofactor=5000, Nsamp=2000, Niter=150, l
     elif init=="mean":
         logfactor_init = torch.tensor(fit_factor_MeanMatching(datadct).loc[keys].to_numpy(), dtype=torch.float32).log()
     else:
-        raise NotImplemented(f"Initialisation '{init}' not available!")
+        raise NotImplementedError(f"Initialisation '{init}' not available!")
 
     param_logfactor = ExtendableParameter((Nbatch,),0,0, allow_grad=True, axis_norm=0)
     param_logfactor.set_trainable_part(logfactor_init)
@@ -227,6 +227,11 @@ def fit_factor_Sinkhorn_grouped(datadct, arcsinh_cofactor=5000, Nsamp=2000, Nite
     samples = list(dict.fromkeys([e[1] for e in entries]))
     sample_entries = [[j for j, e in enumerate(entries) if e[1]==sample] for sample in samples]
     sample_entries = [se for se in sample_entries if len(se)>1]
+    if len(sample_entries)==0:
+        raise ValueError("No sample is present in more than one batch, the batch factors cannot be fitted!")
+    batches_unshared = [keys[i] for i in range(Nbatch) if not any(entry_batch[j]==i for se in sample_entries for j in se)]
+    if len(batches_unshared)>0:
+        warnings.warn(f"Batches {batches_unshared} share no sample with other batches, their factors are not constrained by the fit!")
     
     data_torch_split = [torch.tensor(np.asarray(e[2]), dtype=torch.float32) for e in entries]
     data_torch = torch.cat(data_torch_split)[:,None].to(device)
@@ -244,7 +249,7 @@ def fit_factor_Sinkhorn_grouped(datadct, arcsinh_cofactor=5000, Nsamp=2000, Nite
         datadct_pooled = {k:np.concatenate([np.asarray(v) for v in datadct[k].values()]) for k in keys}
         logfactor_init = torch.tensor(fit_factor_MeanMatching(datadct_pooled).loc[keys].to_numpy(), dtype=torch.float32).log()
     else:
-        raise NotImplemented(f"Initialisation '{init}' not available!")
+        raise NotImplementedError(f"Initialisation '{init}' not available!")
 
     param_logfactor = ExtendableParameter((Nbatch,),0,0, allow_grad=True, axis_norm=0)
     param_logfactor.set_trainable_part(logfactor_init)
@@ -341,7 +346,7 @@ def fit_factors_Sinkhorn(datadct, fit_markers=None, arcsinh_cofactor=5000, Nsamp
     marker_train = [(marker in fit_markers if fit_markers is not None else True) for marker in markers]
     
     if dummy:
-        pd.DataFrame(1., index=keys, columns=markers)
+        return pd.DataFrame(1., index=keys, columns=markers)
     
     if anchor is not None and not anchor in keys:
         raise ValueError(f"Anchor needs to be one of the data dict keys, '{anchor}' is not available! {list(keys)}")
@@ -368,7 +373,7 @@ def fit_factors_Sinkhorn(datadct, fit_markers=None, arcsinh_cofactor=5000, Nsamp
             return np.log(fit_factor_MeanMatching({k:v[marker] for k,v in datadct.items()}, dummy=dummy).loc[keys].to_numpy())
         logfactor_init = torch.tensor(np.vstack([get_logfactor_mean(m, dummy=not t) for m,t in zip(markers, marker_train)]).T, dtype=torch.float32)
     else:
-        raise NotImplemented(f"Initialisation '{init}' not available!")
+        raise NotImplementedError(f"Initialisation '{init}' not available!")
     
     param_logfactor = ExtendableParameter((Nbatch, Nmarker),0,0, allow_grad=True, axis_norm=0)
     param_logfactor.set_trainable_part(logfactor_init)
@@ -445,7 +450,7 @@ def fit_factor_PercentileMatching(datadct, percentile=95, anchor=None, dummy=Fal
     """
     if dummy:
         return pd.Series(1., index=list(datadct.keys()))
-    percentiles = pd.Series({k:np.percentile(v.flatten(), percentile) for k,v in datadct.items()})
+    percentiles = pd.Series({k:np.percentile(np.asarray(v).ravel(), percentile) for k,v in datadct.items()})
     factors = percentiles.mean() / percentiles
     if np.any(factors<=0) or np.any(~np.isfinite(factors)):
         warnings.warn("Some fitted factors are negative, zero, or infinite, this is probably not desired!\n"+str(factors))
