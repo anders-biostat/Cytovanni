@@ -50,6 +50,17 @@ A fix can change results relative to one of these and not the other; both are st
 | R2-K2 | `incorporate_stain_scaling` lost the class / `cls_smp`; silent clipping | no (warning added) | subclasses, custom smp, `max_abslogstain` |
 | R2-K4 | `fit_factor_Sinkhorn_grouped` without shared samples | no (clear error, warning for unconstrained batches) | no sample in two batches |
 | R2-C15b | dependencies: `pandas<3` pinned, `joblib` declared | no | installation |
+| R2-C3 | `SpilloverMeasurement.from_custom(abort_inconsistent=False)` TypeError | no (crash -> warning) | inconsistent `set_hash` + `abort_inconsistent=False` |
+| R2-C5 | single-stain file regex not escaped / not anchored | yes, where channel names contain regex characters: those stains were "missing", now found | channel names with `( ) . + ...` (FACSAria "B1 (525)", S8); `collect_bead_controls_regularflow`, `make_AutoSpill_fcs_config` |
+| R2-C6 | `warn_missing` and `filename_regex` ignored | yes, custom `filename_regex` callers (the regex is now used) | `collect_bead_controls_spectralflow(filename_regex=...)`; `collect_bead_controls_regularflow(warn_missing=False)` (warnings only) |
+| R2-C7 | AutoSpill padded channels all got the same file name | possibly (AutoSpill input) | `make_AutoSpill_fcs_config(pad_missing=True)` with >1 missing channel |
+| R2-C11 | `OutliersafeTorchSingleStainSpectrumFit.plot` KeyError; `debug=True` NameError | no for slopes; `spectrum` (and written csv) gains an `intercept` column | torch single-stain fit |
+| R2-C14 | PCA component count not capped by channel count | no (crash -> works) | `SingleSpectrumPCAFitter` with N > n_channels < n_spectra |
+| R2-C15a | str written into float `set_hash` column | no (pandas 3: crash -> works; pandas 2: FutureWarning gone) | `collect_bead_controls_*` |
+| R2-E6 | `LocalOutlierFactor(n_neighbors=N//100)` 0..4 for small files | yes, <500 events per fit (100..499: n_neighbors 1-4 -> 5; <100: crash -> works) | `OutliersafeLinear/TorchSingleStainSpectrumFit` on small files |
+| R2-E10 | `_find_single_stain` on a folder without .fcs files | no (crash -> "not found") | empty single-stain folder |
+| R2-E20 | `plot_test_spectra_reconstruction`: log base, axis, row order | plot + returned errors, if rows not in panel order | `PanelConfiguration.plot_test_spectra_reconstruction` |
+| R2-F4 | internal column `channnel_name` -> `channel_name` | no (not in the returned frame) | none |
 
 Entry format: see the review notes (todo/00_CONVENTIONS.md "Fix log" in the review project).
 
@@ -387,3 +398,138 @@ Commit: R2-ref (`git log --grep R2-ref`), 2026-11-07. Approvals: R2_approval.md,
 - **Where:** `pyproject.toml`. `pandas<3` pinned until the test suite (R4) runs on pandas 3 (copy-on-write may turn
   chained assignments into silent no-ops; user decision 2026-11-07 "Fix + pin <3 for now"); `joblib` declared (used by
   `utils/nxn.py`, so far only installed through scikit-learn). No change to the installed environment.
+
+### R2 spill group (single-stain collection, stain fits, AutoSpill, panel PCA)
+Applied by a worker agent, reviewed and re-verified by the lead (v_all.py, f_spill.py, f_spill_pd.py: log
+r2vspill2_61325, all NOT REPRODUCED / ALL PASS; C15 also under pandas 3.0.6). The repro copy has the same bugs except
+where noted. Reproducibility does not call these collection/fit functions directly, except E6 (refjohanna).
+Small extensions beyond the approved text: C5 also anchors the default regex of `collect_bead_controls_spectralflow`;
+E20 allows a subset of the panel's dyes (`allow_missing=True`).
+
+### R2-C3 `from_custom(abort_inconsistent=False)` raised TypeError
+- **Commit:** R2-spill. **Approval:** C3. **Where:** `spill/collection.py`, `SpilloverMeasurement.from_custom` (:107).
+- **What was wrong:** `warnings.warn(..., SpilloverException)` passes an Exception class as warning category, so the
+  "warn instead of abort" path raised TypeError. Now `SpilloverWarning`.
+- **Affected when:** single stains with different `set_hash` values and `abort_inconsistent=False`.
+- **Effect on results:** none (crash -> warning). **Affected analyses:** `from_custom` is called with the default
+  `abort_inconsistent=True` in `figures/plots_overview/lib/overview.py:215`, `figures/plots_dye/lib/dye.py:67`,
+  `figures/plots_rainbow/00_prepare_A3.ipynb`; unaffected. Same bug in the repro copy.
+- **Action:** nothing. **Test:** v_all.py C3; f_spill.py "C3 warning class".
+
+### R2-C5 single-stain file regex built from unescaped channel names
+- **Commit:** R2-spill. **Approval:** C5. **Where:** `spill/utils.py`, `collect_bead_controls_regularflow` (:69);
+  `spill/autospill.py`, `make_AutoSpill_fcs_config` (:34); default of `collect_bead_controls_spectralflow` (:107).
+- **What was wrong:** the pattern `Compensation Controls_(.*){channel} Stained Control.fcs` used the channel name as
+  regex: parentheses (all FACSAria configs, "B1 (525)"; S8) never matched, `.` matched any character, and the pattern
+  was not anchored. Now `re.escape(channel)` and `Stained Control\.fcs$`; the spectral default is
+  `Compensation Controls_(.*)\.fcs$`.
+- **Affected when:** channel names containing regex metacharacters (FACSAria, S8). For channels without them, and for
+  normal file names, nothing changes (only names with text after `.fcs` or a non-dot before `fcs` no longer match).
+- **Effect on results:** changes outputs where such channels exist: before, their single stains were reported missing
+  (warning), skipped by `collect_bead_controls_regularflow` (no data file / `panel_meta.csv` row without file), and
+  padded with a dummy stain by `make_AutoSpill_fcs_config` (or "no single stains" if every channel had a parenthesis).
+  Now they are found and collected.
+- **Affected analyses:** none found in reproducibility. Collections or AutoSpill configs made earlier for FACSAria/S8
+  with these functions lack those stains. Same bug in the repro copy.
+- **Action:** re-collect FACSAria/S8 single-stain folders made with these functions, if any. **Test:** v_all.py C5
+  (adapted: tests the package-built regex via `make_AutoSpill_fcs_config`); f_spill.py "C5/C7"; f_spill_pd.py.
+
+### R2-C6 `warn_missing` and `filename_regex` ignored
+- **Commit:** R2-spill. **Approval:** C6. **Where:** `spill/utils.py`, `collect_bead_controls_regularflow` (:74,
+  `warn_missing=True` hard-coded), `collect_bead_controls_spectralflow` (:121, argument overwritten by the default).
+- **What was wrong:** both arguments had no effect. Now passed on / used.
+- **Affected when:** `collect_bead_controls_regularflow(warn_missing=False)` (warnings only);
+  `collect_bead_controls_spectralflow(filename_regex=<non-default>)`.
+- **Effect on results:** custom-regex callers now collect the files their regex matches (before: the default regex,
+  often 0 rows). `warn_missing`: warnings only.
+- **Affected analyses:** none found. Same bug in the repro copy.
+- **Action:** nothing, unless a spectral collection was made with a custom regex. **Test:** v_all.py C6; f_spill_pd.py.
+
+### R2-C7 AutoSpill padded channels got the same file name
+- **Commit:** R2-spill. **Approval:** C7. **Where:** `spill/autospill.py`, `make_AutoSpill_fcs_config` (:46-49).
+- **What was wrong:** the counter `i` was never incremented, so every padded (missing) channel got
+  `<pad_file>_0.fcs`. Now `_0`, `_1`, ...
+- **Affected when:** `pad_missing=True` (default) and more than one channel without a single stain.
+- **Effect on results:** the AutoSpill input table now has distinct file names for the padded channels; how AutoSpill
+  treated the duplicates before was not tested (R integration not exercised), so AutoSpill spectra could change.
+- **Affected analyses:** none found. Same bug in the repro copy.
+- **Action:** re-run AutoSpill runs that had more than one padded channel, if any. **Test:** v_all.py C7; f_spill.py.
+
+### R2-C11 torch single-stain fit: plot KeyError, debug NameError
+- **Commit:** R2-spill. **Approval:** C11. **Where:** `spill/stainfit.py`,
+  `OutliersafeTorchSingleStainSpectrumFit.fit` (:436-441), `TorchSpectrumFitter.fit` (:349).
+- **What was wrong:** `fit` stored only `slope`, so the inherited `plot` raised `KeyError 'intercept'`; `tqdm` was not
+  imported, so `TorchSpectrumFitter(debug=True).fit` raised NameError.
+- **Now:** `fit` also stores `intercept`, the intercept of each channel against the stain channel as in the linear and
+  pos/neg fits: `offset_c - slope_c * offset_stain` (from `tsfitter.offset`; 0 for the stain channel); `tqdm` imported.
+- **Affected when:** `OutliersafeTorchSingleStainSpectrumFit`; `TorchSpectrumFitter(debug=True)`.
+- **Effect on results:** slopes unchanged; `spectrum` and the csv written by `write` gain an `intercept` column
+  (`collect_single_fits` reads only `slope`). Synthetic check: torch intercept [0, 441.3, -110.0] vs linear
+  [0, 440.3, -110.1] (true [0, 440, -110]).
+- **Affected analyses:** none found. Same bug in the repro copy.
+- **Action:** nothing. **Test:** v_all.py C11; f_spill.py "C11 ...".
+
+### R2-C14 PCA component count not capped by the channel count
+- **Commit:** R2-spill. **Approval:** C14. **Where:** `spill/pca.py`, `SingleSpectrumPCAFitter.__init__` (:24).
+- **What was wrong:** `N = min(N, n_spectra)`; sklearn's PCA needs `N <= min(n_spectra, n_channels)`, so panels with
+  fewer channels than N and more spectra than channels crashed. Now `min(N, n_spectra, n_channels)`.
+- **Affected when:** fewer channels than `N` (default 5) and more spectra than channels.
+- **Effect on results:** none (crash -> works; N is unchanged wherever it ran before).
+- **Affected analyses:** used via `SpilloverCollection` / `PanelConfiguration.collect_PCA_data`
+  (`figures/plots_dye/lib/dye.py:707-708`, `figures/plots_dye/04_panel_choice.ipynb`); these ran, so unchanged. Same
+  bug in the repro copy.
+- **Action:** nothing. **Test:** v_all.py C14 (check fixed to format a non-exception result); f_spill.py.
+
+### R2-C15a str written into a float `set_hash` column
+- **Commit:** R2-spill. **Approval:** C15 (code part; the `pandas<3` pin is R2-C15b). **Where:** `spill/utils.py`,
+  `collect_bead_controls_regularflow` (:82/:94), `collect_bead_controls_spectralflow` (:133/:143).
+- **What was wrong:** `set_hash` was created as a float NaN column and then given str hashes: a FutureWarning under
+  pandas 2, `TypeError` under pandas 3. Now created as an object column (NaN where no file), so the NaN filter and the
+  csv output are unchanged.
+- **Affected when:** every call of these two functions.
+- **Effect on results:** none (`panel_meta.csv` identical; pandas 3: crash -> works).
+- **Affected analyses:** none found. Same bug in the repro copy.
+- **Action:** nothing. **Test:** v_all.py C15; f_spill_pd.py (pandas 2.3.3 and 3.0.6).
+
+### R2-E6 `LocalOutlierFactor` neighbours 0..4 for small files
+- **Commit:** R2-spill. **Approval:** E6. **Where:** `spill/stainfit.py`,
+  `OutliersafeLinearSingleStainSpectrumFit.filter_outlier` (:237/:239), `.filter_outlier_residuals` (:255).
+- **What was wrong:** `n_neighbors = N_events // neighbors_factor` (default 100) is 0 below 100 events (sklearn error)
+  and 1-4 below 500 (a very noisy outlier score). Now `max(N_events // neighbors_factor, 5)`.
+- **Affected when:** fits on fewer than 5*`neighbors_factor` (500) events; also `OutliersafeTorchSingleStainSpectrumFit`
+  (inherits the filter).
+- **Effect on results:** 100-499 events: different outlier mask, so the fitted slopes/intercepts can change; <100 events:
+  crash -> works. >= 500 events: unchanged.
+- **Affected analyses:** `processing/refjohanna/lib/refjoh.py:65` (bead single stains after scatter gate) and `:77`
+  (LIVE/DEAD Blue cells with UV5-A > 1e4): change only if one of these inputs has fewer than 500 events; event counts
+  not checked here. Same bug in the repro copy.
+- **Action:** check the event counts of the refjohanna single-stain fits; re-run that step only if one is < 500.
+  **Test:** v_all.py E6; f_spill.py "E6 small files".
+
+### R2-E10 `_find_single_stain` on a folder without .fcs files
+- **Commit:** R2-spill. **Approval:** E10. **Where:** `spill/utils.py`, `_find_single_stain` (:22).
+- **What was wrong:** `max()` of an empty list raised ValueError. Now the stain is reported as not found (warning,
+  `("", "")`), so `make_AutoSpill_fcs_config` raises its clear "Could not find any single stains" error.
+- **Affected when:** single-stain folder without .fcs files.
+- **Effect on results:** none (obscure crash -> warning / clear error). **Affected analyses:** none found. Same bug in
+  the repro copy.
+- **Action:** nothing. **Test:** v_all.py E10; f_spill_pd.py.
+
+### R2-E20 `plot_test_spectra_reconstruction`: log base, axis, row order
+- **Commit:** R2-spill. **Approval:** E20. **Where:** `spill/panel.py`,
+  `PanelConfiguration.plot_test_spectra_reconstruction` (:218-246).
+- **What was wrong:** the gray 100%/10% guide lines used `np.log` as exponent of `np.logspace` (base 10), and the
+  right panel used the left panel's limits; the reconstructions (indexed by `self.stains`) were compared with `spectra`
+  by position, so rows in a different order were mismatched (and a subset of the panel's dyes raised ValueError).
+- **Now:** `np.log10`, each panel its own limits; `spectra` is restricted to `self.channels` and the reconstructions are
+  aligned to its rows/columns (`allow_missing=True`, so a subset of dyes works).
+- **Affected when:** every call (guide lines); rows of `spectra` not in panel order (errors).
+- **Effect on results:** plot only, plus the returned error Series when rows were not in panel order.
+- **Affected analyses:** none found. vs repro copy: it has no guide lines at all, but the same row-order bug.
+- **Action:** nothing. **Test:** v_all.py E20; f_spill.py "E20 aligned rows".
+
+### R2-F4 internal column `channnel_name` renamed
+- **Commit:** R2-spill. **Approval:** F4 (user: rename, internal only). **Where:** `spill/autospill.py`,
+  `make_AutoSpill_fcs_config` (:33-38).
+- **What was wrong:** misspelt internal column. Now `channel_name`; it is not part of the returned frame.
+- **Effect on results:** none. **Affected analyses:** none. **Action:** nothing. **Test:** v_all.py F4.

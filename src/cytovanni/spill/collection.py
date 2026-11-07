@@ -104,7 +104,7 @@ class SpilloverMeasurement():
             if abort_inconsistent:
                 raise SpilloverException(f"Found inconsistent settings in single stains in {custom_data_folder}!")
             else:
-                warnings.warn(f"Found inconsistent settings in single stains in {custom_data_folder}!", SpilloverException)
+                warnings.warn(f"Found inconsistent settings in single stains in {custom_data_folder}!", SpilloverWarning)
         
         # read spillovers
         spm.try_load_custom_spectra()

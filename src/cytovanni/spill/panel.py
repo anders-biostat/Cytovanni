@@ -217,8 +217,11 @@ class PanelConfiguration():
 
             Gray lines on the plot indicate 100% and 10% reconstruction error.
         """
-        spectra_smoothed = self.get_spectra_from_embedding(self.get_spectra_embedding(spectra), only_included_components=True)
-        spectra_smoothed_full = self.get_spectra_from_embedding(self.get_spectra_embedding(spectra), only_included_components=False)
+        spectra = spectra.loc[:, self.channels]
+        embedding = self.get_spectra_embedding(spectra)
+        # reconstructions are indexed by self.stains: align them to the rows/columns of spectra
+        spectra_smoothed = self.get_spectra_from_embedding(embedding, only_included_components=True, allow_missing=True).loc[spectra.index, spectra.columns]
+        spectra_smoothed_full = self.get_spectra_from_embedding(embedding, only_included_components=False, allow_missing=True).loc[spectra.index, spectra.columns]
     
         fig, ax = plt.subplots(1, 2, figsize=(15,6))
     
@@ -226,10 +229,10 @@ class PanelConfiguration():
         ax[0].set_xscale("symlog", linthresh=linthresh)
         ax[0].set_ylim([min(-1, ax[0].get_ylim()[0]), max(1, ax[0].get_ylim()[1])])
         ax[0].set_yscale("symlog", linthresh=linthresh)
-        x = np.logspace(-4, np.log(ax[0].get_ylim()[1]), 1000)
+        x = np.logspace(-4, np.log10(ax[0].get_ylim()[1]), 1000)
         ax[0].plot(x, x, color="gray", linewidth=.5)
         ax[0].plot(x, .1*x, color="gray", linewidth=.5)
-        x = np.logspace(-4, np.log(-ax[0].get_ylim()[0]), 1000)
+        x = np.logspace(-4, np.log10(-ax[0].get_ylim()[0]), 1000)
         ax[0].plot(x, -x, color="gray", linewidth=.5)
         ax[0].plot(x, -.1*x, color="gray", linewidth=.5)
         ax[0].set_title("All Principal Components", size=25)
@@ -240,10 +243,10 @@ class PanelConfiguration():
         ax[1].set_xscale("symlog", linthresh=linthresh)
         ax[1].set_ylim([min(-1, ax[1].get_ylim()[0]), max(1, ax[1].get_ylim()[1])])
         ax[1].set_yscale("symlog", linthresh=linthresh)
-        x = np.logspace(-4, np.log(ax[0].get_ylim()[1]), 1000)
+        x = np.logspace(-4, np.log10(ax[1].get_ylim()[1]), 1000)
         ax[1].plot(x, x, color="gray", linewidth=.5)
         ax[1].plot(x, .1*x, color="gray", linewidth=.5)
-        x = np.logspace(-4, np.log(-ax[0].get_ylim()[0]), 1000)
+        x = np.logspace(-4, np.log10(-ax[1].get_ylim()[0]), 1000)
         ax[1].plot(x, -x, color="gray", linewidth=.5)
         ax[1].plot(x, -.1*x, color="gray", linewidth=.5)
         ax[1].set_title("Chosen Principal Components", size=25)
