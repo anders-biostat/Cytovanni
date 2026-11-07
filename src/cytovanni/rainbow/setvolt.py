@@ -1,4 +1,5 @@
 """Semi-automated PMT voltage setting with rainbow beads: reproduce the detector settings of a reference measurement."""
+import warnings
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -6,6 +7,7 @@ import matplotlib.pyplot as plt
 from ..io import readfcs_rainbow_sample
 from ..gating import gate_scatter_bead_sample
 from ..utils import textcolor
+from ..exceptions import CytovanniWarning
 from .gmm import fit_rainbow_GMM
 from .plot import plot_rainbow_channel_GMM_single
 
@@ -43,9 +45,9 @@ def get_config_from_rainbow_reference(cytoconfig, rainbow_reference_path, set_ch
     -------
     pandas.DataFrame
         Index the channels (scatter channels first, then the fluorescence channels in the order of `set_channels`) plus
-        a last row '_N_peak'. Columns 'target' (target intensity, raw units, rounded), 'peak' (1-based peak number in
-        GMM order for fluorescence channels, NaN for scatter channels) and 'exponent'. Row '_N_peak' holds the number
-        of peaks in 'peak' (target 0, exponent NaN). The input of `get_voltages_from_rainbow`; nothing is saved.
+        a last row '_N_peak'. Columns 'target' (target intensity, raw units, rounded; nullable integer), 'peak'
+        (1-based peak number in GMM order for fluorescence channels, NaN for scatter channels) and 'exponent'. Row
+        '_N_peak' holds the number of peaks in 'peak' (target 0, exponent NaN). The input of `get_voltages_from_rainbow`; nothing is saved.
 
     Raises
     ------
@@ -56,9 +58,11 @@ def get_config_from_rainbow_reference(cytoconfig, rainbow_reference_path, set_ch
     --------
     get_voltages_from_rainbow : voltages that reach the targets.
 
-    Notes
+    Warns
     -----
-    If no peak of a channel is below the limit, the target of that channel is 0 (peak 1).
+    CytovanniWarning
+        If no peak of a channel in `set_channels` is below the limit; its target is then NaN (``<NA>``, 'peak' 1),
+        and `get_voltages_from_rainbow` gives NaN for its factor, error and target voltage.
 
     Examples
     --------
@@ -92,9 +96,15 @@ def get_config_from_rainbow_reference(cytoconfig, rainbow_reference_path, set_ch
     df_peakpos[df_peakpos > cytoconfig.max_linear_range*safety_factor_linear] = 0.
     if not use_highest_peak:
         df_peakpos.iloc[-1] = 0.
+    no_linear_peak = pd.Series((df_peakpos.to_numpy() <= 0).all(axis=0), index=cytoconfig.channels_fluorescence)
+    if no_linear_peak[set_channels_fluorescence].any():
+        warnings.warn(f"No rainbow peak below the linear limit for channels "
+                      f"{no_linear_peak[set_channels_fluorescence][lambda x: x].index.tolist()}, their target is NaN; "
+                      f"lower their voltage in the reference or raise safety_factor_linear.", CytovanniWarning)
 
     highest_linear_peak_ind = np.argmax(df_peakpos.to_numpy(), axis=0)
-    highest_linear_peak_val = np.round(df_peakpos.to_numpy()[highest_linear_peak_ind, np.arange(len(highest_linear_peak_ind))], 0).astype(int)
+    highest_linear_peak_val = np.round(df_peakpos.to_numpy()[highest_linear_peak_ind, np.arange(len(highest_linear_peak_ind))], 0)
+    highest_linear_peak_val[no_linear_peak.to_numpy()] = np.nan
     df_target_fluoro = pd.DataFrame([highest_linear_peak_val,
                                      1+highest_linear_peak_ind],
                                      index=["target", "peak"], columns=cytoconfig.channels_fluorescence).T
@@ -102,7 +112,7 @@ def get_config_from_rainbow_reference(cytoconfig, rainbow_reference_path, set_ch
 
     targetconfig = pd.concat([df_target_scatter,
                               df_target_fluoro.loc[set_channels_fluorescence]])
-    targetconfig["target"] = targetconfig["target"].astype(int)
+    targetconfig["target"] = targetconfig["target"].astype("Int64")
     # Some playing around to get nicer formatting
     targetconfig["peak"] = np.array([int(x) if x==x else x for x in targetconfig["peak"]], dtype=object)
     if isinstance(PMT_exponent, pd.Series):
@@ -188,9 +198,9 @@ def get_voltages_from_rainbow(cytoconfig, targetconfig, rainbow_path, plot=True)
 
     targetconfig["factor"] = (targetconfig["target"]/targetconfig["value"]) ** (1/targetconfig["exponent"])
     targetconfig["error (%)"] = np.round((targetconfig["value"]-targetconfig["target"]) / targetconfig["target"] *100, 1)
-    targetconfig["voltage_target"] = np.round(targetconfig["voltage"] * targetconfig["factor"], 0).astype(int)
+    targetconfig["voltage_target"] = np.round(targetconfig["voltage"] * targetconfig["factor"], 0).astype("Int64")
 
-    targetconfig["target"] = targetconfig["target"].astype(int)
+    targetconfig["target"] = targetconfig["target"].astype("Int64")
     targetconfig["value"] = targetconfig["value"].astype(int)
     targetconfig["voltage"] = targetconfig["voltage"].astype(int)
     targetconfig["factor"] = np.round(targetconfig["factor"], 4)

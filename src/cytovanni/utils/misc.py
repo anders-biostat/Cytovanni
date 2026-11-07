@@ -480,8 +480,7 @@ def anndata_concat(adatas, make_unique=False, join="inner", merge=None, permute=
         How ``.var`` (and the other variable-wise fields) are merged, see ``anndata.concat`` (e.g. ``'same'``).
         Default None: these fields are dropped. ``.uns`` is not merged either.
     permute : bool, default False
-        Return the events in a random order (numpy's global random state). Needs unique event names (see
-        `make_unique`).
+        Return the events in a random order (numpy's global random state).
 
     Returns
     -------
@@ -494,7 +493,7 @@ def anndata_concat(adatas, make_unique=False, join="inner", merge=None, permute=
     if make_unique:
         adata.obs_names_make_unique()
     if permute:
-        adata = adata[adata.obs.index[np.random.permutation(adata.shape[0])]].copy()
+        adata = adata[np.random.permutation(adata.shape[0])].copy()
     return adata
 
 def anndata_subsample(adata, N=20000, copy=True):
@@ -503,7 +502,7 @@ def anndata_subsample(adata, N=20000, copy=True):
     Parameters
     ----------
     adata : anndata.AnnData
-        Events to subsample; the event names (``obs_names``) must be unique.
+        Events to subsample (event names need not be unique).
     N : int, default 20000
         Maximum number of events. Objects with at most `N` events are returned complete.
     copy : bool, default True
@@ -517,8 +516,7 @@ def anndata_subsample(adata, N=20000, copy=True):
     """
     if adata.shape[0]<=N:
         return adata.copy() if copy else adata
-    sind = adata.obs.index[np.random.permutation(adata.shape[0])[:int(N)]]
-    ad = adata[sind]
+    ad = adata[np.random.permutation(adata.shape[0])[:int(N)]]
     return ad.copy() if copy else ad
 
 def df_subsample(df, N=20000, copy=True):
@@ -527,7 +525,7 @@ def df_subsample(df, N=20000, copy=True):
     Parameters
     ----------
     df : pandas.DataFrame
-        Rows to subsample; the index must be unique.
+        Rows to subsample (the index need not be unique).
     N : int, default 20000
         Maximum number of rows. DataFrames with at most `N` rows are returned complete.
     copy : bool, default True
@@ -541,8 +539,7 @@ def df_subsample(df, N=20000, copy=True):
     """
     if df.shape[0]<=N:
         return df.copy() if copy else df
-    sind = df.index[np.random.permutation(df.shape[0])[:int(N)]]
-    return df.loc[sind].copy()
+    return df.iloc[np.random.permutation(df.shape[0])[:int(N)]].copy()
 
 from collections import Counter
 

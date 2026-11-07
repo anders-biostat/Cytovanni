@@ -104,13 +104,18 @@ def plot_eval_NxN(adatas, unmxkey, uid, key_uid, key_color=None, key_subset=None
     axlim : list of float, default [-1e4, 3e5]
         Limits of both axes, in linear units (transformed with the same cofactor).
     savepath : str, default ""
-        If given, save the plot there. Without it, the matplotlib version leaves the figure open; the datashader
-        version produces no visible output (its image is not returned), so use it with a `savepath`.
+        If given, save the plot there. Without it, the matplotlib version leaves the figure open and the datashader
+        version returns the image.
     cofactor : float, default 1500
         Cofactor of the arcsinh transform, in the units of the data.
     datashader : bool, default True
         Use the rasterised datashader version (fast for many events, no axis ticks, no title or legend; needs the
         ``plot`` extra) instead of matplotlib.
+
+    Returns
+    -------
+    PIL.Image.Image or None
+        The datashader image if `datashader` is True and no `savepath` is given (shown inline in Jupyter), else None.
     """
     adatas_use = [ad for ad in adatas if ad.uns[key_uid]==uid]
     if key_subset is not None:
@@ -122,6 +127,6 @@ def plot_eval_NxN(adatas, unmxkey, uid, key_uid, key_color=None, key_subset=None
     axlim_ash = (np.arcsinh(axlim[0]/cofactor), np.arcsinh(axlim[1]/cofactor))
 
     if datashader:
-        base_plot_NxN_ds(xs, colors=colors, axlim=axlim_ash, savepath=savepath)
+        return base_plot_NxN_ds(xs, colors=colors, axlim=axlim_ash, savepath=savepath)
     else:
         base_plot_NxN(xs, colors, labels, savepath=savepath, suptitle=uid, axlim=axlim_ash)

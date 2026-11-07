@@ -16,8 +16,8 @@ class EventRateEstimator():
     ----------
     times : array-like of float
         Time of every event, e.g. ``adata.obs['Time']``, in any order (sorted internally). The rate is per unit of
-        these times, which this class does not convert: the ``Time`` channel of an .fcs file is usually stored in
-        units of the instrument's time step ($TIMESTEP keyword), not in seconds.
+        these times. ``adata.obs['Time']`` from `cytovanni.io.readfcs_sample` is in seconds: flowkit multiplies the
+        stored values by the file's $TIMESTEP.
 
     Attributes
     ----------

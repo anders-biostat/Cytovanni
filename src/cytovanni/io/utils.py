@@ -444,7 +444,7 @@ def read_folder_timestamps(folder, cytoconfig=None, timezone=None):
     pandas.DataFrame
         One row per file (index: file name), columns as in `read_fcs_timestamp` ('date', 'begin_record',
         'end_record', 'UTC') and, with `cytoconfig`, 'set_hash' (NaN where it could not be computed). Sorted by
-        'UTC' if all files have one, otherwise by the 'date' and 'begin_record' strings.
+        'UTC'; files without 'UTC' (no $DATE or $BTIM) come last, ordered by the 'date' and 'begin_record' strings.
 
     Raises
     ------
@@ -467,10 +467,7 @@ def read_folder_timestamps(folder, cytoconfig=None, timezone=None):
             except Exception as e:
                 return np.nan
         tps["set_hash"] = [safe_hash(file) for file in files]
-    if tps["UTC"].isna().sum():
-        return tps.sort_values(["date","begin_record"])
-    else:
-        return tps.sort_values(["UTC"])
+    return tps.sort_values(["UTC", "date", "begin_record"], na_position="last")
 
 
 def fix_A3_HW_bug(df):
@@ -533,8 +530,8 @@ def writefcs(filepath, data_df, sample_id="", add_metadata=None, overwrite_pns=T
 def fix_sample_bug(filepath, filepath_new, fct_bugfix, delete_spill=True):
     """Write a repaired copy of an .fcs file: read the raw events, apply `fct_bugfix`, write them to `filepath_new`.
 
-    The metadata of the original file are passed on to `writefcs` (``add_metadata``, ``overwrite_pns=False``); the
-    $PnS labels of the original are not written to the new file.
+    The metadata of the original file are passed on to `writefcs` (``add_metadata``), and each channel keeps its $PnS
+    label from the original ("" where it had none).
 
     Parameters
     ----------
@@ -556,7 +553,9 @@ def fix_sample_bug(filepath, filepath_new, fct_bugfix, delete_spill=True):
     if delete_spill: # flowkit stores $SPILL as 'spill' and $SPILLOVER as 'spillover'
         for key in ["spill", "spillover"]:
             add_metadata.pop(key, None)
-    writefcs(filepath_new, data_df, sample_id="", add_metadata=add_metadata, overwrite_pns=False)
+    pns_original = dict(zip(sample.pnn_labels, sample.pns_labels))
+    pns = [pns_original.get(channel, "") for channel in data_df.columns]
+    writefcs(filepath_new, data_df, sample_id="", add_metadata=add_metadata, overwrite_pns=True, pns=pns)
 
 def readfcs_dataframe(filepath):
     """Read the raw events of an .fcs file into a DataFrame, labelled with the channel labels.

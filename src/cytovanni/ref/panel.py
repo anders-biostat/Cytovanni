@@ -42,7 +42,9 @@ class PanelModule(Module):
     The ``*_ashunmx`` and unmixing-error methods take intensities ``x`` of shape (..., channel) on the linear scale of
     the spectra, i.e. calibrated data (for a fitted `SpectralFitTransformer` additionally multiplied by its channel
     factors, ``adata.var['sfm_calibration_factor']``), and work on ``arcsinh(unmixed * stainscale / arcsinh_cofactor)``
-    (stainscale 1 where not given). Results are on the device of the module.
+    (stainscale 1 where not given). The ``*_fromad`` methods take an AnnData instead and, by default
+    (``apply_factors=True``), apply the channel and stain factors that ``add_standardisation_parameters`` of a fitted
+    `SpectralFitTransformer` stored in it. Results are on the device of the module.
     """
     def __init__(self):
         super().__init__()
@@ -368,11 +370,35 @@ class PanelModule(Module):
 
         return val, val_std, R
 
-    def get_unmixing_resistance_fromad(self, adata, embedding_np, key_layer="calibrated", arcsinh_cofactor=1500, embedding_step=1., include_unused=False, single_step=False, gradstep_maxnorm=True, batch_size=1e4, label_marker=True):
+    def _get_x_stainscale_fromad(self, adata, key_layer, apply_factors=True):
+        """Intensities of `adata` (events, channel) and stain factors (stain,) or None, for the ``*_fromad`` methods.
+
+        With `apply_factors`, uses the parameters that ``add_standardisation_parameters`` of a fitted
+        `SpectralFitTransformer` stored in `adata`, where present: the layer is multiplied by
+        ``adata.var['sfm_calibration_factor']`` and the stain factors are ``adata.varm['sfm_stain_factor']``.
+        """
+        x_np = adata[:,self.channels].layers[key_layer]
+        stainscale_np = None
+        if apply_factors:
+            if "sfm_calibration_factor" in adata.var:
+                channelscale = adata.var.loc[list(self.channels), "sfm_calibration_factor"].to_numpy(dtype=float)
+                if np.isnan(channelscale).any():
+                    raise ValueError("adata.var['sfm_calibration_factor'] is NaN for some channels of the panel!")
+                x_np = x_np * channelscale[None]
+            if "sfm_stain_factor" in adata.varm:
+                stainscale_np = np.asarray(adata.varm["sfm_stain_factor"])[0].astype(float)
+                if stainscale_np.shape[0]!=len(self.stains):
+                    raise ValueError(f"adata.varm['sfm_stain_factor'] has {stainscale_np.shape[0]} stains, "
+                                     f"the panel {len(self.stains)}!")
+        return x_np, stainscale_np
+
+    def get_unmixing_resistance_fromad(self, adata, embedding_np, key_layer="calibrated", arcsinh_cofactor=1500, embedding_step=1., include_unused=False, single_step=False, gradstep_maxnorm=True, batch_size=1e4, label_marker=True, apply_factors=True):
         """Unmixing resistance R (see `get_unmixing_resistance`) for the events of an AnnData.
 
-        Uses ``adata[:, self.channels].layers[key_layer]`` as given: no channel or stain factors are applied (unlike
-        `get_unmixing_resistance` with `stainscale_np`). Note the different default of `single_step`.
+        With `apply_factors`, the data are put on the scale of the fitted model first, using the parameters that
+        ``add_standardisation_parameters`` of a fitted `SpectralFitTransformer` stored in `adata` (where present):
+        the layer is multiplied by the channel factors ``adata.var['sfm_calibration_factor']`` and the unmixed values
+        by the stain factors ``adata.varm['sfm_stain_factor']``. Note the different default of `single_step`.
 
         Parameters
         ----------
@@ -397,19 +423,27 @@ class PanelModule(Module):
             Events per chunk.
         label_marker : bool, default True
             Label the columns with ``panelconfig.stain_marker_name`` (``"stain | marker"``) instead of the stain names.
+        apply_factors : bool, default True
+            Apply the stored channel and stain factors (see above). If False, the layer is used as given.
 
         Returns
         -------
         pandas.DataFrame
             R, index ``adata.obs.index``, one column per stain.
+
+        Raises
+        ------
+        ValueError
+            If the stored channel factors are NaN for a panel channel, or the stored stain factors do not have one
+            entry per stain.
         """
-        x_np = adata[:,self.channels].layers[key_layer]
-        R = self.get_unmixing_resistance(x_np, embedding_np, arcsinh_cofactor=arcsinh_cofactor, embedding_step=embedding_step,
+        x_np, stainscale_np = self._get_x_stainscale_fromad(adata, key_layer, apply_factors=apply_factors)
+        R = self.get_unmixing_resistance(x_np, embedding_np, stainscale_np=stainscale_np, arcsinh_cofactor=arcsinh_cofactor, embedding_step=embedding_step,
                                          include_unused=include_unused, single_step=single_step, gradstep_maxnorm=gradstep_maxnorm,
                                          batch_size=batch_size)[-1]
         return pd.DataFrame(R, index=adata.obs.index, columns=self.panelconfig.stain_marker_name if label_marker else self.stains)
 
-    def get_grouped_jac_fromad(self, adata, embedding_np, stainscale_np=None, key_layer="calibrated", arcsinh_cofactor=1500, batch_size=1e4, label_marker=True):
+    def get_grouped_jac_fromad(self, adata, embedding_np, stainscale_np=None, key_layer="calibrated", arcsinh_cofactor=1500, batch_size=1e4, label_marker=True, apply_factors=True):
         """Mean Jacobian of the unmixed, arcsinh-transformed data with respect to the embedding, over an AnnData.
 
         Shows which panel components (also those not used in the panel: all components enter, ``include_unused=True``)
@@ -422,15 +456,19 @@ class PanelModule(Module):
         embedding_np : numpy.ndarray of shape (component,)
             Panel embedding at which the Jacobian is evaluated.
         stainscale_np : numpy.ndarray of shape (stain,), optional
-            Linear factor per stain applied after unmixing. Default: 1.
+            Linear factor per stain applied after unmixing. Default: the stored stain factors with `apply_factors`
+            (see `get_unmixing_resistance_fromad`), else 1.
         key_layer : str, default "calibrated"
-            Layer with the intensities to unmix (linear scale of the spectra; used as given, no channel factors).
+            Layer with the intensities to unmix (linear scale of the spectra).
         arcsinh_cofactor : float, default 1500
             Cofactor of the arcsinh transform, in the units of the data.
         batch_size : int or float, default 1e4
             Events per chunk.
         label_marker : bool, default True
             Label the columns with ``panelconfig.stain_marker_name`` instead of the stain names.
+        apply_factors : bool, default True
+            Multiply the layer by the stored channel factors and use the stored stain factors, as in
+            `get_unmixing_resistance_fromad`. If False, the layer is used as given.
 
         Returns
         -------
@@ -438,7 +476,9 @@ class PanelModule(Module):
             Mean of ``d arcsinh(unmixed * stainscale / arcsinh_cofactor) / d embedding``; index: components, columns:
             stains.
         """
-        x_np = adata[:,self.channels].layers[key_layer]
+        x_np, stainscale_stored = self._get_x_stainscale_fromad(adata, key_layer, apply_factors=apply_factors)
+        if stainscale_np is None:
+            stainscale_np = stainscale_stored
         x_np_batches = np.array_split(x_np, int(np.ceil(x_np.shape[0] / batch_size)))
         embedding = torch.as_tensor(embedding_np, dtype=torch.float32).to(self.device)
         stainscale = torch.as_tensor(stainscale_np, dtype=torch.float32)[None].to(self.device) if stainscale_np is not None else None
@@ -456,8 +496,8 @@ class PanelModule(Module):
 
         Runs `get_grouped_jac_fromad` with the embedding and stain factors that ``add_standardisation_parameters`` of a
         fitted `SpectralFitTransformer` stored in `adata` (``adata.uns['panel_embedding']``,
-        ``adata.varm['sfm_stain_factor']``) and returns the components sorted by the absolute mean Jacobian for `stain`,
-        marking whether each is used in the panel. The channel factors are not applied to the layer.
+        ``adata.varm['sfm_stain_factor']``, and the channel factors ``adata.var['sfm_calibration_factor']``) and returns
+        the components sorted by the absolute mean Jacobian for `stain`, marking whether each is used in the panel.
 
         Parameters
         ----------
@@ -487,9 +527,8 @@ class PanelModule(Module):
         >>> df, fct_style = pm.get_grouped_jac_single_fromad(adata[gate.apply(adata)], "APC | CD33")
         >>> fct_style(df)
         """
-        jac = self.get_grouped_jac_fromad(adata,
-                                    embedding_np=adata.uns["panel_embedding"], stainscale_np=adata.varm["sfm_stain_factor"].iloc[0].to_numpy(),
-                                    key_layer=key_layer, arcsinh_cofactor=arcsinh_cofactor, batch_size=1e4, label_marker=True)
+        jac = self.get_grouped_jac_fromad(adata, embedding_np=adata.uns["panel_embedding"], key_layer=key_layer,
+                                          arcsinh_cofactor=arcsinh_cofactor, batch_size=1e4, label_marker=True, apply_factors=True)
         jac_marker = np.round(jac[stain], s_dig)
 
         df = pd.DataFrame([jac_marker.abs(), jac_marker, self.panelconfig.pca_components_use], index=["abs. Jacobian", "Jacobian", "in Panel"]).T.sort_values("abs. Jacobian", ascending=False)
@@ -527,12 +566,12 @@ class PanelModule(Module):
                                  index=self.panelconfig.stain_marker_name if label_marker else self.stains, columns=self.channels)
         return spectra
     
-    def get_compmean_errorbars(self, x_np, embedding_np, arcsinh_cofactor=1500, embedding_step=1., label_marker=True, use_median=False, include_unused=False):
+    def get_compmean_errorbars(self, x_np, embedding_np, arcsinh_cofactor=1500, embedding_step=1., label_marker=True, use_median=False, include_unused=False, stainscale_np=None):
         """Estimate how strongly spectrum errors affect the mean unmixed value of a population, per stain.
 
-        The mean (or median) over the events of ``arcsinh(unmixed / arcsinh_cofactor)`` is computed per stain; for every
-        stain, the component with the largest absolute Jacobian of that mean is changed by +-`embedding_step` and the
-        error is the mean absolute change of the mean. No stain factors are applied.
+        The mean (or median) over the events of ``arcsinh(unmixed * stainscale / arcsinh_cofactor)`` is computed per
+        stain; for every stain, the component with the largest absolute Jacobian of that mean is changed by
+        +-`embedding_step` and the error is the mean absolute change of the mean.
 
         The Jacobian is computed for all events at once with ``jacrev``: for 110 components and 23 stains this needs
         about 1 GB of GPU memory per 100 events, so pass a subsample.
@@ -553,6 +592,8 @@ class PanelModule(Module):
             Use the median instead of the mean (the output column is still called ``"mean"``).
         include_unused : bool, default False
             Let the components not used in the panel enter the spectra.
+        stainscale_np : numpy.ndarray of shape (stain,), optional
+            Linear factor per stain applied after unmixing. Default: 1.
 
         Returns
         -------
@@ -567,11 +608,12 @@ class PanelModule(Module):
             # turn into tensors
             x = torch.as_tensor(x_np, dtype=torch.float32).to(self.device)
             embedding = torch.as_tensor(embedding_np, dtype=torch.float32).to(self.device)
+            stainscale = torch.as_tensor(stainscale_np, dtype=torch.float32).to(self.device) if stainscale_np is not None else 1.
             # function to get cluster means of unmixed
             fct_reduce = lambda x: x.mean(-2) if not use_median else x.median(-2).values
             fct_mean = lambda x, emb: fct_reduce((torch_apply_unmixing_inv(torch_invert_spectra(
                                                     self(emb, clamp_differentiable=False, mask_unused=not include_unused)
-                                                    ), x) / arcsinh_cofactor).arcsinh())
+                                                    ), x) * stainscale / arcsinh_cofactor).arcsinh())
             # get Jacobian of cluster means
             jacob = torch.func.jacrev(lambda emb: fct_mean(x, emb))(embedding)
             val = fct_mean(x, embedding)
@@ -595,7 +637,7 @@ class PanelModule(Module):
 
         return df
     
-    def get_clustermeans_withz(self, embedding, adata, key_cluster, key_layer="calibrated", cluster_reorder=True, Nmax=4000, arcsinh_cofactor=1500, embedding_step=1., label_marker=True, include_unused=True):
+    def get_clustermeans_withz(self, embedding, adata, key_cluster, key_layer="calibrated", cluster_reorder=True, Nmax=4000, arcsinh_cofactor=1500, embedding_step=1., label_marker=True, include_unused=True, apply_factors=True):
         """Mean unmixed values per cluster, with z-scores that take possible unmixing errors into account.
 
         For every cluster, up to `Nmax` random events are passed to `get_compmean_errorbars`; ``z = mean / std``
@@ -625,6 +667,9 @@ class PanelModule(Module):
         include_unused : bool, default True
             Let the components not used in the panel enter the spectra (note: the default differs from
             `get_compmean_errorbars`).
+        apply_factors : bool, default True
+            Multiply the layer by the stored channel factors and apply the stored stain factors, as in
+            `get_unmixing_resistance_fromad`. If False, the layer is used as given.
 
         Returns
         -------
@@ -634,13 +679,15 @@ class PanelModule(Module):
             z-scores, same layout.
         """
         clusters = np.unique(adata.obs[key_cluster])
+        x_all, stainscale_np = self._get_x_stainscale_fromad(adata, key_layer, apply_factors=apply_factors)
         outs = []
         for c in clusters:
-            X = adata[:,self.channels].layers[key_layer][adata.obs[key_cluster].to_numpy()==c]
+            X = x_all[adata.obs[key_cluster].to_numpy()==c]
             X = X[np.random.permutation(X.shape[0])[:Nmax]]
             outs.append(self.get_compmean_errorbars(X, embedding,
                                                     arcsinh_cofactor=arcsinh_cofactor, embedding_step=embedding_step,
-                                                    label_marker=label_marker, include_unused=include_unused))
+                                                    label_marker=label_marker, include_unused=include_unused,
+                                                    stainscale_np=stainscale_np))
         means = pd.DataFrame([o["mean"] for o in outs], index=clusters)
         zs = pd.DataFrame([o["z"] for o in outs], index=clusters)
 

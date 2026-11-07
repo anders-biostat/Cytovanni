@@ -608,7 +608,8 @@ class SpilloverCollection():
     A stain is a value of the metadata column `register_on` (e.g. the dye, or a ``fluorophore`` column that tells apart
     different products recorded in the same channel). Every stain is collected under the dye name (spectrum column)
     of its first occurrence: in each measurement, only the dye with that name is used, and only if its `register_on`
-    value is that stain.
+    value is that stain. Measurements that list the stain under another dye name are not included for it (with a
+    `SpilloverWarning`).
 
     Parameters
     ----------
@@ -636,6 +637,15 @@ class SpilloverCollection():
         self.register_on = register_on
         
         self.available_keys = pd.concat([sp.panel_meta[self.register_on] for sp in self.spillovers]).drop_duplicates().sort_values()
+        pairs = pd.concat([sp.panel_meta[self.register_on].rename("stain").rename_axis("dye").reset_index().assign(measurement=name)
+                           for name, sp in self.spillovers.items()])
+        for stain, group in pairs.groupby("stain"):
+            dye_used = self.available_keys.index[self.available_keys==stain][0]
+            skipped = group[group["dye"]!=dye_used]
+            if len(skipped)>0:
+                warnings.warn(f"Stain {stain} is collected under dye name {dye_used}; measurements "
+                              f"{skipped['measurement'].tolist()} list it as {skipped['dye'].unique().tolist()} "
+                              f"and are not included for it!", SpilloverWarning)
         
         self.single_stains = {stain: SingleStainSpilloverCollection(self.spillovers, dye, stain, self.register_on)
                               for dye, stain in self.available_keys.items()}

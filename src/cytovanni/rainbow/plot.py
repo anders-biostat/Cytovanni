@@ -88,8 +88,7 @@ def plot_GMM_llh(adata, cutoff=-2., clippercent=5, dropmaxpercent=10, ax=None, p
     Notes
     -----
     The log-likelihoods are clipped to the plot range, so the outermost bins also count the beads beyond it. The
-    cutoff lines (dashed, one per peak) are drawn with ``plt.axvline``, i.e. on the current axes, which is not
-    necessarily `ax`: call ``plt.sca(ax)`` first when passing `ax`.
+    cutoff lines (dashed, one per peak) are drawn on `ax`.
     """
     if ax is None:
         fig, ax = plt.subplots(1,1,figsize=(8,4))
@@ -106,7 +105,7 @@ def plot_GMM_llh(adata, cutoff=-2., clippercent=5, dropmaxpercent=10, ax=None, p
     
     llh_cutoff = _get_rainbow_GMM_cutoff(adata, cutoff, clippercent, dropmaxpercent)
     for i, v in enumerate(llh_cutoff):
-        plt.axvline(v, color=palette_20[i], linestyle="--")
+        ax.axvline(v, color=palette_20[i], linestyle="--")
 
 
 def plot_eval_RBInt_fit(rbint, adatas, channels=None, legendkey=None, bins=300, ylim=None):

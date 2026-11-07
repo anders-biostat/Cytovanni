@@ -350,17 +350,17 @@ class CovarianceTrilExtendableParameter(ExtendableParameter):
         return value
     
     def get_initial_trainable(self, shape, device="cpu"):
-        """Return `init_value` times the identity on the last two axes (on the CPU; `device` is not used)."""
+        """Return `init_value` times the identity on the last two axes, on `device`."""
         if len(shape)<2:
             raise ValueError(f"Covariance decomposition shape must be at least two dimensions, not {shape}!")
         elif len(shape)==2:
-            return torch.eye(*shape, dtype=torch.float32) * self.init_value
+            return torch.eye(*shape, dtype=torch.float32, device=device) * self.init_value
         else:
-            prefactor = torch.ones( list(shape)[:-2] + [1,1], dtype=torch.float32) * self.init_value
-            eye = torch.eye( *list(shape)[-2:], dtype=torch.float32).view( [1]*(len(shape)-2) + list(shape[-2:]) )
+            prefactor = torch.ones( list(shape)[:-2] + [1,1], dtype=torch.float32, device=device) * self.init_value
+            eye = torch.eye( *list(shape)[-2:], dtype=torch.float32, device=device).view( [1]*(len(shape)-2) + list(shape[-2:]) )
             return (prefactor * eye)
     
     def get_initial_trainable_mask(self, shape, device="cpu"):
-        """Return the trainable mask: ones on and below the diagonal (on the CPU; `device` is not used)."""
-        return torch.tril(torch.ones(shape, dtype=torch.float32))
+        """Return the trainable mask: ones on and below the diagonal, on `device`."""
+        return torch.tril(torch.ones(shape, dtype=torch.float32, device=device))
 

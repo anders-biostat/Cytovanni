@@ -681,8 +681,8 @@ class CytometerConfiguration_S8(CytometerConfiguration):
 
     78 fluorescence channels, linear range 4e6. Scatter channels FSC, LightLoss (Imaging) and SSC (Imaging); the
     scatter gate defaults to LightLoss (Imaging)-A and SSC (Imaging)-A, the scatter calibration fits FSC-A and
-    SSC (Imaging)-A. In `laserdict`, FSC is assigned to the Blue laser and SSC (Imaging) to a separate "Imaging" entry;
-    LightLoss (Imaging) is not assigned.
+    SSC (Imaging)-A. In `laserdict`, FSC and SSC (Imaging) are assigned to the Blue laser and LightLoss (Violet) to
+    the Violet laser; LightLoss (Imaging) is not assigned.
 
     Parameters
     ----------
@@ -712,14 +712,14 @@ class CytometerConfiguration_S8(CytometerConfiguration):
                            'UV17 (700)-A', 'UV18 (725)-A', 'UV19 (750)-A', 'UV20 (780)-A', 'UV21 (810)-A', 'UV22 (845)-A'],
                      "Violet":['V1 (420)-A', 'V2 (440)-A', 'V3 (460)-A', 'V4 (475)-A', 'V5 (500)-A', 'V6 (515)-A', 'V7 (530)-A',
                                'V8 (545)-A', 'V9 (575)-A', 'V10 (590)-A', 'V11 (605)-A', 'V12 (625)-A', 'V13 (655)-A', 'V14 (675)-A',
-                               'V15 (700)-A', 'V16 (725)-A', 'V17 (750)-A', 'V18 (780)-A', 'V19 (810)-A', 'V20 (845)-A'],
+                               'V15 (700)-A', 'V16 (725)-A', 'V17 (750)-A', 'V18 (780)-A', 'V19 (810)-A', 'V20 (845)-A'
+                              ] + ["LightLoss (Violet)-A", "LightLoss (Violet)-H", "LightLoss (Violet)-W"],
                      "Blue":['B1 (500)-A', 'B2 (515)-A', 'B3 (530)-A', 'B4 (545)-A', 'B5 (575)-A', 'B6 (590)-A', 'B7 (605)-A', 'B8 (625)-A',
                              'B9 (655)-A', 'B10 (675)-A', 'B11 (700)-A', 'B12 (725)-A', 'B13 (750)-A', 'B14 (780)-A', 'B15 (810)-A', 'B16 (845)-A'
-                            ] + ["FSC-A","FSC-H","FSC-W"],
+                            ] + ["FSC-A","FSC-H","FSC-W", "SSC (Imaging)-A","SSC (Imaging)-H","SSC (Imaging)-W"],
                      "Yellow-Green":['YG1 (575)-A', 'YG2 (590)-A', 'YG3 (605)-A', 'YG4 (625)-A', 'YG5 (655)-A', 'YG6 (675)-A', 'YG7 (700)-A',
                                      'YG8 (725)-A', 'YG9 (750)-A', 'YG10 (780)-A', 'YG11 (810)-A', 'YG12 (845)-A'],
-                     "Red":['R1 (655)-A', 'R2 (675)-A', 'R3 (700)-A', 'R4 (725)-A', 'R5 (750)-A', 'R6 (780)-A', 'R7 (810)-A', 'R8 (845)-A'],
-                     "Imaging":["SSC (Imaging)-A","SSC (Imaging)-H","SSC (Imaging)-W"]}
+                     "Red":['R1 (655)-A', 'R2 (675)-A', 'R3 (700)-A', 'R4 (725)-A', 'R5 (750)-A', 'R6 (780)-A', 'R7 (810)-A', 'R8 (845)-A']}
         
         channels_scatter = ["FSC-A","FSC-H","FSC-W",
                             "LightLoss (Imaging)-A", "LightLoss (Imaging)-H", "LightLoss (Imaging)-W",

@@ -255,15 +255,14 @@ class LinearSingleStainSpectrumFit(SingleStainSpectrumFitBase):
         clipNchannel : int, optional
             Only plot the first `clipNchannel` fluorescence channels. Ignored if `channels` is given.
         channels : list of str, optional
-            Channels to plot. Default: all fluorescence channels (or the first `clipNchannel`). The data and lines drawn
-            are those of the first ``len(channels)`` fluorescence channels, so this only gives the right plot for a
-            leading subset of the fluorescence channels.
+            Channels to plot (fluorescence channels, in any order). Default: all fluorescence channels (or the first
+            `clipNchannel`).
         """
         if channels is None:
             channels = self.channels if clipNchannel is None else self.channels[:clipNchannel]
         N = len(channels)
 
-        data = self.adata[:,self.channels].layers["raw"]
+        data = self.adata[:,list(channels)].layers["raw"]
         cmap = get_cmap(["fit","fit_T","fit_main"])
 
         fig = plt.figure(constrained_layout=True, figsize=(6*N, 6*N))
@@ -279,18 +278,18 @@ class LinearSingleStainSpectrumFit(SingleStainSpectrumFitBase):
                 
                 xlim, ylim = ax.get_xlim(), ax.get_ylim()
 
-                slope = self.NxN_slope.loc[self.channels[j], self.channels[i]]
-                intercept = self.NxN_intercept.loc[self.channels[j], self.channels[i]]
+                slope = self.NxN_slope.loc[channels[j], channels[i]]
+                intercept = self.NxN_intercept.loc[channels[j], channels[i]]
                 xord = np.sort(x)
                 ax.plot(xord, xord * slope + intercept, color=cmap["fit"], linewidth=4, alpha=.8)
 
-                slope = self.NxN_slope_T.loc[self.channels[j], self.channels[i]]
-                intercept = self.NxN_intercept_T.loc[self.channels[j], self.channels[i]]
+                slope = self.NxN_slope_T.loc[channels[j], channels[i]]
+                intercept = self.NxN_intercept_T.loc[channels[j], channels[i]]
                 xord = np.sort(x)
                 ax.plot(xord, xord * slope + intercept, color=cmap["fit_T"], linewidth=4, alpha=.8)
 
-                slope = self.NxN_slope_imp.loc[self.channels[j], self.channels[i]]
-                intercept = self.NxN_intercept_imp.loc[self.channels[j], self.channels[i]]
+                slope = self.NxN_slope_imp.loc[channels[j], channels[i]]
+                intercept = self.NxN_intercept_imp.loc[channels[j], channels[i]]
                 xord = np.sort(x)
                 ax.plot(xord, xord * slope + intercept, color=cmap["fit_main"], linewidth=4, alpha=.8)
                 

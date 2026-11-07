@@ -117,6 +117,18 @@ A fix can change results relative to one of these and not the other; both are st
 | R2d-D6 | PMT fit with fixed laser exponent needed 3 points | no for >= 3 voltages (same least-squares optimum); 2 voltages: crash -> works | `PMTExponentFitter(fit_laser_exponent=False)` |
 | R2d-D7 | `UnmxErrorExclusionMultiplier` crashed in float64 | no (crash -> works; float32 identical) | `.double()` models with a non-empty exclusion multiplier |
 | R2d-D8 | `get_spectra_embedding` crashed for an all-fixed panel | no (crash -> empty embedding) | PCA panels without any components |
+| R3b-B1 | `fix_sample_bug` dropped the $PnS labels | only the written .fcs ($PnS kept now) | repaired files read via `readfcs_dataframe` or other tools ($PnN reads unchanged) |
+| R3b-B2 | `read_folder_timestamps` sorted by the $DATE string without UTC | row order of the table only | folders where some file lacks $DATE/$BTIM |
+| R3b-B3 | `CovarianceTrilExtendableParameter` ignored `device` | no (crash -> works) | `extend()` on the GPU (class unused) |
+| R3b-B4 | `plot_eval_NxN(datashader=True)` showed nothing without savepath | no (plot only) | inline datashader plots |
+| R3b-B5 | `plot_GMM_llh` drew the cutoffs on the current axes | no (plot only) | `plot_GMM_llh(ax=...)` with another current axes |
+| R3b-B6 | voltage setting: no linear peak gave target 0 silently | no (target 0/inf error -> NaN + warning) | `get_config_from_rainbow_reference` with a saturated channel |
+| R3b-B7 | `DummyTransformer` not usable with `OverlapFitModel` | no (crash -> identity works) | `DummyTransformer` |
+| R3b-B8 | `SpilloverCollection` skipped a stain under another dye name silently | no (warning added; collection unchanged) | stains recorded under several dye names |
+| R3b-B9 | `LinearSingleStainSpectrumFit.plot_NxN` plotted the wrong channels for a subset | no (plot only) | `plot_NxN(channels=...)` not a leading subset |
+| R3b-B10 | `anndata_concat(permute)`, `anndata_subsample`, `df_subsample` selected by name | no for unique names (same draws); crash/extra rows -> works | non-unique event names / index |
+| R3b-B11 | S8 scatter channels' laser assignment | no (plot colours, `channel_laser_key`) | `CytometerConfiguration_S8` |
+| R3b-U3 | panel `*_fromad` diagnostics ignored the fitted channel/stain factors | yes, diagnostics on AnnData with stored standardisation parameters | `get_unmixing_resistance_fromad`, `get_grouped_jac(_single)_fromad`, `get_clustermeans_withz` |
 
 Entry format: see the review notes (todo/00_CONVENTIONS.md "Fix log" in the review project).
 
@@ -1390,3 +1402,77 @@ Caller check for all items: cytovanni_reproducibility figures/ + processing/ and
 - Now: an empty float Series. Effect on results: none (crash -> works). Affected analyses: none.
 - Test: repro_numerics.py dummy_pca_spectrum_embedding.
 
+## R3b (bugs found while writing the R3 docstrings, branch review/R3b-bugs; approvals in todo/R3_bugs_approval.md)
+
+All approved by the user 2026-11-07 ("B7, extend it so it functions as the identity. The other Bs sound fine." /
+"U3 a"; B11 from the user's answer "fsc ssc is blue, the (violet) ones are violet"). Tests: jobs/r3b_verify/v_r3b.py
+in the review project (11/11 PASS, GPU job; B9 not run, code only).
+
+### R3b-B1 `fix_sample_bug` keeps the $PnS labels
+- Where: io.utils.fix_sample_bug. What was wrong: written with `overwrite_pns=False`, so the repaired file had no $PnS.
+- Now: every channel gets its original $PnS ("" where none). Effect on results: none for `readfcs_sample` (uses
+  $PnN); `readfcs_dataframe` column names of repaired files are the stain labels again.
+- Affected analyses: files repaired with `fix_A3_HW_bug` before this fix lack $PnS (re-run the repair if needed).
+
+### R3b-B2 `read_folder_timestamps` order without UTC
+- Where: io.utils.read_folder_timestamps. What was wrong: if any file had no UTC, the whole table was sorted by the
+  $DATE string ("01-FEB-2024" before "05-JAN-2023").
+- Now: sorted by UTC; files without UTC last (by $DATE/$BTIM strings). Effect: row order only. Affected: none known.
+
+### R3b-B3 `CovarianceTrilExtendableParameter` on the GPU
+- Where: torch.parameter.CovarianceTrilExtendableParameter. Now the init helpers create tensors on `device`.
+- Effect: crash -> works. Affected: none (class not used by default).
+
+### R3b-B4 `plot_eval_NxN` returns the datashader image
+- Where: ref.plot.plot_eval_NxN. Now returns `base_plot_NxN_ds(...)` (the image, None with savepath). Plot only.
+
+### R3b-B5 `plot_GMM_llh` draws the cutoffs on `ax`
+- Where: rainbow.plot.plot_GMM_llh (`ax.axvline` instead of `plt.axvline`). Plot only.
+- Affected: cytovanni_reproducibility processing/gosling/lib/gosling.py:295 `plt.sca` workaround no longer needed (R7).
+
+### R3b-B6 voltage setting with a saturated channel
+- Where: rainbow.setvolt.get_config_from_rainbow_reference, get_voltages_from_rainbow.
+- What was wrong: if no peak of a channel was below the linear limit, its target became 0 (peak 1) silently; the
+  voltage step then gave voltage 0 and error inf.
+- Now: CytovanniWarning naming the channels, target NaN; 'target' and 'voltage_target' are nullable integers (Int64)
+  instead of int, so that channel gets NaN factor/error/voltage. Effect: only for such channels; dtype change of
+  the two columns (values unchanged otherwise). Affected: none known.
+
+### R3b-B7 `DummyTransformer` as working identity
+- Where: ref.model_transformer.DummyTransformer. Now: `from_data(channels, stains=None)` (stains default to the
+  channels, one per channel, else ValueError), `stain_marker_name`, `loss_use_stain_mask`, `export(include_history)`,
+  `standardise(..., evl)`. Works with `OverlapFitModel` for distances, `add_ad_standardised` (not `name_by='marker'`),
+  save/load and extend; nothing to fit. Breaking: `from_data` no longer accepts different stain and channel counts.
+- Effect: crash -> works. Affected: none (unused).
+
+### R3b-B8 `SpilloverCollection` warns about a stain under several dye names
+- Where: spill.collection.SpilloverCollection.__init__. Collection unchanged (first dye name wins); a SpilloverWarning
+  lists the measurements that are not included for that stain. Full support -> R5. Affected: none for HD7.
+
+### R3b-B9 `LinearSingleStainSpectrumFit.plot_NxN` with a channel subset
+- Where: spill.stainfit.LinearSingleStainSpectrumFit.plot_NxN: data and fitted lines are looked up by channel name.
+  Plot only.
+
+### R3b-B10 subsampling by position
+- Where: utils.misc.anndata_concat(permute=True), anndata_subsample, df_subsample.
+- What was wrong: events/rows selected by name: non-unique names raised (AnnData) or returned extra rows (DataFrame).
+- Now: by position. Effect: identical draws for unique names (same numpy random calls); works for non-unique.
+- Affected: none (the author's calls use make_unique=True).
+
+### R3b-B11 S8 scatter channels' laser
+- Where: utils.config.CytometerConfiguration_S8 `laserdict`: FSC and SSC (Imaging) -> Blue, LightLoss (Violet) ->
+  Violet; the separate "Imaging" entry is gone; LightLoss (Imaging) stays unassigned ('unknown', to confirm).
+- Effect: `channel_laser_key` (plot colours, per-laser grouping). The S8 calibration figure (figures/plots_calib
+  `s8_prepare`/`plot_s8`) plots only channels with a wavelength, so the scatter channels are not in it.
+
+### R3b-U3 panel `*_fromad` diagnostics apply the fitted factors
+- Where: ref.panel.PanelModule.get_unmixing_resistance_fromad, get_grouped_jac_fromad, get_grouped_jac_single_fromad,
+  get_clustermeans_withz (new helper `_get_x_stainscale_fromad`; get_compmean_errorbars gains `stainscale_np`).
+- What was wrong: they unmixed `layers[key_layer]` without the channel factors (`var['sfm_calibration_factor']`) and,
+  except get_grouped_jac_single_fromad, without the stain factors (`varm['sfm_stain_factor']`); the author's own
+  add_unmixing_stability (hd7-03 cell 317) applies both.
+- Now: `apply_factors=True` (default) applies both where present in the AnnData; `apply_factors=False` = old behaviour.
+  Verified equal to the manual computation (R, Jacobian, cluster means).
+- Effect on results: yes, these diagnostics on AnnData objects that carry the standardisation parameters.
+- Affected analyses: hd7-03-spectra-integration.ipynb cells 94, 96 (R, grouped Jacobian) and 120-257
+  (`get_grouped_jac_single_fromad`): values change if re-run (diagnostic plots only, no downstream results).

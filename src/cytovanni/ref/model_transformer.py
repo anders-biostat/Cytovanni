@@ -77,7 +77,9 @@ class DummyTransformer(Module):
     A transformer has ``NAME``, ``channels``, ``stains``, ``stain_marker_name``, ``plot_auxloss_dct`` (aux loss key
     to plot label), the methods below, and maps data of shape (events, channel) with batch indices ``bidx`` (dict
     of batch key to torch.Tensor of int, shape (events,) or (1,)) to standardised data of shape (events, stain).
-    Create it with `from_data`. This class itself returns its input unchanged and has no trainable parameters.
+    Create it with `from_data`. This class itself returns its input unchanged (stains = channels) and has no
+    trainable parameters, so it works with `OverlapFitModel` for evaluation (distances between batches without
+    standardisation, `add_ad_standardised`, export and saving), but `OverlapFitModel.fit` has nothing to fit.
     """
     NAME = "dummy"
     
@@ -87,30 +89,45 @@ class DummyTransformer(Module):
         self.param_dummy = Parameter(torch.tensor([], dtype=torch.float32), requires_grad=False)
     
     @classmethod
-    def from_data(cls, channels, stains, *args, **kwargs):
-        """Create the transformer for the given channels and stains.
+    def from_data(cls, channels, stains=None, *args, **kwargs):
+        """Create the identity transformer for the given channels.
 
         Parameters
         ----------
         channels : list of str
             Input channels.
-        stains : list of str
-            Output stains.
+        stains : list of str, optional
+            Names of the output columns, one per channel (the data are passed on unchanged). Default: `channels`.
         *args, **kwargs
             Ignored.
 
         Returns
         -------
         DummyTransformer
+
+        Raises
+        ------
+        ValueError
+            If `stains` does not have one name per channel.
         """
+        stains = list(channels) if stains is None else list(stains)
+        if len(stains)!=len(channels):
+            raise ValueError(f"DummyTransformer is the identity, it needs one stain per channel "
+                             f"({len(stains)} stains, {len(channels)} channels)!")
         dt = cls()
-        dt.channels = channels
+        dt.channels = list(channels)
         dt.stains = stains
+        dt.stain_marker_name = stains
         
         return dt
     
-    def export(self):
+    def export(self, include_history=True):
         """Export to a dict (channels and stains).
+
+        Parameters
+        ----------
+        include_history : bool, default True
+            Ignored (there is no parameter history).
 
         Returns
         -------
@@ -171,7 +188,12 @@ class DummyTransformer(Module):
         """
         return x
     
-    def standardise(self, x, bidx):
+    @property
+    def loss_use_stain_mask(self):
+        """Stains used in the loss: torch.Tensor of bool, shape (stain,), all True here."""
+        return torch.tensor([True]*len(self.stains), dtype=bool, device=self.device)
+
+    def standardise(self, x, bidx, evl=False):
         """Return the standardised, unmixed intensities (the input unchanged here).
 
         Parameters
@@ -180,6 +202,8 @@ class DummyTransformer(Module):
             Input data (linear scale).
         bidx : dict of str to torch.Tensor
             Batch indices per batch key.
+        evl : bool, default False
+            Ignored (evaluation mode of the real transformers).
 
         Returns
         -------
