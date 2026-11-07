@@ -235,5 +235,6 @@ merged.
 
 ### R2-K6 `scatter_calibration` NameError
 - **Commit:** R2-rainbow. **Approval:** K6. **Where:** `rainbow/rbim_scatter.py`, `from_data`.
-- **What was wrong:** an explicit `scatter_calibration` referenced the undefined `scatter_calibrate`.
+- **What was wrong:** an explicit `scatter_calibration` referenced the undefined `scatter_calibrate`, and the result
+  of `check_scatter_calibration` (None) was assigned to `scatter_calibration`. The check is now only called.
 - **Effect on results:** none (crash -> works). **Action:** nothing. **Test:** v_all.py K6.

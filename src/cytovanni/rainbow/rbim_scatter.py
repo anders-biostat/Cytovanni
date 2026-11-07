@@ -44,7 +44,7 @@ class RainbowScatterCalibrationModule(Module):
         if scatter_calibration is None:
             scatter_calibration = adatas[0].uns["cytoconfig"].get_default_scatter_calibration()
         else:
-            scatter_calibration = adatas[0].uns["cytoconfig"].check_scatter_calibration(scatter_calibration)
+            adatas[0].uns["cytoconfig"].check_scatter_calibration(scatter_calibration)
         
         channels = np.asarray(list(scatter_calibration.keys()))
         for ad in adatas:
