@@ -21,6 +21,11 @@ class ExtendableParameter(Module):
             :param allow_grad: bool. Whether it should be trainable.
             
             :param axis_norm: int, None. Normal parameter if None, else normed to mean zero along axis axis_norm.
+                The mean runs over `param_mask_meannorm` (all ones at construction; entries added by `extend` without
+                keep_prior_trainable_structure are excluded). Entries without training data (e.g. a (batch, channel)
+                combination never measured) are not excluded automatically: they keep their raw value and still enter
+                the mean, so the common absolute unit (the zero point) depends on them. Factors between entries with
+                data are not affected.
         """
         super().__init__()
         
