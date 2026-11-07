@@ -29,6 +29,7 @@ dependencies = [
     "scipy",
     "scikit-learn",
     "joblib",
+    "tzdata",  # zoneinfo data for CytometerConfiguration.timezone, see FIXLOG R2-F1
     "statsmodels",
     "tqdm",
     "Pillow",

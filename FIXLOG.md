@@ -49,7 +49,7 @@ A fix can change results relative to one of these and not the other; both are st
 | R2-K1 | `raise NotImplemented` (ref/factor.py) | no (TypeError -> NotImplementedError) | unknown `init` |
 | R2-K2 | `incorporate_stain_scaling` lost the class / `cls_smp`; silent clipping | no (warning added) | subclasses, custom smp, `max_abslogstain` |
 | R2-K4 | `fit_factor_Sinkhorn_grouped` without shared samples | no (clear error, warning for unconstrained batches) | no sample in two batches |
-| R2-C15b | dependencies: `pandas<3` pinned, `joblib` declared | no | installation |
+| R2-C15b | dependencies: `pandas<3` pinned, `joblib` and `tzdata` declared | no | installation |
 | R2-C3 | `SpilloverMeasurement.from_custom(abort_inconsistent=False)` TypeError | no (crash -> warning) | inconsistent `set_hash` + `abort_inconsistent=False` |
 | R2-C5 | single-stain file regex not escaped / not anchored | yes, where channel names contain regex characters: those stains were "missing", now found | channel names with `( ) . + ...` (FACSAria "B1 (525)", S8); `collect_bead_controls_regularflow`, `make_AutoSpill_fcs_config` |
 | R2-C6 | `warn_missing` and `filename_regex` ignored | yes, custom `filename_regex` callers (the regex is now used) | `collect_bead_controls_spectralflow(filename_regex=...)`; `collect_bead_controls_regularflow(warn_missing=False)` (warnings only) |
@@ -61,6 +61,27 @@ A fix can change results relative to one of these and not the other; both are st
 | R2-E10 | `_find_single_stain` on a folder without .fcs files | no (crash -> "not found") | empty single-stain folder |
 | R2-E20 | `plot_test_spectra_reconstruction`: log base, axis, row order | plot + returned errors, if rows not in panel order | `PanelConfiguration.plot_test_spectra_reconstruction` |
 | R2-F4 | internal column `channnel_name` -> `channel_name` | no (not in the returned frame) | none |
+| R2-A5 | geomloss event weights normalised per side, one-sided weights no longer dropped | yes, models fitted with event weights (vs publish and repro copy) | `OverlapFitModel(markerweight=RareMarkerWeights or custom)` with `DDIST_mode` "sinkhorn" (default) / "hausdorff"; direct `GeomSampleLoss(X, Y, wx, wy)` calls with weights not summing to 1 or one side None |
+| R2-D5 | `CustomMultivariateNormal.rsample` ignored `sample_shape` | no (wrong shape -> right shape) | `rsample(shape)` / `sample(shape)` with non-empty shape |
+| R2-E2 | `apply_unmixing_inv` error message NameError | no (error message only) | non-DataFrame inverted spectra |
+| R2-E3 | `label_axis_ArcSinh` crash on narrow ranges | no (crash -> works) | axis ranges that contain only one major tick (e.g. a narrow range around 0) |
+| R2-E4 | `anndata_subsample`/`df_subsample` ignored `copy` | no values; small inputs now return a copy by default | input with <= N events and default `copy=True` (previously the input object itself) |
+| R2-E5 | mutable default arguments shared between configs | only if a config's dicts were mutated after construction | `CytometerConfiguration` default `laserdict`, `replace_channelname_dict`, `default_scatter_calibrate`; `readfcs_sample`/`writefcs`/`readfcs_rainbow_sample` dict/list defaults (not mutated, cleanup) |
+| R2-E9 | `read_folder_timestamps` on a folder without .fcs files | no (KeyError -> empty frame) | empty folder |
+| R2-E12 | `pdsave_collect` swallowed every exception | no (silent wrong object -> error) | corrupted pdsave tuples in saved models |
+| R2-E15 | `base_plot_NxN*`: dead `dask` branch, transposed `colors_df`, unused `label_arcsinh` | plot colours only, with `colors_df` in `base_plot_NxN` | `base_plot_NxN(colors_df=...)` (now `colors_df.loc[xkey, ykey]` as documented); `dask=`/`label_arcsinh=` arguments removed (TypeError if passed) |
+| R2-E16 | `get_asinh_single_CV_varcorr` NaN for negative corrected variance | yes: NaN -> 0 (with warning) | error variance > observed variance |
+| R2-E18 | `fix_sample_bug(delete_spill=True)` kept `$SPILLOVER` | yes (written .fcs no longer carries $SPILLOVER) | source files with `$SPILLOVER` (instead of `$SPILL`) |
+| R2-E19 | unused deprecated `torch.cuda.amp` import | no | import-time FutureWarning only |
+| R2-E21 | `apply_df` missing on LineGate, CutoffUnmxGate, UnmxMinGate, CombinedGate | no (AttributeError -> works) | `make_calibrated_fcs(gates=[...])` with these gates |
+| R2-K1 (geomloss) | `raise NotImplemented(...)` -> `NotImplementedError` | no (error type only) | `GeomSampleLoss(mode)` with an unknown mode |
+| R2-K3 | `gate_scatter_bead_sample(**gating_kwargs)` keyword clash | no for working calls (TypeError -> override works) | `gating_kwargs` naming a default the function sets (`final_density_cutoff`, `bound_density_mad_factor`, ...) |
+| R2-K5 | `add_adata_unmixed` ignored `layer` | yes, default callers: unmixing now from `layer="raw"` (the documented default) instead of hard-coded "calibrated" | every call; callers wanting calibrated data must pass `layer="calibrated"` |
+| R2-K7 | invalid escape `\D` in utils/rate.py docstring | no | SyntaxWarning at import |
+| R2-F1 | FCS start time read in the instrument time zone (`CytometerConfiguration.timezone`) | yes, only where the reading machine is not on Europe/Berlin time (UTC, uid shift by the offset); none for machines in Germany | `readfcs_sample` / `readfcs_rainbow_sample` / `read_fcs_timestamp` / `read_folder_timestamps` on a machine/container whose local time is not Europe/Berlin (incl. containers without zoneinfo, TZ falls back to UTC) |
+| R2-F2 | config export keeps class, hash function, timezone, subclass extras | no for existing files; files written now re-create the subclass | `to_dictionary`/`write_json`/`write_*_h5ad` + import; configs with a custom `fct_hash_settings` now raise on import unless registered |
+| R2-D4 | batched eccentricity used the padded height for the bottom-edge test | yes: eccentricity/deform angle of cells cut off at their own bottom edge -> NaN (as the single version) | `add_S8_singlet_maskfeatures` / `calculate_batched_eccentricity_angle` with masks of different heights (arges image containers) |
+| R2-F3 | `add_S8_singlet_maskfeatures` kept, duck-typed `imgcont` documented | no (docstring) | arges/lucy: see todo/ARGES_LUCY.md |
 
 Entry format: see the review notes (todo/00_CONVENTIONS.md "Fix log" in the review project).
 
@@ -533,3 +554,281 @@ E20 allows a subset of the panel's dyes (`allow_missing=True`).
   `make_AutoSpill_fcs_config` (:33-38).
 - **What was wrong:** misspelt internal column. Now `channel_name`; it is not part of the returned frame.
 - **Effect on results:** none. **Affected analyses:** none. **Action:** nothing. **Test:** v_all.py F4.
+
+### R2 core group (torch, utils, io, gating)
+- Commit: R2-core (review/R2-bugs), 2026-11-07. Checks: jobs/r2_verify/v_all.py for the IDs below (all NOT REPRODUCED except F3, CONFIRMED by design), f_core.py (all PASS).
+- Dependency: `tzdata` declared in pyproject (F1 uses `zoneinfo`; containers without /usr/share/zoneinfo need the Python package; it was already installed via pandas).
+- Repro copy: same code as publish for every item, except K5 (hard-coded `layer="integrated"`).
+
+### R2-A5 geomloss event weights normalised per side
+- Commit: R2-core (review/R2-bugs), 2026-11-07. Approval: todo/R2_approval.md item A5.
+- Where: torch.geomloss.GeomSampleLoss.forward (torch/geomloss.py:41-47 before the fix).
+- What was wrong: the weights were passed to geomloss as given. With `reach=1` the loss is unbalanced, so total mass
+  matters; `RareMarkerWeights` sums to N (correct for MMD), and the same data gave 70.9 instead of 0.13. If only one side
+  had weights, both were silently dropped.
+- Now: each weight vector is divided by its sum (also batched, `(B, N)` weights along the last axis, as used by
+  `DDIST_separate`); a missing side gets uniform 1/N; both None is the unweighted loss as before.
+- Affected when: `OverlapFitModel` with a `markerweight` that returns weights (`RareMarkerWeights` or custom), and
+  `DDIST_mode` "sinkhorn" (default) or "hausdorff"; direct weighted `GeomSampleLoss` calls with weights not summing to 1
+  or with one side None. Not affected: `DummyWeights` (default, returns None), MMD, and the `ref/factor.py` Sinkhorn fits
+  (they never pass weights).
+- Effect on results: changes outputs for those fits: the DDIST loss values and therefore fitted transformer parameters
+  (relative weight of the sinkhorn term changes by ~N-fold; check: unweighted 0.1306, sum-N weights now 0.1306 instead of
+  70.94). Same vs publish and vs repro copy (identical code there).
+- Affected analyses: none found in cytovanni_reproducibility (no `markerweight`, `RareMarkerWeights`, `GeomSampleLoss` or
+  `DDIST_mode` use in processing/ or figures/). Saved OverlapFitModels fitted with markerweight + sinkhorn/hausdorff carry
+  the old behaviour.
+- Action: re-fit models trained with markerweight + sinkhorn/hausdorff, if any.
+- Test: jobs/r2_verify/v_all.py A5; jobs/r2_verify/f_core.py "A5".
+
+### R2-D5 `CustomMultivariateNormal.rsample` ignored `sample_shape`
+- Commit: R2-core (review/R2-bugs), 2026-11-07. Approval: todo/R2_approval.md item D5.
+- Where: torch.dist.CustomMultivariateNormal.rsample (torch/dist.py:48).
+- What was wrong: the noise had shape `loc.shape`, so `rsample((5,))` returned one sample.
+- Now: noise of shape `self._extended_shape(sample_shape)`, as in torch's MultivariateNormal.
+- Affected when: `rsample`/`sample` with a non-empty shape on this distribution (also through `ASinhMultivariateNormal`
+  with precomputed precision logdet). No package code samples from it.
+- Effect on results: none for existing outputs (wrong shape -> right shape).
+- Affected analyses: none found.
+- Action: nothing.
+- Test: jobs/r2_verify/v_all.py D5; f_core.py "D5" (shape and covariance).
+
+### R2-E2 `apply_unmixing_inv` error message NameError
+- Commit: R2-core (review/R2-bugs), 2026-11-07. Approval: todo/R2_approval.md item E2.
+- Where: utils.unmx.apply_unmixing_inv (utils/unmx.py:50).
+- What was wrong: the type check's message referred to the undefined `spectra`, so a NameError replaced the ValueError.
+- Affected when: inverted spectra passed as non-DataFrame.
+- Effect on results: none (error message only).
+- Affected analyses: none (refjoh.py:122 and sarcoma unmx_error.py:14 pass DataFrames).
+- Action: nothing.
+- Test: jobs/r2_verify/v_all.py E2.
+
+### R2-E3 `label_axis_ArcSinh` crash on narrow ranges
+- Commit: R2-core (review/R2-bugs), 2026-11-07. Approval: todo/R2_approval.md item E3.
+- Where: utils.misc.label_axis_ArcSinh (utils/misc.py:269).
+- What was wrong: with a single major tick (e.g. only 0) `np.hstack([])` raised.
+- Now: no minor ticks in that case. arges/lucy: see todo/ARGES_LUCY.md (signature unchanged).
+- Affected when: axis ranges narrow enough to contain only one power of ten.
+- Effect on results: none (crash -> works); plots that worked are unchanged.
+- Affected analyses: figures/plots_liechti/lib/plots.py:150, figures/plots_batchintHD7/lib/problems.py:235-248,342 use it
+  (they worked, so unchanged).
+- Action: nothing.
+- Test: jobs/r2_verify/v_all.py E3; f_core.py "E3".
+
+### R2-E4 `anndata_subsample`/`df_subsample` ignored `copy`
+- Commit: R2-core (review/R2-bugs), 2026-11-07. Approval: todo/R2_approval.md item E4.
+- Where: utils.misc.anndata_subsample, df_subsample (utils/misc.py:309-325).
+- What was wrong: inputs with <= N rows were returned as the input object even with `copy=True`.
+- Now: `copy=True` always returns a new object; `copy=False` returns the input when small, or (AnnData) a view.
+- Affected when: inputs with <= N events whose result was later modified in place (the modification reached the input).
+- Effect on results: none for values; only aliasing.
+- Affected analyses: none found (not called in cytovanni_reproducibility).
+- Action: nothing.
+- Test: jobs/r2_verify/v_all.py E4; f_core.py "E4".
+
+### R2-E5 mutable default arguments shared between instances
+- Commit: R2-core (review/R2-bugs), 2026-11-07. Approval: todo/R2_approval.md item E5.
+- Where: utils.config.CytometerConfiguration.__init__ (utils/config.py:76-87); io.utils.readfcs_sample (io/utils.py:147),
+  io.utils.writefcs (io/utils.py:297), io.rainbow.readfcs_rainbow_sample.
+- What was wrong: the default `laserdict`, `replace_channelname_dict` and `default_scatter_calibrate` dicts were stored
+  directly, so all instances using the default (and the caller's dict) shared one object.
+- Now: the config stores copies (deep copy for the dicts of lists); the io functions use `None` defaults.
+- Affected when: code that mutated one config's dicts (the edit appeared in every other config using the default).
+- Effect on results: none unless such mutation happened.
+- Affected analyses: none found.
+- Action: nothing.
+- Test: jobs/r2_verify/v_all.py E5; f_core.py "E5".
+
+### R2-E9 `read_folder_timestamps` on an empty folder
+- Commit: R2-core (review/R2-bugs), 2026-11-07. Approval: todo/R2_approval.md item E9.
+- Where: io.utils.read_folder_timestamps (io/utils.py:280).
+- What was wrong: without .fcs files the frame had no "UTC" column -> KeyError.
+- Now: the frame is created with its columns; an empty folder gives an empty frame.
+- Affected when: folder without .fcs files.
+- Effect on results: none (crash -> empty result).
+- Affected analyses: none found (not called in cytovanni_reproducibility).
+- Action: nothing.
+- Test: jobs/r2_verify/v_all.py E9; f_core.py "E9/E12".
+
+### R2-E12 `pdsave_collect` swallowed every exception
+- Commit: R2-core (review/R2-bugs), 2026-11-07. Approval: todo/R2_approval.md item E12.
+- Where: torch.pdsave.pdsave_collect (torch/pdsave.py:39).
+- What was wrong: any error while rebuilding a pandas object was caught and the raw tuple returned silently.
+- Now: only tuples whose first element is a `"_pdsave_expanded_*"` string are treated as expansions (all other values,
+  including ordinary tuples, pass through as before); errors while rebuilding them propagate.
+- Affected when: corrupted/inconsistent pdsave tuples in exported models.
+- Effect on results: none for valid data (silent wrong object -> error).
+- Affected analyses: none found.
+- Action: nothing.
+- Test: jobs/r2_verify/v_all.py E12 (check adapted: the error now propagates); f_core.py "E9/E12".
+
+### R2-E15 `base_plot_NxN*`: dask branch, `colors_df` transposed, `label_arcsinh`
+- Commit: R2-core (review/R2-bugs), 2026-11-07. Approval: todo/R2_approval.md item E15.
+- Where: utils.nxn.base_plot_NxN_ds (utils/nxn.py:165, 227), utils.nxn.base_plot_NxN (utils/nxn.py:39, 69).
+- What was wrong: `dask` was forced to False (dead branch, and an undeclared dependency); `base_plot_NxN` indexed
+  `colors_df.loc[ykey, xkey]` while the docstring and the `_ds` version use `[xkey, ykey]`; `label_arcsinh` did nothing.
+- Now: `dask` argument and branch removed (joblib only, declared by K8); `colors_df.loc[xkey, ykey]` in both;
+  `label_arcsinh` argument removed. Breaking: passing `dask=` or `label_arcsinh=` raises TypeError.
+- Affected when: `base_plot_NxN(colors_df=...)` with an asymmetric `colors_df` (colours of the upper triangle panels).
+- Effect on results: plot colours only.
+- Affected analyses: none found (no `base_plot_NxN*`, `colors_df`, `dask` use in cytovanni_reproducibility; ref/plot.py
+  calls without these arguments).
+- Action: nothing.
+- Test: jobs/r2_verify/v_all.py E15.
+
+### R2-E16 `get_asinh_single_CV_varcorr` NaN for negative corrected variance
+- Commit: R2-core (review/R2-bugs), 2026-11-07. Approval: todo/R2_approval.md item E16.
+- Where: utils.evl.get_asinh_single_CV_varcorr (utils/evl.py:270-300).
+- What was wrong: if the mean error variance exceeded the observed variance, `sqrt` of a negative number gave NaN silently.
+- Now: clamped to 0 with a CytovanniWarning (CV 0), as `get_asinh_paired_CV_varcorr` already clamps (there without a warning).
+- Affected when: error variance > observed variance.
+- Effect on results: those CVs change from NaN to 0.
+- Affected analyses: figures/plots_batchintHD7/lib/cv.py:36 defines an alias, but it is not called anywhere (none).
+- Action: nothing.
+- Test: jobs/r2_verify/v_all.py E16; f_core.py "E16".
+
+### R2-E18 `fix_sample_bug(delete_spill=True)` kept `$SPILLOVER`
+- Commit: R2-core (review/R2-bugs), 2026-11-07. Approval: todo/R2_approval.md item E18.
+- Where: io.utils.fix_sample_bug (io/utils.py:322).
+- What was wrong: only flowkit's `spill` key was removed; `$SPILLOVER` (key `spillover`) survived.
+- Now: both are removed.
+- Affected when: source files that carry `$SPILLOVER`.
+- Effect on results: the rewritten .fcs no longer contains `$SPILLOVER` (software reading it no longer compensates).
+- Affected analyses: none found (not called in cytovanni_reproducibility). Files written earlier with `delete_spill=True`
+  may still carry `$SPILLOVER`.
+- Action: re-write such files if they are compensated downstream.
+- Test: jobs/r2_verify/v_all.py E18.
+
+### R2-E19 unused deprecated `torch.cuda.amp` import
+- Commit: R2-core (review/R2-bugs), 2026-11-07. Approval: todo/R2_approval.md item E19.
+- Where: torch/utils.py:2 (plus the commented-out decorators and their docstring note).
+- Effect on results: none.
+- Affected analyses: none. Action: nothing. Test: jobs/r2_verify/v_all.py E19.
+
+### R2-E21 `apply_df` for LineGate, CutoffUnmxGate, UnmxMinGate, CombinedGate
+- Commit: R2-core (review/R2-bugs), 2026-11-07. Approval: todo/R2_approval.md item E21.
+- Where: gating/line.py, gating/unmx.py, gating/utils.py.
+- What was wrong: no `apply_df`, so `make_calibrated_fcs(gates=[...])` with these gates raised AttributeError.
+- Now: `apply_df(df)` like the existing PolygonGate/MinMaxGate versions (boolean array; df columns are what the gate
+  gates on). LineGate: columns x, y (same scaling as `apply`; distance code shared via `get_distance_points`);
+  CombinedGate: all gates' `apply_df`; CutoffUnmxGate/UnmxMinGate: df holds the unmixed data (what `ad.obsm[key]` holds).
+  Note: the raw frame in `make_calibrated_fcs` has no unmixed columns, so the two unmx gates raise KeyError there.
+- Affected when: these gates passed to `apply_df` callers.
+- Effect on results: none (crash -> works).
+- Affected analyses: none found.
+- Action: nothing.
+- Test: jobs/r2_verify/v_all.py E21; f_core.py "E21" (apply_df == apply).
+
+### R2-K1 (geomloss part) `raise NotImplemented` -> `NotImplementedError`
+- Commit: R2-core (review/R2-bugs), 2026-11-07. Approval: todo/R2_approval.md item K1.
+- Where: torch.geomloss.GeomSampleLoss.__init__ (torch/geomloss.py:34). (ref/factor.py part: lead.)
+- What was wrong: `NotImplemented` is not callable -> TypeError instead of the intended error.
+- Effect on results: none (error type only). Affected analyses: none. Action: nothing.
+- Test: jobs/r2_verify/v_all.py K1; f_core.py "A5" (unknown mode).
+
+### R2-K3 `gate_scatter_bead_sample(**gating_kwargs)` keyword clash
+- Commit: R2-core (review/R2-bugs), 2026-11-07. Approval: todo/R2_approval.md item K3.
+- Where: gating.bead.gate_scatter_bead_sample (gating/bead.py:37-49).
+- What was wrong: kwargs naming a setting the function passes itself (e.g. `final_density_cutoff`) raised
+  "got multiple values for keyword argument".
+- Now: the defaults (per robust/very_robust branch, plus verbose/name_x/name_y/trim_beadmode) are put in a dict and
+  `gating_kwargs` override them.
+- Affected when: such kwargs. Calls that worked before get identical arguments.
+- Effect on results: none for working calls.
+- Affected analyses: refmoh.py:63, refjoh.py:64, instrument_rainbow pipeline.py:32, gosling.py:350 (`main_tile`,
+  `merge_tiles_min_saddle`: no clash) -> unchanged.
+- Action: nothing.
+- Test: jobs/r2_verify/v_all.py K3; f_core.py "K3".
+
+### R2-K5 `add_adata_unmixed` ignored `layer`
+- Commit: R2-core (review/R2-bugs), 2026-11-07. Approval: todo/R2_approval.md item K5.
+- Where: utils.unmx.add_adata_unmixed (utils/unmx.py:90).
+- What was wrong: the data was always taken from layer "calibrated" (repro copy: "integrated"), whatever `layer` said.
+- Now: from `layer`. The signature default stays `layer="raw"` (documented), so **default callers change**: they now unmix
+  the raw layer instead of the calibrated one. Pass `layer="calibrated"` for the old behaviour.
+- Affected when: every call (default: raw instead of calibrated; explicit layer: now honoured).
+- Effect on results: `adata.obsm[addkey]` and `[addkey+"_arcsinh"]` change for every call whose `layer` != "calibrated".
+- Affected analyses: none found (no calls in cytovanni_reproducibility or in the package).
+- Action: nothing known; callers relying on the default must pass `layer="calibrated"`.
+- Test: jobs/r2_verify/v_all.py K5.
+
+### R2-K7 invalid escape in utils/rate.py docstring
+- Commit: R2-core (review/R2-bugs), 2026-11-07. Approval: todo/R2_approval.md item K7.
+- Where: utils.rate.EventRateEstimator docstring (utils/rate.py:5) -> raw string. arges/lucy: see todo/ARGES_LUCY.md.
+- Effect on results: none. Affected analyses: none. Action: nothing. Test: jobs/r2_verify/v_all.py K7.
+
+### R2-F1 FCS start time in the instrument time zone
+- Commit: R2-core (review/R2-bugs), 2026-11-07. Approval: todo/R2_approval.md item F1, group 3 decision "Instrument timezone".
+- Where: io.utils.readfcs_sample (io/utils.py:229), io.utils.read_fcs_timestamp (io/utils.py:264),
+  io.utils.read_folder_timestamps; utils.config.CytometerConfiguration.
+- What was wrong: `dateutil.parser.parse(date+"-"+btim).timestamp()` interprets the naive FCS time in the time zone of
+  the reading machine, so `uns["UTC"]` and the uid (`<cytometer>-<int(UTC)>`) depended on where/how the file was read.
+- Now: new `CytometerConfiguration.timezone` (IANA name, default "Europe/Berlin", validated, exported/imported);
+  `_fcs_utc` attaches it with `zoneinfo` before `.timestamp()`. `readfcs_sample` uses `cytoconfig.timezone`;
+  `read_fcs_timestamp(filepath, timezone="Europe/Berlin")`; `read_folder_timestamps(folder, cytoconfig=None,
+  timezone=None)` (cytoconfig.timezone, else Berlin).
+- Affected when: reading on a machine/container whose local time is not Europe/Berlin. Note: the dev image has no
+  /usr/share/zoneinfo; there `TZ=Europe/Berlin` silently means UTC to the C library (zoneinfo uses the `tzdata` Python
+  package, installed with pandas). In jobs on this cluster TZ is unset and /etc/localtime (Europe/Berlin) applies, so
+  results were Berlin time.
+- Effect on results: `uns["UTC"]` and `uns["uid"]` (and everything keyed by uid: `name_uid`, rainbow calibrator batches,
+  sort orders by UTC) change by the UTC offset of the old reading machine relative to Berlin; none for files read on
+  Berlin time (verified: old formula under Berlin time == new value, winter and summer). Instruments not in Berlin keep
+  the Berlin interpretation unless their config sets `timezone` (then their UTC/uid change, by design).
+- Breaking: config objects pickled before this change have no `timezone` attribute (AttributeError in `readfcs_sample`);
+  configs restored from exports (h5ad/json) get the default.
+- Affected analyses: readfcs_rainbow_sample/readfcs_sample in processing/refmohammed, refjohanna, instrument_rainbow,
+  gosling, figures/plots_sarcoma_thesis/00_prepare.ipynb, plots_calib, plots_rainbow/01_gating_gmm.ipynb; refmoh.py:77
+  sorts by UTC. All run on this cluster (Europe/Berlin local time) -> unchanged. Gosling (NorthernLights, recorded outside
+  Germany) keeps the Berlin interpretation by default, as before.
+- Action: nothing for analyses read in Germany; uids/UTC from files read elsewhere (e.g. a UTC laptop/CI) differ.
+- Test: jobs/r2_verify/v_all.py F1; f_core.py "F1" (TZ UTC0 / JST-9 / Berlin POSIX / node default give identical UTC;
+  2025-01-01 12:00 -> 1735729200, 2025-07-01 12:00 -> 1751364000; Tokyo config -8h/-7h).
+
+### R2-F2 config export keeps class, hash function, timezone and subclass extras
+- Commit: R2-core (review/R2-bugs), 2026-11-07. Approval: todo/R2_approval.md item F2, group 3 decision "Save names, raise".
+- Where: utils.config.CytometerConfiguration.to_dictionary / import_exported / load_json (utils/config.py:159-198);
+  io.bead.read_bead_h5ad, io.rainbow.read_rainbow_h5ad.
+- What was wrong: the export dropped `fct_hash_settings` (a custom hash came back as the default, so batch inference
+  failed), the class (always re-created as the base class) and subclass attributes (`lasers`, `lasers_wavelength`,
+  `lasers_color`, `alt_name_dct`); `load_json` on a subclass crashed (`cls([])`).
+- Now: export adds `config_class`, `fct_hash_settings` (registered name), `timezone`, and the attributes listed in the new
+  class attribute `_export_extras` (pd.Series stored as index/values lists, h5ad- and json-safe). New
+  `CytometerConfiguration.from_exported(exported)` re-creates the exported subclass (base defaults + exported attributes,
+  subclass `__init__` not called); `load_json` and the h5ad readers use it. New `register_hash_function(fct, name=None)`
+  (exported from cytovanni.utils, registry `HASH_FUNCTIONS`); import raises CytometerConfigurationException for an
+  unregistered name (always for lambdas, e.g. the documented `lambda adata: 0`), for an unknown class, and when
+  `import_exported` is called on an instance of a different class.
+- Affected when: writing/reading configs (`write_json`/`load_json`, `write_*_h5ad`/`read_*_h5ad`).
+- Effect on results: none for existing files (no `config_class` -> base class, default hash, Berlin, as before). Files
+  written from now on re-create e.g. `CytometerConfiguration_FACSAriaIII` instead of the base class. Breaking: configs with
+  a custom/lambda hash function cannot be read back without registering it (previously they silently got the default).
+- Affected analyses: read_rainbow_h5ad in refmoh.py:76/154-155, instrument_rainbow pipeline.py:269, comparison.py:210,
+  gosling.py:406, plots_calib/calib.py:84 + 00_prepare_rainbowtest.ipynb, plots_rainbow/rainbow.py:61,
+  plots_overview/overview.py:46 (existing files, default hash -> unchanged). No custom `fct_hash_settings` anywhere.
+- Action: nothing.
+- Test: jobs/r2_verify/v_all.py F2 (check adapted: unknown custom function raises); f_core.py "F2" x2 (11 classes x
+  dict/json/h5ad round trip; registered/unregistered/lambda/old export/class mismatch/bad time zone).
+
+### R2-D4 batched eccentricity: bottom-edge test on the padded height
+- Commit: R2-core (review/R2-bugs), 2026-11-07. Approval: todo/R2_approval.md item D4, group 3 decision "Keep both, fix D4".
+- Where: io.S8.calculate_batched_eccentricity_angle (io/S8.py:208-220).
+- What was wrong: masks are padded to the tallest height; the bottom-edge test used the padded last row, so cells cut off
+  at their own bottom edge got a value (the single version returns NaN), depending on the other masks in the batch.
+- Now: tests each mask's own last row (`heights-1`). Batched == single on 300 random masks incl. 35 cut off at the bottom.
+- Affected when: `add_S8_singlet_maskfeatures` (only caller) with masks of different heights, cells touching their own
+  bottom edge.
+- Effect on results: `cell_eccentricity` and `cell_deformangle` of those cells become NaN (were finite). Same vs publish
+  and repro copy.
+- Affected analyses: none found in cytovanni_reproducibility (no `add_S8_singlet_maskfeatures`/eccentricity use);
+  arges-computed S8 features. arges/lucy: see todo/ARGES_LUCY.md.
+- Action: re-compute S8 mask features if used.
+- Test: jobs/r2_verify/v_all.py D4; f_core.py "D4".
+
+### R2-F3 `add_S8_singlet_maskfeatures` kept, duck-typed image container documented
+- Commit: R2-core (review/R2-bugs), 2026-11-07. Approval: todo/R2_approval.md item F3, group 3 decision "Keep both, fix D4".
+- Where: io.S8.add_S8_singlet_maskfeatures (io/S8.py:272).
+- Now: docstring states that `imgcont` is any object with `load_masks_batched(index)` (arges `ImageContainer`, not part of
+  this package) and lists the features written. No code change.
+- Effect on results: none. arges/lucy: see todo/ARGES_LUCY.md.
+- Test: jobs/r2_verify/v_all.py F3 stays CONFIRMED by design (the container is still not in the core).

@@ -24,7 +24,7 @@ def gate_scatter_bead_sample(adata, gatechannels=None, plot=False, plotpath="", 
 
         :param very_robust: bool. Even more tolerant gating, needs robust to also be set.
 
-        :param gating_kwargs: further AutoSpillTesselationGating attributes, e.g. main_tile="density" or merge_tiles_min_saddle=.6.
+        :param gating_kwargs: further AutoSpillTesselationGating attributes, e.g. main_tile="density" or merge_tiles_min_saddle=.6. They override the defaults set here (including those of robust/very_robust, e.g. final_density_cutoff).
     """
     if gatechannels is None:
         gatechannels = adata.uns["cytoconfig"].get_default_scatter_gate_channels()
@@ -34,20 +34,19 @@ def gate_scatter_bead_sample(adata, gatechannels=None, plot=False, plotpath="", 
         raise ScatterGatingChannelException(f"Chosen scatter channels to gate on {gatechannels} are invalid, has to be exactly two!")
     
     X = adata[:,gatechannels].layers["raw"].T
-    if robust:
-        if very_robust:
-            asp = AutoSpillTesselationGating(*X, verbose=False, **gating_kwargs, final_density_cutoff=.2, bound_density_mad_factor=10.,
-                                             trim_beadmode_min_clipfactor=.25, trim_beadmode_max_clipfactor=2.,
-                                             region_density_bw_factor=7, bound_density_bw_factor=6.,
-                                             name_x=gatechannels[0], name_y=gatechannels[1], trim_beadmode=True)
-        else:
-            asp = AutoSpillTesselationGating(*X, verbose=False, **gating_kwargs, final_density_cutoff=.2, bound_density_mad_factor=5.,
-                                             trim_beadmode_min_clipfactor=.25, trim_beadmode_max_clipfactor=2.,
-                                             region_density_bw_factor=3,
-                                             name_x=gatechannels[0], name_y=gatechannels[1], trim_beadmode=True)
+    if robust and very_robust:
+        params = dict(final_density_cutoff=.2, bound_density_mad_factor=10.,
+                      trim_beadmode_min_clipfactor=.25, trim_beadmode_max_clipfactor=2.,
+                      region_density_bw_factor=7, bound_density_bw_factor=6.)
+    elif robust:
+        params = dict(final_density_cutoff=.2, bound_density_mad_factor=5.,
+                      trim_beadmode_min_clipfactor=.25, trim_beadmode_max_clipfactor=2.,
+                      region_density_bw_factor=3)
     else:
-        asp = AutoSpillTesselationGating(*X, verbose=False, **gating_kwargs, final_density_cutoff=.2, bound_density_mad_factor=4.,
-                                         name_x=gatechannels[0], name_y=gatechannels[1], trim_beadmode=True)
+        params = dict(final_density_cutoff=.2, bound_density_mad_factor=4.)
+    params.update(verbose=False, name_x=gatechannels[0], name_y=gatechannels[1], trim_beadmode=True)
+    params.update(gating_kwargs) # explicitly passed settings override the defaults above
+    asp = AutoSpillTesselationGating(*X, **params)
     if plot or plotpath:
         asp.plot(title=titlefct(adata))
         if plotpath:

@@ -266,7 +266,8 @@ def label_axis_ArcSinh(ax, cofactor, onx=True, minpower=2, mark_cofactor=False):
         else:
             return min(a,b) + np.arange(min(abs(a),abs(b)), max(abs(a),abs(b))+1)[1:-1]
         
-    minor_powers = np.hstack([get_minor(available_powers[i], available_powers[i+1]) for i in range(len(available_powers)-1)])
+    # narrow ranges can leave a single major tick (e.g. only 0): then there are no minor ticks
+    minor_powers = np.hstack([get_minor(available_powers[i], available_powers[i+1]) for i in range(len(available_powers)-1)]) if len(available_powers)>1 else np.zeros(0)
 
     def power_to_pos(p):
         if p>0: return 10**p
@@ -307,22 +308,27 @@ def anndata_concat(adatas, make_unique=False, join="inner", merge=None, permute=
     return adata
 
 def anndata_subsample(adata, N=20000, copy=True):
-    """ Subsample adata.
+    """ Subsample adata to at most N events (random, without replacement).
+
+        :param copy: bool. If True, always return a new object (also when adata has at most N events).
+            If False, return adata itself when it is small enough, otherwise a view of the subsample.
     """
     if adata.shape[0]<=N:
-        return adata
+        return adata.copy() if copy else adata
     sind = adata.obs.index[np.random.permutation(adata.shape[0])[:int(N)]]
-    ad = adata[sind].copy()
-    return ad
+    ad = adata[sind]
+    return ad.copy() if copy else ad
 
 def df_subsample(df, N=20000, copy=True):
-    """ Subsample pd DataFrame.
+    """ Subsample pd DataFrame to at most N rows (random, without replacement).
+
+        :param copy: bool. If True, always return a new object (also when df has at most N rows).
+            If False, return df itself when it is small enough.
     """
     if df.shape[0]<=N:
-        return df
+        return df.copy() if copy else df
     sind = df.index[np.random.permutation(df.shape[0])[:int(N)]]
-    dfs = df.loc[sind].copy()
-    return dfs
+    return df.loc[sind].copy()
 
 from collections import Counter
 

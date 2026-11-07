@@ -23,21 +23,19 @@ def pdsave_expand_dict(dct):
 
 def pdsave_collect(el):
     """ Collects pandas types from tuple of numpy arrays as produced by pdsave_expand.
-        Passes through all other types.
+        Passes through all other types (including tuples that are not pdsave expansions).
+        Errors while rebuilding an expanded tuple (e.g. an index of the wrong length) are raised.
     """
-    try:
-        if isinstance(el, tuple):
-            if el[0]=="_pdsave_expanded_DataFrame":
-                return pd.DataFrame(el[1], index=el[2], columns=el[3])
-            elif el[0]=="_pdsave_expanded_Series":
-                return pd.Series(el[1], index=el[2])
-            elif el[0]=="_pdsave_expanded_Index":
-                return pd.Index(el[1])
-            else:
-                raise ValueError(f"Expansion {el[0]} unknown!")
-        return el
-    except Exception:
-        return el
+    if isinstance(el, tuple) and len(el) > 0 and isinstance(el[0], str) and el[0].startswith("_pdsave_expanded_"):
+        if el[0]=="_pdsave_expanded_DataFrame":
+            return pd.DataFrame(el[1], index=el[2], columns=el[3])
+        elif el[0]=="_pdsave_expanded_Series":
+            return pd.Series(el[1], index=el[2])
+        elif el[0]=="_pdsave_expanded_Index":
+            return pd.Index(el[1])
+        else:
+            raise ValueError(f"Expansion {el[0]} unknown!")
+    return el
 def pdsave_collect_dict(dct):
     """ Apply pdsave_collect to all elements of dct.
     """

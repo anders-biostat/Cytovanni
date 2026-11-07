@@ -4,6 +4,8 @@ import json
 import warnings
 import matplotlib.pyplot as plt
 import hashlib
+import copy
+from zoneinfo import ZoneInfo
 from .misc import textcolor, get_cmap, cmap_to_legendhandles, wavelength_to_hex
 from ..exceptions import DefaultScatterGatingException, SettingsHashException, DefaultScatterCalibrationException, CytometerConfigurationException, CytovanniWarning
 
@@ -47,6 +49,45 @@ def _default_hash_settings(adata, use_voltages=True, use_gains=True, include_sca
     
     return hashadd + hashlib.sha256(hashstr.encode('utf-8')).hexdigest()
 
+# Default instrument time zone (CytometerConfiguration.timezone)
+DEFAULT_TIMEZONE = "Europe/Berlin"
+
+# Settings-hash functions that an exported configuration can refer to by name (see register_hash_function).
+HASH_FUNCTIONS = {"_default_hash_settings": _default_hash_settings}
+
+def register_hash_function(fct, name=None):
+    """ Make a custom settings-hash function known by name, so that configurations using it can be exported and
+        imported again (CytometerConfiguration.to_dictionary / from_exported, and the .h5ad / .json writers).
+        Register it in every session before importing such a configuration.
+
+        :param fct: function. Takes a sample in AnnData format and returns a hash, see CytometerConfiguration.
+
+        :param name: str. Optional, name under which it is stored. Defaults to fct.__name__.
+
+        :returns: str. The registered name.
+    """
+    name = fct.__name__ if name is None else str(name)
+    if name in HASH_FUNCTIONS and HASH_FUNCTIONS[name] is not fct:
+        raise CytometerConfigurationException(f"A different settings-hash function is already registered as '{name}'!")
+    HASH_FUNCTIONS[name] = fct
+    return name
+
+def _hash_function_name(fct):
+    """ Registered name of fct, or its __name__ if it is not registered (importing then raises). """
+    for name, known in HASH_FUNCTIONS.items():
+        if known is fct:
+            return name
+    return getattr(fct, "__name__", repr(fct))
+
+def _all_config_classes():
+    """ {class name: class} for CytometerConfiguration and all its (indirect) subclasses. """
+    classes, stack = {}, [CytometerConfiguration]
+    while stack:
+        klass = stack.pop()
+        classes[klass.__name__] = klass
+        stack.extend(klass.__subclasses__())
+    return classes
+
 class CytometerConfiguration:
     """
     The CytometerConfiguration class stores general attributes of the data,
@@ -68,8 +109,13 @@ class CytometerConfiguration:
     
     :param replace_channelname_dict: dict. Optional, in case channel labels are not consistent on the same machine, replaces channel names with value in dict immediately after loading data.
     
-    :param fct_hash_settings: function. Function that takes loaded sample in AnnData format, and calculates a hash based on the cytometer settings. Default uses the voltages 'pnv' and gains 'png' for all scatter and fluorescence channels; this should probably capture everything that is relevant for most cytometers. Does not compare laser settings since most cytometers don't export them to the .fcs files, but those are anyway usually held constant. Can be replaced by an arbitrary custom function that returns a hash. To disable this comparison, pass something that assigns everything a default valie like (lambda adata: 0).
+    :param fct_hash_settings: function. Function that takes loaded sample in AnnData format, and calculates a hash based on the cytometer settings. Default uses the voltages 'pnv' and gains 'png' for all scatter and fluorescence channels; this should probably capture everything that is relevant for most cytometers. Does not compare laser settings since most cytometers don't export them to the .fcs files, but those are anyway usually held constant. Can be replaced by an arbitrary custom function that returns a hash. To disable this comparison, pass something that assigns everything a default value like (lambda adata: 0). Exports store only the function's name: to import a configuration with a custom function again, register it first with register_hash_function (a lambda cannot be imported).
+
+    :param timezone: str. IANA time zone of the instrument clock (e.g. 'Europe/Berlin'). The .fcs $DATE/$BTIM are local instrument time; they are converted to UTC (adata.uns['UTC'], and from it the uid) in this time zone, independent of the machine that reads the file.
+
+    Subclasses that add attributes list them in `_export_extras` so that they are exported too (pd.Series are supported).
     """
+    _export_extras = ()
     
     def __init__(self,
                  channels_fluorescence,
@@ -85,21 +131,24 @@ class CytometerConfiguration:
                  laserdict={},
                  replace_channelname_dict={},
                  fct_hash_settings=_default_hash_settings,
+                 timezone=DEFAULT_TIMEZONE,
                 ):
         
+        # copies, so that instances never share (default) mutable arguments
         self.channels_fluorescence = list(channels_fluorescence)
         self.channels_scatter = list(channels_scatter)
         self.channels_meta = list(channels_meta)
         self.default_scatter_gate_channels = list(default_scatter_gate)
-        self.default_scatter_calibrate = default_scatter_calibrate
+        self.default_scatter_calibrate = copy.deepcopy(default_scatter_calibrate)
         
         self.max_linear_range = float(max_linear_range)
         self.cytometer = str(cytometer)
         self.try_adding_HW = bool(try_adding_HW)
-        self.laserdict = laserdict
-        self.replace_channelname_dict = replace_channelname_dict
+        self.laserdict = copy.deepcopy(laserdict)
+        self.replace_channelname_dict = dict(replace_channelname_dict)
         
         self.fct_hash_settings = fct_hash_settings
+        self.timezone = self._check_timezone(timezone)
         
         if self.try_adding_HW:
             # find missing -H and -W fluorescence channels
@@ -156,29 +205,81 @@ class CytometerConfiguration:
         res += textcolor.toBOLD(f"\n    Optional fluorescence channels: ")+f"{self.channels_fluorescence_addHW}"
         return res
     
+    @staticmethod
+    def _check_timezone(timezone):
+        try:
+            ZoneInfo(str(timezone))
+        except Exception as e:
+            raise CytometerConfigurationException(f"Unknown time zone '{timezone}', use an IANA name such as 'Europe/Berlin'!") from e
+        return str(timezone)
+
     def to_dictionary(self):
-        """ Export configuration to dictionary.
+        """ Export configuration to dictionary (writable to .json and to AnnData .uns).
+            Also stores the configuration class ('config_class'), the name of the settings-hash function
+            ('fct_hash_settings', see register_hash_function) and the subclass attributes in `_export_extras`.
         """
         savekeys = ["channels_fluorescence", "channels_scatter", "channels_meta",
                     "default_scatter_gate_channels", "default_scatter_calibrate",
                     "max_linear_range", "cytometer", "try_adding_HW",
-                    "channels_fluorescence_addHW", "laserdict", "replace_channelname_dict"]
+                    "channels_fluorescence_addHW", "laserdict", "replace_channelname_dict", "timezone"]
         export = {}
         for key in savekeys:
             export[key] = getattr(self, key)
+        export["config_class"] = type(self).__name__
+        export["fct_hash_settings"] = _hash_function_name(self.fct_hash_settings)
+        for key in self._export_extras:
+            value = getattr(self, key)
+            if isinstance(value, pd.Series):
+                value = {"index": value.index.tolist(), "values": value.tolist()}
+            export[key] = value
         return export
     
     def import_exported(self, exported):
-        """ Import configuration from exported dictionary.
+        """ Import configuration from exported dictionary into this instance.
+            Use CytometerConfiguration.from_exported to get an instance of the exported class.
+
+            Raises CytometerConfigurationException if the exported class is not the class of this instance,
+            or if the exported settings-hash function is not registered (see register_hash_function).
         """
+        exported = dict(exported)
+        config_class = str(exported.pop("config_class", type(self).__name__))
+        if config_class != type(self).__name__:
+            raise CytometerConfigurationException(f"Exported configuration is a {config_class}, cannot import it into a {type(self).__name__}! Use CytometerConfiguration.from_exported.")
+        if "fct_hash_settings" in exported:
+            name = str(exported.pop("fct_hash_settings"))
+            if name not in HASH_FUNCTIONS:
+                raise CytometerConfigurationException(f"Exported configuration uses the settings-hash function '{name}', which is not known! Register it with cytovanni.utils.register_hash_function before importing.")
+            self.fct_hash_settings = HASH_FUNCTIONS[name]
+        if "timezone" in exported:
+            exported["timezone"] = self._check_timezone(exported["timezone"])
         makelistkeys = ["channels_fluorescence", "channels_scatter", "channels_meta",
                         "default_scatter_gate_channels", "channels_fluorescence_addHW"]
         for k, v in exported.items():
             if k in makelistkeys:
                 setattr(self, k, list(v))
+            elif k in self._export_extras and isinstance(v, dict) and set(v.keys())=={"index", "values"}:
+                setattr(self, k, pd.Series(list(v["values"]), index=list(v["index"])))
+            elif k in self._export_extras and isinstance(v, np.ndarray):
+                setattr(self, k, v.tolist())
             else:
                 setattr(self, k, v)
         self.check_process_laserdict()
+
+    @classmethod
+    def from_exported(cls, exported):
+        """ Construct a configuration from an exported dictionary (see to_dictionary).
+            Re-creates the exported class (any subclass of CytometerConfiguration; defaults to cls if the export
+            does not name one), and restores all exported attributes, including the settings-hash function by name.
+        """
+        classes = _all_config_classes()
+        config_class = str(exported.get("config_class", cls.__name__))
+        if config_class not in classes:
+            raise CytometerConfigurationException(f"Unknown configuration class '{config_class}'! Import the module that defines it first.")
+        klass = classes[config_class]
+        cytoconfig = klass.__new__(klass)
+        CytometerConfiguration.__init__(cytoconfig, []) # base defaults; everything else comes from the export
+        cytoconfig.import_exported(exported)
+        return cytoconfig
     
     def write_json(self, filepath):
         """ Write configuration to .json file.
@@ -188,14 +289,11 @@ class CytometerConfiguration:
     
     @classmethod
     def load_json(cls, filepath):
-        """ Construct cytometer configuration from exported .json file.
+        """ Construct cytometer configuration from exported .json file (of the class stored in the file).
         """
-        cytoconfig = cls([])
         with open(filepath, "r") as file: 
             exported = json.load(file)
-        cytoconfig.import_exported(exported)
-        
-        return cytoconfig
+        return cls.from_exported(exported)
     
     def get_default_scatter_gate_channels(self):
         """ Get self.default_scatter_gate_channels, but also implements some sanity checks.
@@ -300,6 +398,7 @@ A3_channelname_rpldct = {   "BB515": "B1 (515)",
 class CytometerConfiguration_A3(CytometerConfiguration):
     """ Cytometer configuration for our A3.
     """
+    _export_extras = ("alt_name_dct",)
     def __init__(self):
         channels_fluorescence = ['BB515-A', 'BB700-A',
                                  'APC-A', 'APC-H7-A', 'APC-R700-A',
@@ -447,6 +546,7 @@ def _add_AHW_replacedct(rpldict):
 class CytometerConfiguration_FACSAriaIII(CytometerConfiguration):
     """ Cytometer configuration for our FACSAria III.
     """
+    _export_extras = ("lasers", "lasers_wavelength", "lasers_color")
     def __init__(self):
         channels_fluorescence = ["B1 (525)-A", "B2 (695)-A",
                                  "G1 (586)-A", "G2 (610)-A", "G3 (660)-A", "G4 (780)-A",
@@ -481,6 +581,7 @@ class CytometerConfiguration_FACSAriaIII(CytometerConfiguration):
 class CytometerConfiguration_FACSAriaIII_v2(CytometerConfiguration):
     """ Cytometer configuration for our other FACSAria III.
     """
+    _export_extras = ("lasers", "lasers_wavelength", "lasers_color")
     def __init__(self):
         channels_fluorescence = ["B1 (525)-A", "B2 (695)-A",
                                  "YG1 (586)-A", "YG2 (610)-A", "YG3 (660)-A", "YG4 (780)-A",
@@ -515,6 +616,7 @@ class CytometerConfiguration_FACSAriaIII_v2(CytometerConfiguration):
 class CytometerConfiguration_FACSAriaFusion(CytometerConfiguration):
     """ Cytometer configuration for our FACSAria Fusion.
     """
+    _export_extras = ("lasers", "lasers_wavelength", "lasers_color")
     def __init__(self):
         channels_fluorescence = ["B1 (530)-A", "B2 (695)-A",
                                  "YG1 (586)-A", "YG2 (610)-A", "YG3 (660)-A", "YG4 (710)-A", "YG5 (780)-A",
@@ -546,6 +648,7 @@ class CytometerConfiguration_FACSAriaFusion(CytometerConfiguration):
 class CytometerConfiguration_FACSAriaFusion_v2(CytometerConfiguration):
     """ Cytometer configuration for our other FACSAria Fusion.
     """
+    _export_extras = ("lasers", "lasers_wavelength", "lasers_color")
     def __init__(self):
         channels_fluorescence = ["B1 (530)-A", "B2 (695)-A",
                                  "YG1 (586)-A", "YG2 (610)-A", "YG3 (660)-A", "YG4 (780)-A",

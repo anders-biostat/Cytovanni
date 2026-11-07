@@ -6,7 +6,7 @@ from ..utils import CytometerConfiguration
 from .utils import readfcs_sample
 
 
-def readfcs_rainbow_sample(rbpath, cytoconfig, N_rainbow_peak, name="", rainbow_type="default", rainbow_batch="default", metadct={}, warn_spillover=False):
+def readfcs_rainbow_sample(rbpath, cytoconfig, N_rainbow_peak, name="", rainbow_type="default", rainbow_batch="default", metadct=None, warn_spillover=False):
     """ Read a single rainbow bead sample.
         Based on FlowKit so we don't need to maintain reading code.
         
@@ -52,7 +52,5 @@ def read_rainbow_h5ad(filepath):
         Process cytometry configuration.
     """
     adata = anndata.read_h5ad(filepath)
-    cytoconfig = CytometerConfiguration([])
-    cytoconfig.import_exported(adata.uns["cytoconfig"])
-    adata.uns["cytoconfig"] = cytoconfig
+    adata.uns["cytoconfig"] = CytometerConfiguration.from_exported(adata.uns["cytoconfig"])
     return adata

@@ -44,11 +44,14 @@ class LineGate():
         self.scale_x = 1 / np.mean(ad[:,self.x].layers[self.layer][:,0])
         self.scale_y = 1 / np.mean(ad[:,self.y].layers[self.layer][:,0])
     
-    def get_distance(self, ad):
+    def get_distance_points(self, points):
+        """ Signed, scaled distance of points (shape (N, 2), columns x and y) from the line; positive means kept. """
         scaling = np.asarray([self.scale_x, self.scale_y])
-        points = ad[:,[self.x, self.y]].layers[self.layer].copy()
-        dist = _distance_from_line(scaling*self.p1, scaling*self.p2, scaling[None]*points)
+        dist = _distance_from_line(scaling*self.p1, scaling*self.p2, scaling[None]*np.asarray(points, dtype=float))
         return dist if self.below else -dist
+
+    def get_distance(self, ad):
+        return self.get_distance_points(ad[:,[self.x, self.y]].layers[self.layer].copy())
     
     def apply(self, ad, addkey=""):
         dist = self.get_distance(ad)
@@ -56,6 +59,10 @@ class LineGate():
         if addkey:
             ad.obs[addkey] = mask
         return mask
+
+    def apply_df(self, df):
+        """ Apply the gate to a DataFrame with columns x and y (e.g. the raw .fcs data), returns a boolean array. """
+        return self.get_distance_points(df[[self.x, self.y]].to_numpy())>0
     
     def plot(self, ax, addlegend=True, mark_outside=True):
         args = np.polyfit([self.p1[0], self.p2[0]], [self.p1[1], self.p2[1]], 1)

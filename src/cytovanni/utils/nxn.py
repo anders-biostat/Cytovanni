@@ -36,7 +36,7 @@ def _base_plot_NxN_single(datas, colors, labels, xkey, ykey, ax, axlim=None, s=.
     if fct_label_axis is not None:
         fct_label_axis(ax)
 
-def base_plot_NxN(datas, colors, labels=None, colors_df=None, savepath="", suptitle="", axlim=None, s=.01, dpi=150, arglist=None, mark_zero=True, label_arcsinh=False):
+def base_plot_NxN(datas, colors, labels=None, colors_df=None, savepath="", suptitle="", axlim=None, s=.01, dpi=150, arglist=None, mark_zero=True):
     """ Base for NxN plots of all stains.
         
         :param datas: list. List of dataframes with the data to be plotted, index event, column stain.
@@ -66,7 +66,7 @@ def base_plot_NxN(datas, colors, labels=None, colors_df=None, savepath="", supti
             if i<=j:
                 ax = fig.add_subplot(spec[i, j])
                 axes.append(ax)
-                _base_plot_NxN_single(datas, colors if colors_df is None else colors_df.loc[channels[j], channels[i]],
+                _base_plot_NxN_single(datas, colors if colors_df is None else colors_df.loc[channels[i], channels[j]],
                                       labels, channels[i], channels[j], ax, axlim=axlim, s=s, arglist=arglist, mark_zero=mark_zero, legend=((i==j) and (labels is not None)))
     
     if suptitle: fig.suptitle(suptitle, size=45)
@@ -162,7 +162,7 @@ def combine_images(image_grid):
     
     return combined_image
 
-def base_plot_NxN_ds(datas, colors=palette_20, colors_df=None, axlim=None, pixel_per_channel=300, mark_zero=True, savepath="", common_norm=False, parallel=False, dask=False):
+def base_plot_NxN_ds(datas, colors=palette_20, colors_df=None, axlim=None, pixel_per_channel=300, mark_zero=True, savepath="", common_norm=False, parallel=False):
     """ Base for NxN plots of all stains.
 
         - Maybe implement grid of fixed step to allow better automatic axlim?
@@ -184,9 +184,7 @@ def base_plot_NxN_ds(datas, colors=palette_20, colors_df=None, axlim=None, pixel
 
         :param pixel_per_channel: int. Number of pixels per axis for each individual scatter plot.
 
-        :param parallel: bool. Can run in parallel, usually not actually worth the overhead.
-
-        :param dask: bool. Whether to use dask for parallelization.
+        :param parallel: bool. Can run in parallel (joblib, one row per task), usually not actually worth the overhead.
     """
     channels = sorted(list(set().union(*[set(d.columns) for d in datas])))
     N = len(channels)
@@ -224,18 +222,8 @@ def base_plot_NxN_ds(datas, colors=palette_20, colors_df=None, axlim=None, pixel
                 row.append(generate_part(i,j))
             imgs.append(row)
     else:
-        dask = False
-        if dask:
-            from dask.distributed import Client
-            client = Client()
-            #tasks = [client.submit(generate_part, i, j) for i in range(N) for j in range(N)]
-            tasks = [client.submit(generate_row, i) for i in range(N)]
-            imgs = client.gather(tasks)
-            #imgs = [imgs[i * N:(i + 1) * N] for i in range(N)]
-            client.close()
-        else:
-            from joblib import Parallel, delayed
-            imgs = Parallel(n_jobs=10)(delayed(generate_row)(i) for i in range(N))
+        from joblib import Parallel, delayed
+        imgs = Parallel(n_jobs=10)(delayed(generate_row)(i) for i in range(N))
     
     imgs = [[(j if (j is not None) else np.zeros_like(imgs[0][0])) for j in i] for i in imgs]
     img = combine_images(imgs)
