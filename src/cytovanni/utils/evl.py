@@ -278,6 +278,7 @@ def get_asinh_single_CV(x_asinh, f):
 def get_asinh_paired_CV_varcorr(x_asinh, y_asinh, x_asinh_err, y_asinh_err, f):
     """ Same as get_asinh_paired_CV, but with additional correction.
         If both x and y have inherent error, subtract this variance from observed to get corrected values.
+        Errors must be finite and >= 0 (an error of 0 subtracts nothing); pairs with a negative or non-finite error are dropped.
         If the mean error variance exceeds the observed variance, the corrected variance is clamped to 0 (with a
         CytovanniWarning), so the result is 0. Returns NaN (with a CytovanniWarning) if fewer than 2 usable pairs remain.
     """
@@ -285,10 +286,10 @@ def get_asinh_paired_CV_varcorr(x_asinh, y_asinh, x_asinh_err, y_asinh_err, f):
     y = np.asarray(y_asinh)
     x_err = np.asarray(x_asinh_err)
     y_err = np.asarray(y_asinh_err)
-    mask = np.isfinite(x) & np.isfinite(y) & np.isfinite(x_err) & np.isfinite(y_err) & (x_err>0) & (y_err>0)
+    mask = np.isfinite(x) & np.isfinite(y) & np.isfinite(x_err) & np.isfinite(y_err) & (x_err>=0) & (y_err>=0)
     x, y, x_err, y_err = x[mask], y[mask], x_err[mask], y_err[mask]
     if len(x) < 2:
-        return _nan_with_warning("get_asinh_paired_CV_varcorr", f"{len(x)} usable pairs (finite, error > 0)")
+        return _nan_with_warning("get_asinh_paired_CV_varcorr", f"{len(x)} usable pairs (finite, error >= 0)")
     
     # symmetrical pairing
     s1 = np.hstack([x, y])
@@ -318,16 +319,17 @@ def get_asinh_paired_CV_varcorr(x_asinh, y_asinh, x_asinh_err, y_asinh_err, f):
 
 def get_asinh_single_CV_varcorr(x_asinh, x_asinh_err, f):
     """ get_asinh_single_CV with variance correction as in get_asinh_paired_CV_varcorr.
+        Errors must be finite and >= 0 (an error of 0 subtracts nothing); values with a negative or non-finite error are dropped.
         If the mean error variance exceeds the observed variance, the corrected variance is clamped to 0 (with a
         CytovanniWarning), so the result is 0 instead of NaN.
     """
 
     x = np.asarray(x_asinh)
     x_err = np.asarray(x_asinh_err)
-    mask = np.isfinite(x) & np.isfinite(x_err) & (x_err>0)
+    mask = np.isfinite(x) & np.isfinite(x_err) & (x_err>=0)
     x, x_err = x[mask], x_err[mask]
     if len(x) < 2:
-        return _nan_with_warning("get_asinh_single_CV_varcorr", f"{len(x)} usable values (finite, error > 0)")
+        return _nan_with_warning("get_asinh_single_CV_varcorr", f"{len(x)} usable values (finite, error >= 0)")
 
     # global mean in asinh space
     m_global = np.mean(x)

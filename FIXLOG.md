@@ -109,6 +109,14 @@ A fix can change results relative to one of these and not the other; both are st
 | R2c-H1 | positive CVs: a single value <= 0 made the CV NaN | yes: NaN -> CV over the positive values | `get_positive_paired_CV(_alongdiag)`, `get_positive_single_CV` with a value <= 0 (e.g. a share of 0) |
 | R2c-H2 | `get_positive_single_CV` used ddof=0 | yes, slightly larger: log-variance x n/(n-1) | every `get_positive_single_CV` call (small n most) |
 | R2c-H3 | CV functions: NaN without warning; paired varcorr clamped silently | no (values identical; warnings added) | NaN results (< 2 usable values, along-diagonal variance < 0); `get_asinh_paired_CV_varcorr` clamp |
+| R2d-D1 | `fit_factors_Sinkhorn` matched markers by column position | yes, frames with differently ordered columns (now aligned); different marker sets now raise | `fit_factors_Sinkhorn` with frames whose columns are not in the same order |
+| R2d-D2 | `extend` made disabled stain/channel scaling trainable for new batches | yes, extended transformers with `scale_stains`/`scale_channels` not all True (new batches) | `SpectralFitTransformer`/`ScalingTransformer.extend` |
+| R2d-D3 | `dataset_test` channel order not checked | no for valid inputs; mismatched test datasets now raise | `OverlapFitModel(dataset_test=...)`, `get_DDIST_from_dataset(other)` |
+| R2d-D4 | PCA kept null components (normalised spectra); NaN spread through unused components | yes: NaN embeddings/spectra -> finite; fewer components where the rank is lower | `add_PCA_fit` on spectra of rank < N (few channels); reconstructions with a non-finite unused embedding |
+| R2d-D5 | variance-corrected CVs dropped events with error 0 | yes, inputs with zero errors (NaN -> CV) | `get_asinh_*_CV_varcorr` with errors exactly 0 |
+| R2d-D6 | PMT fit with fixed laser exponent needed 3 points | no for >= 3 voltages (same least-squares optimum); 2 voltages: crash -> works | `PMTExponentFitter(fit_laser_exponent=False)` |
+| R2d-D7 | `UnmxErrorExclusionMultiplier` crashed in float64 | no (crash -> works; float32 identical) | `.double()` models with a non-empty exclusion multiplier |
+| R2d-D8 | `get_spectra_embedding` crashed for an all-fixed panel | no (crash -> empty embedding) | PCA panels without any components |
 
 Entry format: see the review notes (todo/00_CONVENTIONS.md "Fix log" in the review project).
 
@@ -1290,4 +1298,95 @@ E20 allows a subset of the panel's dyes (`allow_missing=True`).
 - Where: torch.parameter.ExtendableParameter docstring (`axis_norm`).
 - Now: states that entries without training data enter the mean, so the absolute zero point depends on them.
 - Effect on results: none (docstring). HD7 models checked: no such entries (jobs/r2c_check/h5_*.py).
+
+## R2d (codex pass at full settings, branch review/R2d-bugs; approvals in todo/R2d_approval.md)
+Findings and reproducers: todo/R2d_findings/codex.md, jobs/r2d_codex/ (review project). Lead checks: jobs/r2d_verify/.
+Caller check for all items: cytovanni_reproducibility figures/ + processing/ and the HD7 pipeline notebooks.
+
+### R2d-D1 `fit_factors_Sinkhorn` column alignment
+- Commit: R2d (review/R2d-bugs), 2026-11-07. Approval: todo/R2d_approval.md item D1 (codex3-01).
+- Where: ref.factor.fit_factors_Sinkhorn.
+- What was wrong: marker names came from the first frame, but every frame was converted positionally (`to_numpy`), so
+  frames with the same markers in another order were compared marker against wrong marker (identical data: factors
+  [0.05, 19.6] instead of [1, 1]); frames with other marker names were accepted silently.
+- Now: all frames must have the same, unique marker set (ValueError otherwise) and are aligned to the first frame's order.
+- Affected when: frames with differently ordered columns.
+- Effect on results: those fits change (to the correct factors); aligned inputs identical.
+- Affected analyses: none (no `fit_factors_Sinkhorn` call in reproducibility or the HD7 pipeline).
+- Action: nothing. Test: jobs/r2d_verify/v_r2d.py "D1"; repro_core.py factor_column_order.
+
+### R2d-D2 transformer `extend` kept the stain/channel scaling masks
+- Commit: R2d, 2026-11-07. Approval: D2 (codex3-02).
+- Where: ref.model_transformer.ScaleFactor (`__init__`, `extend`).
+- What was wrong: `scale_stains`/`scale_channels` (use_channel_mask) were applied to the trainable mask only at
+  construction; `extend` added all-trainable rows, so disabled stains/channels were fitted for new batches.
+- Now: `ScaleFactor` keeps the excluded feature indices and sets them untrainable in the new rows after `extend`.
+- Affected when: `SpectralFitTransformer`/`ScalingTransformer` with masks not all True, extended and then fitted.
+- Effect on results: the new batches' factors for excluded features stay 1 (before: fitted). Old batches unchanged.
+- Affected analyses: none (no transformer `extend` call found; hd7-03 uses the masks but does not extend).
+- Action: nothing. Test: v_r2d.py "D2"; repro_core.py extension_scale_masks; repro_followup.py extension_actual_fit.
+
+### R2d-D3 `dataset_test` channel check
+- Commit: R2d, 2026-11-07. Approval: D3 (codex3-03).
+- Where: ref.model.OverlapFitModel `__init__`, `get_DDIST_from_dataset`; new `_check_dataset_channels`.
+- What was wrong: only `dataset` was checked against the transformer channels; a test dataset in another channel order
+  was transformed positionally (test loss 0.009 instead of 1.62 in the reproducer).
+- Now: both datasets are checked at construction, and every dataset passed to `get_DDIST_from_dataset`.
+- Effect on results: none for valid inputs; mismatched ones raise ValueError.
+- Affected analyses: none (no `dataset_test` use found). Action: nothing. Test: repro_core.py test_dataset_order.
+
+### R2d-D4 PCA null components and NaN through unused components
+- Commit: R2d, 2026-11-07. Approval: D4 option (a) (codex3-04; incomplete R2b-G2-15 / R2-C14).
+- Where: spill.pca.SingleSpectrumPCAFitter (`__init__`, new `get_numerical_rank`); ref.panel.PanelModule.get_spectra
+  (mask_unused); spill.panel.PanelConfiguration.get_spectra_from_embedding.
+- What was wrong: normalised spectra (one channel fixed to 1) have rank <= n_channels-1, so with few channels a fitted PC
+  could have zero variance -> std 0 -> NaN embedding column; NaN * 0 kept that NaN in reconstructions even for unused PCs.
+- Now: N is also capped at the numerical rank of the centred spectra (s**2 > 1e-10 * s_max**2; rank 0 -> dummy fit);
+  masked reconstructions zero the unused components' embedding first (pandas and torch).
+- Affected when: stains whose spectra have rank < requested N (few channels / dependent channels); reconstructions with a
+  non-finite unused embedding.
+- Effect on results: NaN -> finite where it occurred; such stains get fewer components. Full-rank fits identical.
+- Affected analyses: none. The saved HD7 panels (panel_HD7_{Identity,TCell}{,_refined}.pt, 22 stains x 5 PCs) have a
+  smallest PC variance of 3.4e-4 x the largest per stain (BUV563), far above the 1e-10 cutoff: the cap changes nothing
+  (jobs/r2d_verify/hd7_panels.py). Their stored embeddings contain NaN entries (not investigated; most likely runs
+  without that dye, not null PCs).
+- Action: nothing. Test: v_r2d.py "D4"; repro_numerics.py pca_rank_deficiency.
+
+### R2d-D5 variance-corrected CVs accept error 0
+- Commit: R2d, 2026-11-07. Approval: D5 option (a) (codex3-05).
+- Where: utils.evl.get_asinh_paired_CV_varcorr, get_asinh_single_CV_varcorr.
+- What was wrong: the usable-value mask required error > 0, so zero errors (e.g. R2b-G2-20's zero-Jacobian events) were
+  dropped; all-zero errors gave NaN instead of the uncorrected CV.
+- Now: finite errors >= 0 are used; negative or non-finite ones are dropped.
+- Effect on results: CVs with zero errors change (NaN -> value; mixed zeros: those events now count).
+- Affected analyses: none (only an unused alias, figures/plots_batchintHD7/lib/cv.py:35).
+- Action: nothing. Test: v_r2d.py "D5"; repro_numerics.py varcorr_zero_errors.
+
+### R2d-D6 PMT fit with a fixed laser exponent
+- Commit: R2d, 2026-11-07. Approval: D6 (codex3-06).
+- Where: rainbow.pmt.PMTExponentFitter.fit_single.
+- What was wrong: with `fit_laser_exponent=False` curve_fit still got 3 parameters (the laser one unused), so 2 voltages
+  raised TypeError.
+- Now: a 2-parameter fit (intercept, PMT exponent) in that case; exponent 1 appended.
+- Effect on results: 2 voltages: crash -> works; >= 3 voltages: same least-squares solution (verified against polyfit).
+- Affected analyses: none (figures/plots_calib/lib/calib.py:1238 fits the laser exponent). Action: nothing.
+- Test: v_r2d.py "D6"; repro_core.py two_voltage_fixed_laser.
+
+### R2d-D7 `UnmxErrorExclusionMultiplier` in float64
+- Commit: R2d, 2026-11-07. Approval: D7 (codex3-07).
+- Where: ref.model_transformer_smp.UnmxErrorExclusionMultiplier.forward.
+- What was wrong: the boolean mask was cast to float32 before multiplying with `block_mask`, which is float64 after
+  `.double()` -> RuntimeError.
+- Now: cast to `block_mask.dtype`.
+- Effect on results: none in float32; float64 works.
+- Affected analyses: cytovanni_reproducibility processing/batchint_data/lib/validation.py:186-190 patches `block_mask`
+  back to float32 by hand; that workaround is no longer needed (still works). Action: optional cleanup (R7).
+- Test: repro_followup.py exclusion_multiplier_float64.
+
+### R2d-D8 all-fixed PCA panel embedding
+- Commit: R2d, 2026-11-07. Approval: D8 (codex3-08).
+- Where: spill.panel.PanelConfiguration.get_spectra_embedding.
+- What was wrong: `pd.concat([])` when no stain has components -> ValueError.
+- Now: an empty float Series. Effect on results: none (crash -> works). Affected analyses: none.
+- Test: repro_numerics.py dummy_pca_spectrum_embedding.
 

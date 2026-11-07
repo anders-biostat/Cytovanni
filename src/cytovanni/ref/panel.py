@@ -84,6 +84,10 @@ class PanelModule(Module):
             Setting mask_unused to False disables masking of unused components.
         """
         offset = self.param_offset.view( [1]*(len(x_embedding.shape)-1) + list(self.param_offset.shape) )
+        if mask_unused:
+            # zero the unused components' embedding as well, so a non-finite unused entry cannot give NaN (NaN*0 = NaN)
+            mask = self.param_components_mask.reshape([len(self.param_components_mask)]+[1]*(x_embedding.ndim-1)) != 0
+            x_embedding = torch.where(mask, x_embedding, torch.zeros_like(x_embedding))
         comp = torch.einsum("ijk, k... -> ...ij", self.param_components * (self.param_components_mask if mask_unused else 1.), x_embedding)
         if clamp_differentiable:
             return diffclamp(offset + comp, 0, None)

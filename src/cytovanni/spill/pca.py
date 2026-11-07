@@ -14,7 +14,9 @@ class SingleSpectrumPCAFitter():
             :param N: int. Max number of principal components that should be fitted, capped at the number of
                 spectra minus one and at the number of channels: n spectra centred on their mean span at most n-1
                 dimensions, a further component would have zero variance (and a NaN or huge normed embedding).
-                With a single spectrum, the fit is a dummy with N=0.
+                Also capped at the numerical rank of the centred spectra (singular values with s**2 <= 1e-10 * s_max**2
+                count as zero): normalised spectra (one channel fixed to 1) and other linear dependencies lower the rank.
+                With a single spectrum, or all spectra identical, the fit is a dummy with N=0.
             
             :param name: str. Optional name.
         """
@@ -24,13 +26,24 @@ class SingleSpectrumPCAFitter():
         self.spectra = np.asarray(spectra)
         self.spectra_means = self.spectra.mean(0, keepdims=True)
         self.spectra_zeromean = self.spectra - self.spectra_means
-        # mean-centred spectra have rank <= n_spectra-1; PCA also needs N <= n_channels
-        self.N = min(N, self.spectra.shape[0]-1, self.spectra.shape[1])
+        # mean-centred spectra have rank <= n_spectra-1; PCA also needs N <= n_channels; null directions are dropped
+        self.N = min(N, self.spectra.shape[0]-1, self.spectra.shape[1], self.get_numerical_rank(self.spectra_zeromean))
         self.name = name
         
-        self.is_dummy = self.spectra.shape[0]<=1
+        self.is_dummy = self.spectra.shape[0]<=1 or self.N<=0
         
         self.fit()
+    
+    @staticmethod
+    def get_numerical_rank(x, rtol=1e-10):
+        """ Number of singular values s of x with s**2 > rtol * max(s)**2 (0 for an all-zero or empty x).
+        """
+        if x.size == 0:
+            return 0
+        s = np.linalg.svd(x, compute_uv=False)
+        if s[0] <= 0:
+            return 0
+        return int((s**2 > rtol * s[0]**2).sum())
     
     def fit(self):
         if self.is_dummy:

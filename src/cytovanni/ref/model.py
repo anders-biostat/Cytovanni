@@ -65,8 +65,8 @@ class OverlapFitModel(Module):
         self.dataset_test = dataset_test
         self.markerweight = markerweight if markerweight is not None else DummyWeights()
 
-        if (self.dataset is not None) and (not np.array_equal(self.dataset.channels, self.transformer.channels)):
-            raise ValueError("Dataset and transformer have different channels or a different channel ordering! Fix this, otherwise results will be wrong.")
+        for ds in [self.dataset, self.dataset_test]:
+            self._check_dataset_channels(ds)
         
         self.checkpoint_DDIST = checkpoint_DDIST
         self.bandwidth_MMD = bandwidth_MMD
@@ -239,11 +239,19 @@ class OverlapFitModel(Module):
         else:
             return self.ddist(fct_detach(x, trainx), fct_detach(y, trainy), wx, wy)
     
+    def _check_dataset_channels(self, dataset):
+        """ Raise if dataset (if not None) does not have exactly the transformer's channels in the same order
+            (the event tensors are used positionally).
+        """
+        if (dataset is not None) and (not np.array_equal(dataset.channels, self.transformer.channels)):
+            raise ValueError("Dataset and transformer have different channels or a different channel ordering! Fix this, otherwise results will be wrong.")
+
     def get_DDIST_from_dataset(self, dataset):
         """ Get DDIST loss from full dataset.
             Return LossContainer the the mean loss.
             Also returns DataFrame (index, columns uid key from dataset.meta) with DDIST loss split by connection.
         """
+        self._check_dataset_channels(dataset)
         batch = dataset.sample()
         stain_mask = self.transformer.loss_use_stain_mask
         transformed = [self.transformer(d["x"], d["idx_batch"]) for d in batch["data"]]
