@@ -12,14 +12,22 @@ should recover is defined here as a module constant:
 
 Measured events are ``abundance @ SPECTRA * gain`` plus noise. Files are written with `cytovanni.io.writefcs`, so the
 tests read them through the same code path as real data.
+
+The last sections hold helpers shared by several test modules: rainbow fits with a short training schedule and
+hand-made panel configurations (with the spectra they imply).
 """
 import os
 import numpy as np
 import pandas as pd
 import anndata as ad
+import pytest
+import torch
 
 from cytovanni.utils import CytometerConfiguration
-from cytovanni.io import writefcs
+from cytovanni.io import readfcs_rainbow_sample, writefcs
+import cytovanni.rainbow.rbim as rbim
+from cytovanni.rainbow import RainbowFluorescenceGMMCalibrationTrainer, fit_rainbow_GMM
+from cytovanni.spill import PanelConfiguration
 
 CHANNELS_SCATTER = ["FSC-A", "FSC-H", "SSC-A", "SSC-H"]
 CHANNELS_FLUORESCENCE = ["FL1-A", "FL2-A", "FL3-A"]
@@ -155,3 +163,123 @@ def cell_adata(batch, n=2000, seed=0, abundances=None, uid=None, **uns):
     ab = cell_abundances(n, rng) if abundances is None else np.asarray(abundances)
     x = (ab * STAIN_SCALES.loc[batch].to_numpy()[None]) @ SPECTRA.to_numpy() + 15 * rng.normal(size=(len(ab), 3))
     return make_adata(x, CHANNELS_FLUORESCENCE, batch=batch, uid=batch if uid is None else uid, type="same", **uns)
+
+
+# ======================================================================== rainbow fits (shared by test modules)
+class ShortTrainer(RainbowFluorescenceGMMCalibrationTrainer):
+    """The trainer with a short default schedule, for `fit_fluorescence` in tests."""
+    def fit_init_peak(self, dataset, Niter=200, **kw):
+        return super().fit_init_peak(dataset, Niter=Niter, **kw)
+
+    def fit_init_cov(self, dataset, Niter=5, **kw):
+        return super().fit_init_cov(dataset, Niter=Niter, **kw)
+
+    def fit(self, dataset, Niter=10, **kw):
+        return super().fit(dataset, Niter=Niter, **kw)
+
+
+def short_fit_fluorescence(rb, trainer=ShortTrainer, **kwargs):
+    """`rb.fit_fluorescence(**kwargs)` with `trainer` instead of the full training schedule."""
+    kwargs = {"gpu": False, "verbosity": 0, **kwargs}
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(rbim, "RainbowFluorescenceGMMCalibrationTrainer", trainer)
+        rb.fit_fluorescence(**kwargs)
+
+
+def expected_rainbow_factors(batches=BATCHES):
+    """True fluorescence factors 1 / gain, geometric mean 1 over `batches`."""
+    f = 1 / GAINS.loc[batches]
+    return f / np.exp(np.log(f).mean())
+
+
+def read_rainbow_fit(path, config, batch, rainbow_type="T", seed=0):
+    """Read a rainbow bead file of `batch` and fit its GMM (all peaks of `PEAKS`)."""
+    ad = readfcs_rainbow_sample(path, config, len(PEAKS), name=os.path.basename(path), rainbow_batch=batch,
+                                rainbow_type=rainbow_type)
+    fit_rainbow_GMM(ad, random_state=seed)
+    return ad
+
+
+# ======================================================================== panel configurations (shared by test modules)
+# Panel read from a csv, with hand-made PCA data (used by the transformer and model tests)
+# PCA components of the test panel (component, channel): FL1 spills more or less into FL2, FL2 into FL3; the FL3
+# component exists but is not used by the panel
+PANEL_COMPONENTS = pd.DataFrame([[0., .1, 0.], [0., 0., .1], [.05, 0., 0.]], index=["FL1_PC0", "FL2_PC0", "FL3_PC0"], columns=CHANNELS_FLUORESCENCE)
+PANEL_COMPONENTS_USE = pd.Series([True, True, False], index=PANEL_COMPONENTS.index)
+
+
+def make_panelconfig_csv(folder):
+    """PanelConfiguration of the simulated panel with hand-made PCA data (offset = SPECTRA)."""
+    path = folder / "panel.csv"
+    pd.DataFrame({"stain": STAINS, "marker": MARKERS, "components": ["0", "0", ""]}).to_csv(path, index=False)
+    pc = PanelConfiguration.from_csv(str(path), "sim")
+    pc.pca_components = PANEL_COMPONENTS.copy()
+    pc.pca_offset = SPECTRA.copy()
+    pc.pca_components_stain = pd.Series(STAINS, index=PANEL_COMPONENTS.index)
+    pc.pca_components_use = PANEL_COMPONENTS_USE.copy()
+    pc.pca_explained_variance = pd.Series([.02, .01, .005], index=PANEL_COMPONENTS.index)
+    pc.pca_embedding = pd.DataFrame([[1., -1., 0.]], index=["comp_run"], columns=PANEL_COMPONENTS.index)
+    pc.channels = CHANNELS_FLUORESCENCE
+    pc.has_PCA_data = True
+    return pc
+
+
+def panel_spectra_of(embedding):
+    """Spectra (stain, channel) of the test panel for an embedding (component,), unused components masked."""
+    e = np.asarray(embedding, dtype=float) * PANEL_COMPONENTS_USE.to_numpy()
+    sp = SPECTRA.to_numpy().copy()
+    for k, comp in enumerate(PANEL_COMPONENTS.index):
+        sp[STAINS.index(comp.split("_")[0])] += e[k] * PANEL_COMPONENTS.loc[comp].to_numpy()
+    return np.clip(sp, 0, None)
+
+
+def set_transformer_params(tr, emb=None, stain=None, channel=None):
+    """Set the trainable parts of a transformer (values per batch, before masks)."""
+    with torch.no_grad():
+        if emb is not None:
+            tr.pem.param_embedding["batch"].param_trainable.data[:] = torch.as_tensor(emb, dtype=torch.float32)
+        if stain is not None:
+            tr.param_stainscale.parameter.param_trainable.data[:] = torch.as_tensor(stain, dtype=torch.float32)
+        if channel is not None:
+            tr.param_channelscale.parameter.param_trainable.data[:] = torch.as_tensor(channel, dtype=torch.float32)
+
+
+# Panel built directly (used by the PanelModule and panel-embedding tests)
+# components of the square panel (3 stains x 3 channels): zero in each stain's main channel (normalised spectra)
+COMPONENTS_SQUARE = {
+    "FL1": [[0., .05, -.02], [0., .01, .03]],
+    "FL2": [[.04, 0., .03]],
+    "FL3": [[.01, .03, 0.]],
+}
+USE_SQUARE = {"FL1_PC0": True, "FL1_PC1": False, "FL2_PC0": True, "FL3_PC0": True}
+
+
+def make_panelconfig_pca(offset=None, components=None, use=None, markers=None, n_measurements=4, seed=0):
+    """PanelConfiguration with PCA data: `offset` (stain, channel) DataFrame, `components` stain -> list of vectors."""
+    offset = SPECTRA.copy() if offset is None else offset
+    components = COMPONENTS_SQUARE if components is None else components
+    use = USE_SQUARE if use is None else use
+    stains = offset.index.to_numpy()
+    markers = np.array(MARKERS[:len(stains)] if markers is None else markers)
+    names, rows, comp_stain = [], [], []
+    for s in stains:
+        for i, v in enumerate(components.get(s, [])):
+            names.append(f"{s}_PC{i}"); rows.append(v); comp_stain.append(s)
+    pc = PanelConfiguration()
+    pc.name = "test_panel"
+    pc.stains, pc.markers = stains, markers
+    pc.stain_marker_name = np.array([f"{s} | {m}" for s, m in zip(stains, markers)])
+    pc.pca_components = pd.DataFrame(np.asarray(rows, dtype=float).reshape(len(rows), offset.shape[1]), index=names,
+                                     columns=offset.columns)
+    pc.pca_offset = offset
+    pc.pca_components_stain = pd.Series(comp_stain, index=names)
+    pc.pca_components_use = pd.Series([bool(use[n]) for n in names], index=names)
+    pc.components = np.array([np.array([i for i, n in enumerate(n for n in names if n.startswith(s + "_"))
+                                        if use[f"{s}_PC{i}"]], dtype=int) for s in stains], dtype=object)
+    pc.total_components = int(pc.pca_components_use.sum())
+    rng = np.random.default_rng(seed)
+    pc.pca_embedding = pd.DataFrame(rng.normal(size=(n_measurements, len(names))), index=[f"run{i}" for i in range(n_measurements)],
+                                    columns=names)
+    pc.channels = list(offset.columns)
+    pc.has_PCA_data = True
+    return pc

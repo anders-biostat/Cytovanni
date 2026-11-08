@@ -5,7 +5,7 @@ import pytest
 import torch
 
 import synthetic
-from test_ref_panel import make_panelconfig, USE_SQUARE
+from synthetic import USE_SQUARE, make_panelconfig_pca
 from cytovanni.exceptions import OverlapStandardisationException
 from cytovanni.ref import PanelModule, PanelEmbeddingModule, FixedPanelModule, MultiOrdinalEncoder
 from cytovanni.torch import torch_invert_spectra
@@ -19,7 +19,7 @@ def make_moe():
 
 
 def make_pem(batch_order=("day", "plate"), **kw):
-    pc = make_panelconfig()
+    pc = make_panelconfig_pca()
     kcb = pd.Series(["day", "day", "day", "plate"], index=COMPS)
     return PanelEmbeddingModule.from_data(pc, make_moe(), kcb, batch_order=list(batch_order) if batch_order else None, **kw)
 
@@ -50,7 +50,7 @@ def test_masks_with_batch_order_coarse_key_gets_later_components():
 
 
 def test_component_order_follows_panel_not_series():
-    pc = make_panelconfig()
+    pc = make_panelconfig_pca()
     kcb = pd.Series(["plate", "day", "day", "day"], index=COMPS[::-1])  # FL3_PC0 -> plate, given reversed
     pem = PanelEmbeddingModule.from_data(pc, make_moe(), kcb)
     assert list(pem.key_comp_batch.index) == COMPS
@@ -60,7 +60,7 @@ def test_component_order_follows_panel_not_series():
 def test_missing_key_in_moe_raises():
     kcb = pd.Series(["day", "day", "day", "week"], index=COMPS)
     with pytest.raises(OverlapStandardisationException):
-        PanelEmbeddingModule.from_data(make_panelconfig(), make_moe(), kcb)
+        PanelEmbeddingModule.from_data(make_panelconfig_pca(), make_moe(), kcb)
 
 
 def test_missing_key_in_batch_order_raises():
@@ -71,7 +71,7 @@ def test_missing_key_in_batch_order_raises():
 def test_missing_component_raises_keyerror():
     kcb = pd.Series(["day", "day", "day"], index=COMPS[:3])
     with pytest.raises(KeyError):
-        PanelEmbeddingModule.from_data(make_panelconfig(), make_moe(), kcb)
+        PanelEmbeddingModule.from_data(make_panelconfig_pca(), make_moe(), kcb)
 
 
 def test_init_emb_summed_embedding_starts_at_init():
@@ -84,7 +84,7 @@ def test_init_emb_summed_embedding_starts_at_init():
 
 
 def test_fixed_init_from_measured_embedding_nan_to_zero():
-    pc = make_panelconfig()
+    pc = make_panelconfig_pca()
     pc.pca_embedding.loc["run1", "FL2_PC0"] = np.nan
     kcb = pd.Series(["day", "day", "day", "plate"], index=COMPS)
     pem = PanelEmbeddingModule.from_data(pc, make_moe(), kcb, fixed_init="run1")
@@ -276,7 +276,7 @@ def test_recovers_embedding_from_unmixing_loss():
     """C: fitting the per-day embedding so that known abundances reproduce the data recovers the true embedding."""
     torch.manual_seed(0)
     true = {"d0": np.array([1., 0., -1., .5]), "d1": np.array([-.5, 0., 2., -1.])}
-    pc = make_panelconfig()
+    pc = make_panelconfig_pca()
     pmod = PanelModule.from_panelconfig(pc)
     kcb = pd.Series("day", index=COMPS)
     pem = PanelEmbeddingModule.from_data(pc, make_moe(), kcb)

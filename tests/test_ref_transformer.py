@@ -13,41 +13,12 @@ from cytovanni.ref import (DummyTransformer, FixedPanelModule, MultiOrdinalEncod
 from cytovanni.ref.model_transformer import ScaleFactor, pick_panel_cls, pick_transformer_cls
 from cytovanni.spill import PanelConfiguration
 from cytovanni.utils import invert_spectra
+from synthetic import (PANEL_COMPONENTS, PANEL_COMPONENTS_USE, make_panelconfig_csv, panel_spectra_of,
+                       set_transformer_params)
 
 CH = synthetic.CHANNELS_FLUORESCENCE
 ST = synthetic.STAINS
 SP = synthetic.SPECTRA
-# PCA components of the test panel (component, channel): FL1 spills more or less into FL2, FL2 into FL3; the FL3
-# component exists but is not used by the panel
-COMPONENTS = pd.DataFrame([[0., .1, 0.], [0., 0., .1], [.05, 0., 0.]], index=["FL1_PC0", "FL2_PC0", "FL3_PC0"], columns=CH)
-COMPONENTS_USE = pd.Series([True, True, False], index=COMPONENTS.index)
-
-
-def make_panelconfig(folder):
-    """PanelConfiguration of the simulated panel with hand-made PCA data (offset = SPECTRA)."""
-    path = folder / "panel.csv"
-    pd.DataFrame({"stain": ST, "marker": synthetic.MARKERS, "components": ["0", "0", ""]}).to_csv(path, index=False)
-    pc = PanelConfiguration.from_csv(str(path), "sim")
-    pc.pca_components = COMPONENTS.copy()
-    pc.pca_offset = SP.copy()
-    pc.pca_components_stain = pd.Series(ST, index=COMPONENTS.index)
-    pc.pca_components_use = COMPONENTS_USE.copy()
-    pc.pca_explained_variance = pd.Series([.02, .01, .005], index=COMPONENTS.index)
-    pc.pca_embedding = pd.DataFrame([[1., -1., 0.]], index=["comp_run"], columns=COMPONENTS.index)
-    pc.channels = CH
-    pc.has_PCA_data = True
-    return pc
-
-
-def spectra_of(embedding):
-    """Spectra (stain, channel) of the test panel for an embedding (component,), unused components masked."""
-    e = np.asarray(embedding, dtype=float) * COMPONENTS_USE.to_numpy()
-    sp = SP.to_numpy().copy()
-    for k, comp in enumerate(COMPONENTS.index):
-        sp[ST.index(comp.split("_")[0])] += e[k] * COMPONENTS.loc[comp].to_numpy()
-    return np.clip(sp, 0, None)
-
-
 def moe_abc():
     return MultiOrdinalEncoder.from_data(pd.DataFrame({"batch": synthetic.BATCHES}), ["batch"])
 
@@ -58,26 +29,15 @@ def adata_of(batch, n=5, seed=0, channels=CH):
 
 @pytest.fixture
 def panelconfig(tmp_path):
-    return make_panelconfig(tmp_path)
+    return make_panelconfig_csv(tmp_path)
 
 
 def spectral_transformer(pc, moe=None, **kw):
     """SpectralFitTransformer of the test panel with batch A anchored."""
     moe = moe_abc() if moe is None else moe
-    pem = PanelEmbeddingModule.from_data(pc, moe, pd.Series("batch", index=COMPONENTS.index), anchor_bidx={"batch": [0]})
+    pem = PanelEmbeddingModule.from_data(pc, moe, pd.Series("batch", index=PANEL_COMPONENTS.index), anchor_bidx={"batch": [0]})
     kw = dict(dict(scale_stains=True, scale_channels=True, anchor_bidx={"batch": [0]}), **kw)
     return SpectralFitTransformer.from_data(moe, pem, **kw)
-
-
-def set_params(tr, emb=None, stain=None, channel=None):
-    """Set the trainable parts of a transformer (values per batch, before masks)."""
-    with torch.no_grad():
-        if emb is not None:
-            tr.pem.param_embedding["batch"].param_trainable.data[:] = torch.as_tensor(emb, dtype=torch.float32)
-        if stain is not None:
-            tr.param_stainscale.parameter.param_trainable.data[:] = torch.as_tensor(stain, dtype=torch.float32)
-        if channel is not None:
-            tr.param_channelscale.parameter.param_trainable.data[:] = torch.as_tensor(channel, dtype=torch.float32)
 
 
 # ------------------------------------------------------------------ pick functions
@@ -204,12 +164,12 @@ def test_spectralfit_standardise_formula(panelconfig):
     emb = np.array([[0., 1.5, -2.], [0., -.5, 1.], [0., 3., 0.]])  # (component, batch); FL3_PC0 is unused
     stain = np.array([[0., 0., 0.], [.2, -.1, .3], [-.3, .4, 0.]])
     channel = np.array([[0., 0., 0.], [.1, .2, -.2], [0., -.1, .1]])
-    set_params(tr, emb, stain, channel)
+    set_transformer_params(tr, emb, stain, channel)
     x = torch.tensor(np.random.default_rng(0).uniform(1e3, 1e5, (6, 3)), dtype=torch.float32)
     for b in range(3):
         bidx = {"batch": torch.full((6,), b, dtype=torch.long)}
         got = tr.standardise(x, bidx).detach().numpy()
-        sp = spectra_of(emb[:, b])
+        sp = panel_spectra_of(emb[:, b])
         expected = (x.numpy() * np.exp(channel[b])[None]) @ invert_spectra(pd.DataFrame(sp)).to_numpy() * np.exp(stain[b])[None]
         assert np.allclose(got, expected, rtol=1e-4), b
         assert torch.allclose(tr(x, bidx), torch.arcsinh(tr.standardise(x, bidx) / 5000))
@@ -219,7 +179,7 @@ def test_spectralfit_standardise_formula(panelconfig):
 
 def test_spectralfit_learned_parameters_and_aux_loss(panelconfig):
     tr = spectral_transformer(panelconfig, L1weight_embedding=2., L1weight_stainscale=3., L1weight_channelscale=5.)
-    set_params(tr, emb=np.full((3, 3), .5), stain=np.full((3, 3), .1), channel=np.full((3, 3), -.2))
+    set_transformer_params(tr, emb=np.full((3, 3), .5), stain=np.full((3, 3), .1), channel=np.full((3, 3), -.2))
     ls, lc = tr.learned_stainlogscale, tr.learned_channellogscale
     assert ls.index.tolist() == synthetic.BATCHES and ls.columns.tolist() == ST
     assert lc.columns.tolist() == CH and np.allclose(lc.loc["B"], -.2) and np.allclose(lc.loc["A"], 0.)
@@ -234,7 +194,7 @@ def test_spectralfit_learned_parameters_and_aux_loss(panelconfig):
 def test_spectralfit_history_and_plots(panelconfig):
     tr = spectral_transformer(panelconfig)
     for i in range(3):
-        set_params(tr, emb=np.full((3, 3), .1 * i))
+        set_transformer_params(tr, emb=np.full((3, 3), .1 * i))
         tr.append_history()
     assert len(tr.paramhistory["embedding"]) == 3 and len(tr.paramhistory["stainlogscale"]) == 3
     tr.plot_history_embedding(legend=True)
@@ -245,7 +205,7 @@ def test_spectralfit_history_and_plots(panelconfig):
 def test_spectralfit_export_roundtrip_with_multiplier(panelconfig):
     tr = spectral_transformer(panelconfig)
     tr.set_smp(UnmxErrorExclusionMultiplier(tr, groups=[("FL1", 4e3, ["FL2"])]))
-    set_params(tr, emb=np.random.default_rng(1).normal(size=(3, 3)), stain=np.full((3, 3), .2), channel=np.full((3, 3), .1))
+    set_transformer_params(tr, emb=np.random.default_rng(1).normal(size=(3, 3)), stain=np.full((3, 3), .2), channel=np.full((3, 3), .1))
     tr.append_history()
     tr2 = SpectralFitTransformer.from_exported(tr.export())
     assert isinstance(tr2.smp, UnmxErrorExclusionMultiplier) and tr2.smp.groups == tr.smp.groups
@@ -260,13 +220,13 @@ def test_spectralfit_export_roundtrip_with_multiplier(panelconfig):
 
 def test_spectralfit_standardisation_params_reproduce_standardise(panelconfig):
     tr = spectral_transformer(panelconfig)
-    set_params(tr, emb=np.array([[0., 1., 2.], [0., -1., .5], [0., 0., 0.]]), stain=np.full((3, 3), .3),
+    set_transformer_params(tr, emb=np.array([[0., 1., 2.], [0., -1., .5], [0., 0., 0.]]), stain=np.full((3, 3), .3),
                channel=np.array([[0.] * 3, [.1, -.1, .2]] * 1 + [[0.] * 3]))
     ad = adata_of("B")
     cs, ss, spectra, unmx, emb = tr.get_standardisationparams_fromad(ad, label_include_stain=True)
     assert spectra.shape == (3, 3) and spectra.index.tolist() == CH
     assert ss.index.tolist() == list(tr.stain_marker_name)
-    assert np.allclose(spectra.T.to_numpy(), spectra_of([1., -1., 0.]), atol=1e-6)
+    assert np.allclose(spectra.T.to_numpy(), panel_spectra_of([1., -1., 0.]), atol=1e-6)
     assert emb.shape == (3,) and emb[2] == 0.  # unused component masked
     x = ad.layers["calibrated"]
     std = tr.standardise(torch.tensor(x), tr.moe.transform_ad(ad)).detach().numpy()
@@ -277,7 +237,7 @@ def test_spectralfit_standardisation_params_reproduce_standardise(panelconfig):
 
 def test_spectralfit_add_standardisation_parameters(panelconfig):
     tr = spectral_transformer(panelconfig)
-    set_params(tr, stain=np.full((3, 3), .3), channel=np.full((3, 3), .1))
+    set_transformer_params(tr, stain=np.full((3, 3), .3), channel=np.full((3, 3), .1))
     ad = adata_of("C", channels=["FSC-A"] + CH)
     ad.var["rainbow_calibration_factor"] = [np.nan, 2., 3., 4.]
     tr.add_standardisation_parameters(ad)
@@ -310,7 +270,7 @@ def test_spectralfit_with_fixed_panel_module():
 
 def test_spectralfit_freeparam_functions_match_forward(panelconfig):
     tr = spectral_transformer(panelconfig)
-    set_params(tr, emb=np.full((3, 3), .4), stain=np.full((3, 3), .2), channel=np.full((3, 3), -.1))
+    set_transformer_params(tr, emb=np.full((3, 3), .4), stain=np.full((3, 3), .2), channel=np.full((3, 3), -.1))
     x = torch.rand(10, 3) * 1e4
     plist = []
     for b in [1, 2]:
@@ -391,7 +351,7 @@ def test_scaling_several_anchors_raise():
 def test_scaling_mean_norm_and_anchor_relative_factors():
     tr = scaling_transformer(anchor=1, scale_stains=pd.Series([True, True, False], index=ST))
     assert tr.loss_use_stain_mask.tolist() == [True, True, False]
-    set_params(tr, stain=[[.1, .3, 0.], [.4, -.3, 0.], [.7, 0., 0.]])
+    set_transformer_params(tr, stain=[[.1, .3, 0.], [.4, -.3, 0.], [.7, 0., 0.]])
     raw = tr.param_stainscale.logfactor.detach()
     assert torch.allclose(raw.mean(0), torch.zeros(3), atol=1e-6)  # mean 0 over batches during the fit
     ls = tr.learned_stainlogscale
@@ -410,7 +370,7 @@ def test_scaling_mean_norm_and_anchor_relative_factors():
 
 def test_scaling_without_anchor_learned_has_mean_zero():
     tr = scaling_transformer(anchor=None)
-    set_params(tr, stain=np.random.default_rng(0).normal(size=(3, 3)))
+    set_transformer_params(tr, stain=np.random.default_rng(0).normal(size=(3, 3)))
     assert np.allclose(tr.learned_stainlogscale.mean(0), 0., atol=1e-6)
 
 
@@ -418,7 +378,7 @@ def test_scaling_standardisation_params_spectral_panel():
     """R2-B2 + R2-A3: spectral panel (fewer stains than channels) unmixes exactly; the stain factor goes to varm."""
     sp = SP.iloc[:2]
     tr = scaling_transformer(anchor=0, spectra=sp)
-    set_params(tr, stain=[[.5, -.5], [.1, .2], [0., 0.]])
+    set_transformer_params(tr, stain=[[.5, -.5], [.1, .2], [0., 0.]])
     ad = adata_of("B", channels=CH + ["FSC-A"])
     scale, spectra, unmx = tr.get_standardisationparams_fromad(ad)
     assert unmx.index.tolist() == CH and spectra.shape == (3, 2)
@@ -450,7 +410,7 @@ def test_scaling_add_stain_logscale_only_differences_take_effect():
 
 def test_scaling_export_roundtrip_and_aux_loss():
     tr = scaling_transformer(anchor=2, L1weight_stainscale=2., max_abslogstain=1.)
-    set_params(tr, stain=np.random.default_rng(0).normal(size=(3, 3)))
+    set_transformer_params(tr, stain=np.random.default_rng(0).normal(size=(3, 3)))
     tr.append_history()
     tr2 = ScalingTransformer.from_exported(tr.export())
     assert tr2.anchor_idx == [2] and len(tr2.paramhistory["stainlogscale"]) == 1
@@ -475,7 +435,7 @@ def test_scaling_extend_masks_and_freeze():
 def test_scaling_extend_new_batch_starts_at_factor_one():
     tr = scaling_transformer(anchor=None)
     # un-normalised log factors with mean 1.5 for FL1 (reachable with Adam, whose updates are not mean-free)
-    set_params(tr, stain=[[1., 0., 0.], [2., 0., 0.], [1.5, 0., 0.]])
+    set_transformer_params(tr, stain=[[1., 0., 0.], [2., 0., 0.], [1.5, 0., 0.]])
     before = tr.learned_stainlogscale.copy()
     new = tr.moe.extend(pd.DataFrame({"batch": ["D"]}))
     tr.extend(tr.moe, new)

@@ -1,6 +1,6 @@
 """cytovanni.ref.panel.PanelModule: spectra from a panel embedding, differentiable unmixing and its diagnostics.
 
-Group-specific generator: `make_panelconfig` builds a `PanelConfiguration` with PCA data directly (offsets = the
+Group-specific generator: `make_panelconfig_pca` builds a `PanelConfiguration` with PCA data directly (offsets = the
 synthetic spectra, a few small components per stain), without fitting single-stain controls.
 """
 import inspect
@@ -14,58 +14,19 @@ import synthetic
 from cytovanni.spill import PanelConfiguration
 from cytovanni.ref import PanelModule
 from cytovanni.torch import torch_invert_spectra, torch_apply_unmixing_inv
-
-# components of the square panel (3 stains x 3 channels): zero in each stain's main channel (normalised spectra)
-COMPONENTS_SQUARE = {
-    "FL1": [[0., .05, -.02], [0., .01, .03]],
-    "FL2": [[.04, 0., .03]],
-    "FL3": [[.01, .03, 0.]],
-}
-USE_SQUARE = {"FL1_PC0": True, "FL1_PC1": False, "FL2_PC0": True, "FL3_PC0": True}
-
-
-def make_panelconfig(offset=None, components=None, use=None, markers=None, n_measurements=4, seed=0):
-    """PanelConfiguration with PCA data: `offset` (stain, channel) DataFrame, `components` stain -> list of vectors."""
-    offset = synthetic.SPECTRA.copy() if offset is None else offset
-    components = COMPONENTS_SQUARE if components is None else components
-    use = USE_SQUARE if use is None else use
-    stains = offset.index.to_numpy()
-    markers = np.array(synthetic.MARKERS[:len(stains)] if markers is None else markers)
-    names, rows, comp_stain = [], [], []
-    for s in stains:
-        for i, v in enumerate(components.get(s, [])):
-            names.append(f"{s}_PC{i}"); rows.append(v); comp_stain.append(s)
-    pc = PanelConfiguration()
-    pc.name = "test_panel"
-    pc.stains, pc.markers = stains, markers
-    pc.stain_marker_name = np.array([f"{s} | {m}" for s, m in zip(stains, markers)])
-    pc.pca_components = pd.DataFrame(np.asarray(rows, dtype=float).reshape(len(rows), offset.shape[1]), index=names,
-                                     columns=offset.columns)
-    pc.pca_offset = offset
-    pc.pca_components_stain = pd.Series(comp_stain, index=names)
-    pc.pca_components_use = pd.Series([bool(use[n]) for n in names], index=names)
-    pc.components = np.array([np.array([i for i, n in enumerate(n for n in names if n.startswith(s + "_"))
-                                        if use[f"{s}_PC{i}"]], dtype=int) for s in stains], dtype=object)
-    pc.total_components = int(pc.pca_components_use.sum())
-    rng = np.random.default_rng(seed)
-    pc.pca_embedding = pd.DataFrame(rng.normal(size=(n_measurements, len(names))), index=[f"run{i}" for i in range(n_measurements)],
-                                    columns=names)
-    pc.channels = list(offset.columns)
-    pc.has_PCA_data = True
-    return pc
-
+from synthetic import COMPONENTS_SQUARE, USE_SQUARE, make_panelconfig_pca
 
 def make_spectral_panelconfig():
     """2 stains x 4 channels, one used component per stain."""
     ch = ["c0", "c1", "c2", "c3"]
     offset = pd.DataFrame([[1., .4, .1, .05], [.1, .3, 1., .5]], index=["A", "B"], columns=ch)
     comps = {"A": [[0., .05, .02, .01]], "B": [[.02, 0.03, 0., .04]]}
-    return make_panelconfig(offset, comps, {"A_PC0": True, "B_PC0": True}, markers=["m1", "m2"])
+    return make_panelconfig_pca(offset, comps, {"A_PC0": True, "B_PC0": True}, markers=["m1", "m2"])
 
 
 @pytest.fixture
 def pc():
-    return make_panelconfig()
+    return make_panelconfig_pca()
 
 
 @pytest.fixture
@@ -253,7 +214,7 @@ def test_resistance_chunks_do_not_change_result(pm):
 
 def test_resistance_single_step_adds_step():
     """R2-D2: with single_step the chosen component is shifted by +-step (it was set to +-step)."""
-    pm = PanelModule.from_panelconfig(make_panelconfig(use={k: True for k in USE_SQUARE}))
+    pm = PanelModule.from_panelconfig(make_panelconfig_pca(use={k: True for k in USE_SQUARE}))
     x, _ = _events(10)
     e = np.array([3., -2., 1.5, .5])
     rec = []
@@ -387,7 +348,7 @@ def test_spectra_fromembedding(pm):
 
 def test_spectra_fromembedding_include_unused():
     """R2b-G2-22: include_unused=True returns the unmasked spectra (it was ignored)."""
-    pm = PanelModule.from_panelconfig(make_panelconfig())
+    pm = PanelModule.from_panelconfig(make_panelconfig_pca())
     e = np.array([0., 5., 0., 0.])
     s = pm.get_spectra_fromembedding(e, include_unused=True)
     assert np.allclose(s.iloc[0].to_numpy(), synthetic.SPECTRA.iloc[0].to_numpy() + 5 * np.array([0., .01, .03]), atol=1e-6)
