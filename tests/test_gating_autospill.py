@@ -157,10 +157,9 @@ def test_tesselator_index_point_maps_are_inverse(rng):
     h = HistogramTesselator(x, y, (0, 100), (0, 200), Nx=50, Ny=50)
     P = np.array([[3., 7.], [49., 49.], [0., 0.]])
     assert np.allclose(h.point_to_ind(h.ind_to_point(P)), P)
-    assert np.allclose(h.ind_to_point(np.array([[0., 0.]])), h.bins_center[[0]])
+    assert np.allclose(h.ind_to_point(np.array([[0., 0.]])), h.bins_center_corners[[0]])
 
 
-@pytest.mark.xfail(strict=True, reason="bug: Nx != Ny crashes (bins_center stacks the x and y bin centres), see R4 findings")
 def test_tesselator_nonsquare_grid(rng):
     """Nx and Ny are documented as separate grid sizes; a non-square grid should work."""
     x, y, _ = two_clusters(rng)

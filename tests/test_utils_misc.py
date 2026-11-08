@@ -272,16 +272,12 @@ def test_check_pulse_width_independence(rng, monkeypatch):
     check_pulse_width_independence(_pulse_adata(rng, False), "FSC", plot=True)
 
 
-@pytest.mark.xfail(strict=True, reason="R4 utils bug 2: one event with height 0 makes the correlation NaN, so an "
-                                       "independently measured width is reported as computed (False)")
 def test_check_pulse_width_independence_with_zero_height(rng):
     a = _pulse_adata(rng, True)
     a.layers["raw"][0, 1] = 0.  # FSC-H of one event
     assert check_pulse_width_independence(a, "FSC")
 
 
-@pytest.mark.xfail(strict=True, reason="R4 utils bug 3: permute=True indexes the concatenated object outside the "
-                                       "warning filter, so the duplicate-name warning the docstring says is silenced appears")
 def test_anndata_concat_permute_silences_duplicate_name_warning(recwarn):
     a, b = _ad(5), _ad(5, 100.)
     anndata_concat([a, b], permute=True)

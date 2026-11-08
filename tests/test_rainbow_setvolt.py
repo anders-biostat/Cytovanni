@@ -82,8 +82,6 @@ def test_voltages_of_the_reference_itself_need_no_change(targetconfig, rainbow_f
     np.testing.assert_allclose(vc["voltage_target"].astype(float), vc["voltage"], atol=1)
 
 
-@pytest.mark.xfail(strict=True, reason="R4 rainbow bug: '_N_peak' is read back from .csv as float (3.0), "
-                   "GaussianMixture rejects a float n_components")
 def test_voltages_from_csv_round_trip(targetconfig, rainbow_files, config, tmp_path):
     path = tmp_path / "targetconfig.csv"
     targetconfig.to_csv(path)

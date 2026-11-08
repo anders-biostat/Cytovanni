@@ -225,8 +225,6 @@ def test_covtril_gradient_flows():
     assert g[0, 1] == 0 and g[1, 0] == 1 and 0 < g[0, 0] < 1
 
 
-@pytest.mark.xfail(strict=True, raises=RuntimeError,
-                   reason="documented ValueError, but the trainable mask (torch.tril) raises a RuntimeError first")
 def test_covtril_one_axis_raises():
     with pytest.raises(ValueError):
         CovarianceTrilExtendableParameter((3,), 0, .2)
@@ -237,3 +235,17 @@ def test_covtril_extend_on_device(device):
     c = CovarianceTrilExtendableParameter((2, 2, 2), 0, .2).to(device)
     c.extend([3])
     assert c.shape == (4, 2, 2) and c().device.type == device
+
+
+def test_extend_with_mean_norm_new_entries_start_at_init_value():
+    """With axis_norm, extend stores the old entries normalised: they keep their value, new ones start at init_value
+    (before, new entries started at minus the mean of the old un-normalised values)."""
+    p = ExtendableParameter((3,), 0, 0., axis_norm=0)
+    with torch.no_grad():
+        p.param_trainable[:] = torch.tensor([1., 2., 1.5])
+    before = p().detach().clone()
+    p.extend([3])
+    after = p().detach()
+    assert torch.allclose(after[:3], before) and after[3] == 0.
+    p.freeze()
+    assert torch.allclose(p().detach(), after)

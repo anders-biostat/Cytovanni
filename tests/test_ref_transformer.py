@@ -472,8 +472,6 @@ def test_scaling_extend_masks_and_freeze():
     assert (tr.param_stainscale.parameter.param_mask_trainable == 0).all()
 
 
-@pytest.mark.xfail(strict=True, reason="R4 finding ref_model #1: new batches of an extended ScalingTransformer start at "
-                                       "exp(-mean of the old un-normalised log factors), not at factor 1")
 def test_scaling_extend_new_batch_starts_at_factor_one():
     tr = scaling_transformer(anchor=None)
     # un-normalised log factors with mean 1.5 for FL1 (reachable with Adam, whose updates are not mean-free)

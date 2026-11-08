@@ -1,6 +1,7 @@
 """Event rate of a recording, estimated from the event times."""
 import numpy as np
 import matplotlib.pyplot as plt
+from scipy.special import gammaincinv
 
 class EventRateEstimator():
     r"""Estimate the overall event rate of a recording from its event times.
@@ -11,6 +12,14 @@ class EventRateEstimator():
     :math:`\kappa = N / \sum_i^N \Delta t_i`, i.e. one over the mean time difference, which is sensitive to outliers
     (e.g. pauses in the acquisition). Since the median of the distribution is :math:`\ln(2)/\kappa`, the class uses the
     more robust estimator :math:`\kappa = \ln(2) / \operatorname{median}(\Delta t_i)` instead.
+
+    Event times are stored with a finite resolution (the smallest positive time difference, e.g. $TIMESTEP). When the
+    median difference is below `MIN_RESOLUTION_STEPS` resolution steps, the median is dominated by the rounding (it is
+    0 once most consecutive events share a time step). The estimate then uses the differences over `k` events,
+    :math:`t_{i+k} - t_i`, which follow a Gamma(k, :math:`\kappa`) distribution:
+    :math:`\kappa = m_k / \operatorname{median}(t_{i+k} - t_i)`, with :math:`m_k` the median of Gamma(k, 1) and the
+    smallest `k` whose median difference spans at least `MIN_RESOLUTION_STEPS` steps (`k` = 1 gives the estimator
+    above).
 
     Parameters
     ----------
@@ -27,8 +36,11 @@ class EventRateEstimator():
         Differences between consecutive sorted event times (length N - 1).
     N : int
         Number of events.
+    k : int
+        Number of events spanned by the time differences used for the estimate (1 unless the times are coarsely
+        quantised, see above).
     kappa : float
-        Estimated rate, ``ln(2) / median(timediff)``, in events per unit of `times`.
+        Estimated rate in events per unit of `times`; ``ln(2) / median(timediff)`` for `k` = 1.
     rate : float
         Same as `kappa`.
 
@@ -37,11 +49,21 @@ class EventRateEstimator():
     >>> t = np.cumsum(np.random.exponential(1 / 50., size=20000))
     >>> EventRateEstimator(t).rate  # about 50
     """
+    MIN_RESOLUTION_STEPS = 20
+
     def __init__(self, times):
         self.time = np.sort(np.asarray(times))
         self.timediff = self.time[1:] - self.time[:-1]
         self.N = self.time.shape[0]
-        self.kappa = np.log(2) / np.median(self.timediff)
+        self.k = 1
+        median_diff = np.median(self.timediff)
+        positive = self.timediff[self.timediff > 0]
+        if len(positive) > 0:
+            resolution = positive.min()
+            while median_diff < self.MIN_RESOLUTION_STEPS * resolution and 2 * self.k < self.N:
+                self.k *= 2
+                median_diff = np.median(self.time[self.k:] - self.time[:-self.k])
+        self.kappa = gammaincinv(self.k, .5) / median_diff
         self.rate = self.kappa
 
     def plot(self):

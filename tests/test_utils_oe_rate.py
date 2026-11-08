@@ -99,7 +99,6 @@ def test_event_rate_plot(rng):
     assert len(ax) == 2 and ax[1].get_yscale() == "log"
 
 
-@pytest.mark.xfail(strict=True, reason="R4 utils bug 1: quantised event times (ties) give median(timediff) = 0 -> rate inf")
 def test_event_rate_with_quantised_times(rng):
     """Times stored with a finite resolution ($TIMESTEP, here 0.01 s) at 200 events/s: most differences are 0."""
     t = np.round(np.cumsum(rng.exponential(1 / 200., size=20000)), 2)

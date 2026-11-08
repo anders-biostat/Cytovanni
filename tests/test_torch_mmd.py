@@ -137,8 +137,6 @@ def test_rbf_batched_matches_rbf_per_batch():
     assert torch.allclose(RBF_batched(bandwidth=torch.full((3, 1, 1), 2.))(X)[0], RBF(bandwidth=2.)(X[0]), atol=1e-5)
 
 
-@pytest.mark.xfail(strict=True, raises=TypeError,
-                   reason="RBF_batched documents a float bandwidth, but indexes it like a (..., 1, 1) tensor")
 def test_rbf_batched_float_bandwidth():
     X = torch.randn(3, 6, 2)
     assert torch.allclose(RBF_batched(bandwidth=2.)(X)[0], RBF(bandwidth=2.)(X[0]), atol=1e-5)

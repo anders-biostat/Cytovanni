@@ -165,7 +165,7 @@ def get_voltages_from_rainbow(cytoconfig, targetconfig, rainbow_path, plot=True)
     >>> voltageconfig = get_voltages_from_rainbow(cytoconfig, targetconfig, "rainbow_today.fcs", plot=False)
     >>> print(color_voltageconfig(voltageconfig, errorlevel=1))
     """
-    N_rainbow_peak = targetconfig.loc["_N_peak", "peak"]
+    N_rainbow_peak = int(targetconfig.loc["_N_peak", "peak"])
     metainds = ["_N_peak"]
     targetconfig = targetconfig.iloc[~np.isin(targetconfig.index, metainds)].copy()
 

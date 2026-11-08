@@ -201,8 +201,6 @@ def test_spectralflow_default_regex_anchored(tmp_path):
     assert re.findall(default, "Compensation Controls_FITCxfcs") == []
 
 
-@pytest.mark.xfail(strict=True, reason="bug (todo/R4_findings/spill.md): '(.*){dye}' also matches a dye name that ends "
-                                        "another channel name (V540 in UV540, V1 in UV1: S6, Aurora configs)")
 def test_regularflow_channel_that_ends_another_channel_name(tmp_path):
     src = tmp_path / "src"; src.mkdir()
     df = synthetic.single_stain_events("FL1", "A", n=1000).rename(columns={"FL1-A": "UV540-A", "FL2-A": "V540-A"})

@@ -60,10 +60,6 @@ class SpilloverFitException(CytovanniException):
     """Generic exception of spillover fit."""
     pass
 
-class SpilloverFitException(CytovanniException):
-    """Generic exception of spillover fit."""
-    pass
-
 class SpilloverException(CytovanniException):
     """Generic exception for spillover part."""
     pass
@@ -108,10 +104,6 @@ class CalibrationModuleUntrainedParameterWarning(CytovanniWarning):
 
 class OrdinalEncoderWarning(CytovanniWarning):
     """Generic ordinal encoder module warning."""
-    pass
-
-class MissingGPUWarning(CytovanniWarning):
-    """Torch doesn't find any available GPUs."""
     pass
 
 class MissingGPUWarning(CytovanniWarning):

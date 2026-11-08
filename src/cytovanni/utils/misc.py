@@ -490,10 +490,10 @@ def anndata_concat(adatas, make_unique=False, join="inner", merge=None, permute=
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", message="Observation names are not unique")
         adata = anndata.concat(adatas, join=join, merge=merge)
-    if make_unique:
-        adata.obs_names_make_unique()
-    if permute:
-        adata = adata[np.random.permutation(adata.shape[0])].copy()
+        if make_unique:
+            adata.obs_names_make_unique()
+        if permute:
+            adata = adata[np.random.permutation(adata.shape[0])].copy()
     return adata
 
 def anndata_subsample(adata, N=20000, copy=True):
@@ -592,7 +592,8 @@ def check_pulse_width_independence(adata, channel, layer="raw", plot=False):
 
     Some instruments do not measure the pulse width but compute it as area / height; then the -W channel carries no
     additional information. The check correlates ``{channel}-W`` with ``{channel}-A / {channel}-H`` over all events
-    and treats a correlation of at least 0.999 as computed.
+    and treats a correlation of at least 0.999 as computed. Events with a height of 0 or below (no finite ratio) are
+    left out.
 
     Parameters
     ----------
@@ -615,7 +616,8 @@ def check_pulse_width_independence(adata, channel, layer="raw", plot=False):
     H = adata[:,f"{channel}-H"].layers[layer][:,0].copy()
     W = adata[:,f"{channel}-W"].layers[layer][:,0].copy()
     
-    W_calc = A / H
+    valid = H > 0
+    W, W_calc = W[valid], A[valid] / H[valid]
     corr = np.corrcoef(W, W_calc)[0,1]
 
     if plot:

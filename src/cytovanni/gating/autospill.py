@@ -276,9 +276,11 @@ class HistogramTesselator():
         self.histogram, self.bins_x, self.bins_y = np.histogram2d( x, y, bins=bins )
         self.bins_center_x = (self.bins_x[1:] + self.bins_x[:-1])/2
         self.bins_center_y = (self.bins_y[1:] + self.bins_y[:-1])/2
-        self.bins_center = np.vstack([self.bins_center_x, self.bins_center_y]).T
-        self.ind_to_point = lambda x: self.bins_center[[0]] + x/np.asarray([[Nx-1, Ny-1]]) * (self.bins_center[[-1]] - self.bins_center[[0]])
-        self.point_to_ind = lambda X: (X - self.bins_center[[0]]) / (self.bins_center[[-1]] - self.bins_center[[0]]) * np.asarray([[Nx-1, Ny-1]])
+        # centres of the first and of the last bin, (x, y) each: the grid corners for the index <-> data value maps
+        self.bins_center_corners = np.asarray([[self.bins_center_x[0], self.bins_center_y[0]],
+                                               [self.bins_center_x[-1], self.bins_center_y[-1]]])
+        self.ind_to_point = lambda x: self.bins_center_corners[[0]] + x/np.asarray([[Nx-1, Ny-1]]) * (self.bins_center_corners[[1]] - self.bins_center_corners[[0]])
+        self.point_to_ind = lambda X: (X - self.bins_center_corners[[0]]) / (self.bins_center_corners[[1]] - self.bins_center_corners[[0]]) * np.asarray([[Nx-1, Ny-1]])
         
         # kde density estimate
         if self.USE_APPROX_KDE_TREE:

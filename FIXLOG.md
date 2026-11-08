@@ -130,6 +130,17 @@ A fix can change results relative to one of these and not the other; both are st
 | R3b-B11 | S8 scatter channels' laser assignment | no (plot colours, `channel_laser_key`) | `CytometerConfiguration_S8` |
 | R3b-U2 | `get_unmixing_resistance(_fromad)` defaults = the author's settings | yes, calls relying on the defaults | `single_step`/`gradstep_maxnorm` not passed |
 | R3b-U3 | panel `*_fromad` diagnostics ignored the fitted channel/stain factors | yes, diagnostics on AnnData with stored standardisation parameters | `get_unmixing_resistance_fromad`, `get_grouped_jac(_single)_fromad`, `get_clustermeans_withz` |
+| R4-B1 | `CovarianceTrilExtendableParameter` with one axis: RuntimeError -> documented ValueError | no | shape with fewer than 2 axes |
+| R4-B2 | `RBF_batched(bandwidth=float)` crashed | no (crash -> works) | float bandwidth (not used by the package) |
+| R4-B3 | single-stain file pattern matched a channel that ends another (V540 -> UV540 file) | yes, which control file is used | `collect_bead_controls_regularflow`, `make_AutoSpill_fcs_config`; configs with such channel pairs (S6, Aurora) |
+| R4-B4 | `HistogramTesselator` crashed with Nx != Ny | no (crash -> works; Nx == Ny unchanged) | non-square grids |
+| R4-B5 | `SpilloverFitException`, `MissingGPUWarning` defined twice | no | none |
+| R4-B6 | `EventRateEstimator` inf/biased on quantised event times | yes, rates of recordings whose median event spacing is < 20 time steps | `estimate_event_rate` (arges) |
+| R4-B7 | `check_pulse_width_independence` NaN with a height of 0 | yes (NaN -> correct answer) | events with -H <= 0 |
+| R4-B8 | `anndata_concat(permute=True)` showed the duplicate-name warning | no (warning only) | `permute=True` |
+| R4-B9 | `get_voltages_from_rainbow` crashed on a targetconfig read from .csv | no (crash -> works) | targetconfig round-tripped through .csv |
+| R4-B10 | `ExtendableParameter.extend` with mean norm: new entries started at -mean(old raw values) | starting point of new batches only; fitted values after `extend` + fit up to convergence | `RainbowCalibrator.extend_fit` (hd7-01), `ScalingTransformer.extend`, `fit_factor_*` extension |
+| R4-P4d | rainbow fit: optional penalty on the broadening of the per-measurement peak covariances | no by default (`cov_penalty=0`); yes where used | `fit_fluorescence(cov_penalty>0)`: reproducibility clbr2pks fits (.3, broadening only) |
 
 Entry format: see the review notes (todo/00_CONVENTIONS.md "Fix log" in the review project).
 
@@ -1129,8 +1140,9 @@ E20 allows a subset of the panel's dyes (`allow_missing=True`).
 - What was wrong: L-BFGS (lr=1, no line search) on a stochastic closure (the aggregate subsample was redrawn at every
   closure call) diverged in 2/8 seeds to absurd factors without an error, and crashed in some runs; lr=0.1 + strong
   Wolfe still crashed 1/4. A fixed subsample per step looked stable in a small test (0/6 failures).
-- Now: removed. The `fit_factor_Sinkhorn` docstring notes that an L-BFGS variant was tried, why it diverged, and
-  refers to this entry. `fit_factor_Sinkhorn` (SGD) covers the use.
+- Now: removed. `fit_factor_Sinkhorn` (SGD) covers the use. A note in the `fit_factor_Sinkhorn` docstring that an
+  L-BFGS variant was tried and diverged was added here, and removed again in the author's review of ref/factor.py
+  (R3, 2026-11-07); this entry is the record. (Corrected 2026-11-07 in R4b; the entry first said the note exists.)
 - Affected when: code that imports `fit_factor_Sinkhorn_LBFGS` from `cytovanni.ref.factor` (it was not exported in
   `ref/__init__`): ImportError.
 - Effect on results: none (no callers).
@@ -1485,3 +1497,119 @@ in the review project (11/11 PASS, GPU job; B9 not run, code only).
 - Approval: user 2026-11-07, "Yes, change the defaults".
 - Effect on results: yes, for calls that rely on the defaults (different step direction/normalisation of R).
 - Affected analyses: none known (all known calls pass both arguments explicitly).
+
+---
+
+## R4b (bugs found by the R4 tests, branch review/R4b-bugs; approval: user 2026-11-07, "Fix on branch, correct the foxlog")
+
+Every fix has the reproducer that found it (previously a strict xfail) as its test; findings in todo/R4_findings/.
+
+### R4-B1 `CovarianceTrilExtendableParameter` with fewer than two axes
+- Where: torch.parameter. The documented ValueError was only raised in `get_initial_trainable`; the trainable mask
+  (`torch.tril`) is built first and raised a RuntimeError. Now `get_initial_trainable_mask` checks the shape too.
+- Effect: error type only. Affected: none. Test: test_torch_parameter.py::test_covtril_one_axis_raises.
+
+### R4-B2 `RBF_batched` with a float bandwidth
+- Where: torch.mmd.RBF_batched.get_bandwidth. A float (documented) was indexed like a (..., 1, 1) tensor (TypeError).
+  Now a fixed bandwidth is converted to a tensor on the distances' device, a scalar to shape (1, 1).
+- Effect: crash -> works; tensor bandwidths unchanged. Affected: none. Test: test_torch_mmd.py::test_rbf_batched_float_bandwidth.
+
+### R4-B3 single-stain file names: channel that ends another channel's name
+- Where: spill.utils.collect_bead_controls_regularflow and spill.autospill.make_AutoSpill_fcs_config (filename regex).
+- What was wrong: `Compensation Controls_(.*){channel} Stained Control.fcs` also matched a file of a channel whose name
+  ends with `channel`, e.g. the UV540 control for V540 (and UV1 for V1). Then V540 either got the UV540 file (if it has
+  no own control) or the search failed with "multiple possible matches".
+- Now: `Compensation Controls_(?:(.*) )?{channel} Stained Control\.fcs$`: the antigen (if any) is separated by a space,
+  so the channel name must be a whole word. Antigens are read as before (stripped).
+- Effect on results: yes where such channel pairs exist (S6, Aurora configs) and a channel had no own control (it now
+  gets none / the pad file instead of the other channel's control), or the search failed (now works). Unchanged
+  otherwise; files without a space between antigen and channel (not the BD convention) no longer match.
+- Affected analyses: none known (the usage evidence is A3/S8/Fusion data). Action: on S6/Aurora single stains, check
+  `panel_meta.csv` / the AutoSpill config of earlier runs for a V-channel that got a UV file.
+- Tests: test_spill_utils.py::test_regularflow_channel_that_ends_another_channel_name,
+  test_spill_autospill.py::test_channel_that_ends_another_channel_name_not_matched.
+
+### R4-B4 `HistogramTesselator` with Nx != Ny
+- Where: gating.autospill.HistogramTesselator. The index <-> data maps used `np.vstack` of the x and y bin centres,
+  which fails for different lengths. Now they use the first and last bin centres (`bins_center_corners`; the
+  `bins_center` attribute is gone). Effect: crash -> works; square grids give identical results.
+- Affected: none (all calls use Nx == Ny). Test: test_gating_autospill.py::test_tesselator_nonsquare_grid.
+
+### R4-B5 duplicate exception classes
+- Where: exceptions.py; the second (identical) definitions of `SpilloverFitException` and `MissingGPUWarning`
+  removed. Effect: none. Test: test_package.py::test_no_duplicate_class_definitions_in_exceptions.
+
+### R4-B6 `EventRateEstimator` on quantised event times
+- Where: utils.rate.EventRateEstimator (used by `estimate_event_rate`, i.e. by arges).
+- What was wrong: event times are stored with a finite resolution ($TIMESTEP, e.g. 0.01 s). At rates of the order of
+  1 / $TIMESTEP or above most consecutive differences are 0, so median = 0 and rate = inf; below that the median is
+  rounded to a few time steps, so the rate was biased (e.g. 50 events/s at 0.01 s gave about 69).
+- Now: if the median difference is below 20 resolution steps (smallest positive difference), the differences over k
+  events (k = 2, 4, 8, ...) are used, with the Gamma(k) median: rate = gammaincinv(k, 1/2) / median(t[i+k] - t[i]).
+  New attribute `k`. k = 1 is the old estimator (unchanged results when the median spans >= 20 steps).
+- Check (numpy, 20000 events): 200/s at 0.01 s -> k 64, 199; 5000/s at 0.01 s -> 4875; 50/s at 0.01 s -> 50.5
+  (k 16); unquantised and 1e-5 s resolution: unchanged (k 1).
+- Effect on results: yes, rates of recordings with coarse time resolution relative to their event rate.
+- Affected analyses: arges event rates (not in this package; logged in todo/ARGES_LUCY.md). Test:
+  test_utils_oe_rate.py::test_event_rate_with_quantised_times.
+
+### R4-B7 `check_pulse_width_independence` with a height of 0
+- Where: utils.misc. One event with -H = 0 made A / H inf, the correlation NaN, and the result False ("computed").
+  Now events with -H <= 0 are left out. Effect: NaN -> the correct answer; unchanged otherwise.
+- Affected: none known. Test: test_utils_misc.py::test_check_pulse_width_independence_with_zero_height.
+
+### R4-B8 `anndata_concat(permute=True)` warning
+- Where: utils.misc.anndata_concat. Indexing for the permutation happened outside the warning filter, so the
+  duplicate-name warning the docstring says is silenced appeared. Now inside. Effect: warning only.
+- Test: test_utils_misc.py::test_anndata_concat_permute_silences_duplicate_name_warning.
+
+### R4-B9 `get_voltages_from_rainbow` with a targetconfig read from .csv
+- Where: rainbow.setvolt. '_N_peak' comes back as a float (3.0), which `GaussianMixture` rejects. Now `int()`.
+- Effect: crash -> works. Affected: none (the pipeline passes the in-memory targetconfig). Test:
+  test_rainbow_setvolt.py::test_voltages_from_csv_round_trip.
+
+### R4-B10 `ExtendableParameter.extend` with mean normalisation: start of new entries
+- Where: torch.parameter.ExtendableParameter.extend (default `keep_prior_trainable_structure=False`); shared by
+  `ScaleFactor` (ScalingTransformer, SpectralFitTransformer scales), the rainbow fluorescence and scatter models, and
+  the `fit_factor_*` log factors.
+- What was wrong: the old entries' un-normalised values were moved into the fixed part. The mean (over the old
+  entries) is subtracted from all entries, so new entries (init 0) started at -mean(old raw values), not at
+  `init_value` (documented: "New batches start at factor 1"). The raw mean is 0 under plain SGD, but not under Adam
+  (`OverlapFitModel.fit`, rainbow fits), so the start of new batches was off by the drift. Old entries were unchanged.
+- Now: the old entries are stored normalised (`forward()`), so their masked mean is 0, they keep their values, and new
+  entries start at `init_value`. `freeze()` (= `extend([])`) gives the same values as before.
+- Effect on results: only the starting point of new (trainable) entries; after `extend` and a fit to convergence the
+  same optimum. With `freeze` and no further fit, new entries now have factor 1 instead of exp(-mean). Exception:
+  the exact scatter fit (`RainbowScatterCalibrationModule.fit`) takes the minimum-norm change from the start where the
+  problem is degenerate, e.g. new batches measured only with a new bead type (common offset of the new position and the
+  new batch shifts); there the split, and so the new batches' scatter factors, follows the new start.
+- Affected analyses: hd7-01 rainbow integration (`extend_fit`): extended batches' factors may differ within the fit's
+  convergence tolerance on a re-run. ScalingTransformer.extend: no calls found.
+- Tests: test_ref_transformer.py::test_scaling_extend_new_batch_starts_at_factor_one,
+  test_torch_parameter.py::test_extend_with_mean_norm_new_entries_start_at_init_value.
+
+### R4-P4d rainbow fluorescence fit: covariance penalty (from the reproducibility session, P4c/P4d)
+- Source: ~/hd7_myeloma/wuest/cytovanni_reproducibility/jobs/dev/p4d/cov_penalty.patch (written against ~/Cytovanni,
+  old names RainbowIntegrator / ...IntegrationTrainer), documented in its todo/P4c_reassign_fix.md (P4d). Ported to
+  `RainbowCalibrator.fit_fluorescence` / `RainbowFluorescenceGMMCalibrationTrainer`, numpydoc; code otherwise as in the
+  patch. Applied on the user's request 2026-11-07 ("The fix from the other session, falls under p4c in its
+  documentation, apply and come up with a regression test for it").
+- What was wrong: the per-measurement peak precisions are free parameters. For calibration beads with few peaks per
+  laser (Aria III clbr2pks), a peak broadened over its neighbours during the full fit and the measurement's factors
+  then drifted (Green laser CV 21.5% instead of 6.5%); freezing the precisions after `fit_init_cov` stops the drift
+  but breaks Fusion; a symmetric KL penalty has no lambda that works on both.
+- Now: `fit_fluorescence(cov_penalty=0., cov_penalty_broaden_only=True)`, passed to the trainer: adds
+  `cov_penalty * get_cov_penalty()` in `fit`, the KL divergence (zero-mean normals) between the covariances after
+  `fit_init` (`set_cov_reference`, done at the first `fit` call) and the current ones, summed over peaks, averaged over
+  measurements; with `cov_penalty_broaden_only` only broadening directions (eigenvalues of P Sigma0 < 1). The loss
+  history includes the weighted penalty. `extend_fit` passes the options through `**fitkwargs`.
+- Effect on results: none by default (0: same code path; test: identical factors and loss history). With the
+  reproducibility setting (.3, broadening only): Aria III clbr2pks laser CVs 8.82/6.72/7.18/8.39 (orig
+  9.01/6.54/7.87/9.35), Fusion/Aria III v2 at the P4c level (numbers from the reproducibility session, its jobs
+  61613/61626/61652).
+- Affected analyses: reproducibility processing/instrument_rainbow clbr2pks fits (already refitted there with the
+  patched copy; identical to the package option per its test 61651). Action: switch that pipeline to the package option.
+- Tests: tests/test_rainbow_covpenalty.py (penalty 0 at the reference, isotropic broadening = analytic KL for both
+  variants, narrowing free with broadening only, gradient direction, option reaches the trainer, 0 = unpenalised fit;
+  slow: penalised fit stays closer to the reference covariances, factors unchanged within 5% on synthetic beads).
+

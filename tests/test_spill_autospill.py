@@ -93,8 +93,6 @@ def test_ambiguous_match_raises(tmp_path):
         make_AutoSpill_fcs_config(d, SimpleNamespace(channels_fluorescence=["FL1-A"]))
 
 
-@pytest.mark.xfail(strict=True, reason="bug (todo/R4_findings/spill.md): '(.*){channel}' also matches a channel name that "
-                                        "ends another one (V540 in UV540, V1 in UV1: S6, Aurora configs)")
 def test_channel_that_ends_another_channel_name_not_matched(tmp_path):
     d = touch_folder(tmp_path, ["Compensation Controls_CD3 UV540 Stained Control.fcs"])
     out = make_AutoSpill_fcs_config(d, SimpleNamespace(channels_fluorescence=["UV540-A", "V540-A"]),

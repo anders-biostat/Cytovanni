@@ -73,7 +73,6 @@ def test_warnings_filterable_as_group():
     assert w == []
 
 
-@pytest.mark.xfail(strict=True, reason="SpilloverFitException and MissingGPUWarning are defined twice (R3 question, R5)")
 def test_no_duplicate_class_definitions_in_exceptions():
     """Each class name is defined once in exceptions.py."""
     src = inspect.getsource(exceptions)
