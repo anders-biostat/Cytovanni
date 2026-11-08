@@ -873,8 +873,7 @@ class RainbowFluorescenceGMMCalibrationTrainer():
             Adam learning rate.
         warmup : int, default 40
             Increase the learning rate linearly from ``lr / warmup`` to `lr` over the first `warmup` steps (of every
-            call); 0 disables it. In a later call with ``warmup=0``, the learning rate of the previous call is kept
-            and `lr` has no effect.
+            call); 0 disables it.
         showprogress : bool, default True
             Show a progress bar.
 
@@ -886,7 +885,7 @@ class RainbowFluorescenceGMMCalibrationTrainer():
         if not self.is_trained:
             if self.cov_penalty > 0 and self.cov_reference is None:
                 self.set_cov_reference(dataset)
-            self.optimizer = torch.optim.Adam(self.module.parameters(), lr=0 if warmup>0 else lr)
+            self.optimizer = torch.optim.Adam(self.module.parameters(), lr=lr)
             self.fit_losshistory = []
             self.is_trained = True
             self.module.is_trained = True
@@ -894,8 +893,7 @@ class RainbowFluorescenceGMMCalibrationTrainer():
         try:
             pbar = tqdm(range(Niter), mininterval=1) if showprogress else range(Niter)
             for it in pbar:
-                if warmup>0 and it<warmup:
-                    self.optimizer.param_groups[0]["lr"] = lr * (it+1)/warmup
+                self.optimizer.param_groups[0]["lr"] = lr * min(1., (it+1)/warmup) if warmup>0 else lr
                 self.optimizer.zero_grad()
                 loss = self.module.accumulate_nll_gradients(dataset)
                 if self.cov_penalty > 0:

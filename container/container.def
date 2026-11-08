@@ -32,7 +32,7 @@ From: pytorch/pytorch:2.8.0-cuda12.9-cudnn9-devel
 
 %labels
     Author valentinwust
-    Version v1.0.0
+    Version v1.2.0
 
 %help
     Container that can run all parts of Cytovanni, including its test suite.

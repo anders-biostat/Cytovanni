@@ -623,13 +623,15 @@ class PosNegSingleStainSpectrumFit(SingleStainSpectrumFitBase):
     A two-component Gaussian mixture on ``arcsinh(x / asinh_cofactor)`` of the main channel splits the events into
     negative and positive (the component with the higher mean). The slope of every channel is the difference of the
     positive and negative medians (raw), divided by that difference in the main channel; the intercept is
-    ``median_negative - slope * median_negative[main channel]``. The fit runs on construction; the mixture has no fixed
-    random state. Written by `write` to the folder ``fit_posneg``.
+    ``median_negative - slope * median_negative[main channel]``. The fit runs on construction. Written by `write` to the
+    folder ``fit_posneg``.
 
     Parameters
     ----------
     adata : anndata.AnnData
         Gated single-stain events, see `SingleStainSpectrumFitBase`.
+    random_state : int, numpy.random.RandomState or None, default None
+        Random state of the mixture; None draws from numpy's global random state.
     **kwargs
         Passed to `SingleStainSpectrumFitBase` (`linearity_tolerance_factor`, `asinh_cofactor`).
 
@@ -643,14 +645,14 @@ class PosNegSingleStainSpectrumFit(SingleStainSpectrumFitBase):
     PLOTFOLDERNAME = "plot_fit_posneg"
     WRITEFOLDERNAME = "fit_posneg"
     
-    def __init__(self, adata, **kwargs):
+    def __init__(self, adata, random_state=None, **kwargs):
         super().__init__(adata, **kwargs)
-        
+        self.random_state = random_state
         self.fit()
     
     def fit(self):
         """Split the events into positive and negative and set ``self.spectrum``, see the class docstring."""
-        self.gmm = GaussianMixture(2)
+        self.gmm = GaussianMixture(2, random_state=self.random_state)
         x = np.arcsinh(self.adata[:,self.stain].layers["raw"][:,0].copy() / self.asinh_cofactor)[:,None]
         label = self.gmm.fit_predict(x)
         label = np.argsort(self.gmm.means_[:,0])[label] # correct order

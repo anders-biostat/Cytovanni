@@ -19,7 +19,7 @@ class PMTExponentFitter():
     Parameters
     ----------
     df_logshift : pandas.DataFrame
-        Natural log of the gain, shape (measurement, channel), e.g. ``-numpy.log(rbint.get_calibration_factors_all())``.
+        Natural log of the gain, shape (measurement, channel), e.g. ``-numpy.log(calibrator.get_calibration_factors_all())``.
         NaN entries are left out of the fit. Its columns are the fitted channels.
     df_voltage : pandas.DataFrame
         PMT voltage, same index and columns as `df_logshift` (e.g. ``adata.var['pnv']`` per measurement). Rows with

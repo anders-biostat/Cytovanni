@@ -121,7 +121,8 @@ def get_hex_distinct(N):
     """Return `N` distinct colours.
 
     Up to 20 colours come from `palette_20`, up to 28 from `palette_28`; for more, hues are spread evenly around the
-    colour wheel in a random order with random saturation (seeded, so the result is reproducible).
+    colour wheel in a random order with random saturation (from a fixed seed, so always the same colours; numpy's
+    global random state is not used).
 
     Parameters
     ----------
@@ -132,19 +133,15 @@ def get_hex_distinct(N):
     -------
     list of str
         `N` hex colours.
-
-    Notes
-    -----
-    For ``N > 28`` this calls ``np.random.seed(0)``, which resets numpy's global random state.
     """
     if N<=20:
         return palette_20[:N]
     elif N<=28:
         return palette_28[:N]
     else:
-        np.random.seed(0)
-        hues = np.linspace(0, 1, N+1)[np.random.permutation(N)]
-        cols = np.asarray([colorsys.hsv_to_rgb(h,np.random.uniform(0.5,1),1) for h in hues])
+        rs = np.random.RandomState(0)
+        hues = np.linspace(0, 1, N+1)[rs.permutation(N)]
+        cols = np.asarray([colorsys.hsv_to_rgb(h,rs.uniform(0.5,1),1) for h in hues])
         hexs = [matplotlib.colors.to_hex(c) for c in cols]
         return hexs
 
@@ -349,26 +346,17 @@ def unrolled_subplots(N, Ncol=4, elsize=(6,4)):
     Returns
     -------
     fig : matplotlib.figure.Figure
-    axes : list or numpy.ndarray of matplotlib.axes.Axes
-        `N` axes in row-major order (a 1-D array if the grid has a single row or column, else a list).
+    axes : numpy.ndarray of matplotlib.axes.Axes
+        1-D array of the `N` axes in row-major order.
     """
     Ncol = min(N, Ncol)
     Nrow = int(np.ceil(N/Ncol))
-    Nax = Nrow*Ncol
     figsize = np.asarray(elsize)*np.asarray([Ncol, Nrow])
-    fig, ax = plt.subplots(Nrow, Ncol, figsize=figsize)
-    if Nrow==1 and Ncol==1:
-        ax_unr = [ax]
-    elif Nrow==1 or Ncol==1:
-        ax_unr = ax
-    else:
-        ax_unr = []
-        for i in range(Nax):
-            ax_ = ax[i//Ncol, i%Ncol]
-            if i<N: ax_unr.append(ax_)
-            else:   ax_.axis("off")
-    
-    return fig, ax_unr
+    fig, ax = plt.subplots(Nrow, Ncol, figsize=figsize, squeeze=False)
+    ax = ax.ravel()
+    for ax_ in ax[N:]:
+        ax_.axis("off")
+    return fig, ax[:N]
 
 def printwtime(text):
     """Print `text` (str) prefixed with the current time (HH:MM:SS)."""

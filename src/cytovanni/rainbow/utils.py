@@ -33,7 +33,7 @@ def scale_spectra_wfactors(spectra, factors, spectral=False):
 
     Examples
     --------
-    >>> calibrated = scale_spectra_wfactors(spectra_raw, rbint.get_calibration_factor(rainbow_batch="b1"),
+    >>> calibrated = scale_spectra_wfactors(spectra_raw, calibrator.get_calibration_factor(rainbow_batch="b1"),
     ...                                     spectral=True)
     """
     spectra = spectra.astype(float)
@@ -79,7 +79,7 @@ def extract_logfactor_laserfactor(logfactors, fixed_components=True):
     Parameters
     ----------
     logfactors : pandas.DataFrame
-        Log calibration factors, shape (batch, channel), e.g. ``numpy.log(rbint.get_calibration_factors_all())``
+        Log calibration factors, shape (batch, channel), e.g. ``numpy.log(calibrator.get_calibration_factors_all())``
         restricted to the channels of one laser. Batches with a NaN in any channel are left out (NaN in the output).
     fixed_components : bool, default True
         If True, the component is 1 for all channels, so the common factor is the mean over channels of every batch

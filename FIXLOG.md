@@ -1627,3 +1627,51 @@ Every fix has the reproducer that found it (previously a strict xfail) as its te
 - Affected: plots only (tick positions and labels; label text now `$\mathdefault{10^{3}}$`). No numerical results.
 - Action: port calls of `label_axis_ArcSinh` (reproducibility code, ~50 calls): new name, `onx=False` -> `axis="y"`;
   `minpower` is now automatic by default (pass `minpower=2` for the earlier labels).
+
+### R5-B7 rainbow fluorescence `fit`: `lr` of a later call with `warmup=0`
+- Before: `RainbowFluorescenceGMMCalibrationTrainer.fit` set the learning rate only during the warm-up, so a later call
+  with `warmup=0` kept the learning rate of the previous call and ignored `lr`.
+- Now: the learning rate is set in every step (`lr * min(1, (step+1)/warmup)`, or `lr` without warm-up).
+- Effect on results: none for a single `fit` call and for later calls with `warmup > 0` (identical learning rates).
+  Changes only repeated calls with `warmup=0` and a different `lr`.
+- Affected analyses: none known (all usages call `fit` once, via `fit_fluorescence` / `extend_fit`).
+- Tests: tests/test_rainbow_covpenalty.py::test_refit_uses_the_given_lr.
+
+### R5-B6 random states
+- `get_config_from_rainbow_reference` and `get_voltages_from_rainbow` take `random_state` (passed to
+  `fit_rainbow_GMM`); `PosNegSingleStainSpectrumFit(adata, random_state=None)` passes it to its mixture. Default
+  None: as before (numpy's global random state).
+- `get_hex_distinct` (N > 28) uses its own seeded generator instead of `np.random.seed(0)`: same colours, numpy's
+  global random state is no longer reset.
+- Everything else draws from numpy's / torch's global random state, so `np.random.seed` + `torch.manual_seed` before
+  a call makes it repeatable (as done in the reproducibility code); no further arguments.
+- Effect on results: none by default, except that random draws after a `get_hex_distinct(N > 28)` call no longer
+  start from seed 0 (code that relied on this implicit reseed draws different subsamples there).
+- Tests: test_rainbow_setvolt.py::test_random_state_gives_identical_results,
+  test_spill_stainfit.py::test_posneg_random_state_reaches_the_mixture,
+  test_utils_misc.py::test_get_hex_distinct_reproducible_and_leaves_global_state.
+
+### R5-C API changes before the 1.2.0 pin (no numerical results change)
+- C3: `cytovanni.rainbow.plot_eval_RBInt_fit(rbint, ...)` -> `plot_eval_calibration(calibrator, ...)`;
+  `SpilloverCollection(rbint=...)`, `.from_custom(rbint, ...)`, `.from_AutoSpill(rbint, ...)` -> `calibrator`
+  (attribute `.rbint` -> `.calibrator`); `SpectralFitTransformer.add_standardisation_parameters(rbint_key=...)` ->
+  `calibration_factor_key`.
+- C4: `SpilloverCollection.normalize_spectra(dye_channel_key=...)` -> `norm_channels` (Series stain -> channel).
+- C5: `CutoffUnmxGate.apply` and `UnmxMinGate.apply` return a numpy bool array (were pandas Series, like the other
+  gates now); `CutoffUnmxGate.apply` takes `addkey`; `PolygonGate` converts `vertices` to an array (a list works for
+  `plot`).
+- C2: `OverlapFitModel.export` and `.save` default to `include_history=False` (export was True). The loss per step
+  (`losshistory['train']`, `['test']`) is now always saved; the per-step loss matrices and the transformer's parameter
+  history only with `include_history=True`. The transformers' `export` default to False as well.
+- C6: `PanelModule.get_grouped_jac_fromad(include_unused=True)` (was fixed True; default unchanged);
+  `get_grouped_jac_single_fromad(s_dig=...)` -> `decimals`.
+- C7: `ScalingTransformer.get_standardisationparams_fromad` returns 5 values like the SpectralFitTransformer one:
+  `(None, stainscale, spectra, unmx_int_matrix, None)` (was 3).
+- C11: `write/read_bead_h5ad` and `write/read_rainbow_h5ad` share one implementation (`cytovanni.io.h5ad`); names
+  and behaviour unchanged.
+- C12: `unrolled_subplots` always returns a 1-D numpy array of the N axes (was a list for 2-D grids);
+  `sum(loss_containers)` works (adding 0 returns the container).
+- Affected analyses: code calling the renamed functions/arguments must be ported (reproducibility: 2 files
+  `plot_eval_RBInt_fit`, 2 files `rbint=`; tutorials ported); code that used the Series index of a CutoffUnmxGate /
+  UnmxMinGate mask (none found: all usages index AnnData or combine masks); models saved without history now also
+  contain the loss per step (larger by that list only).

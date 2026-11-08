@@ -24,8 +24,7 @@ class LossContainer():
 
     Every loss is stored as a 0-dim tensor (non-tensors are converted, tensors with more dimensions are replaced by
     their mean). Adding two containers gives the `N`-weighted average of each loss (detached), so per-batch losses
-    can be accumulated over an epoch, e.g. ``total = sum(containers, None)`` (the built-in ``sum`` with its default
-    start value 0 raises NotImplementedError). Multiplying by a number or a dict of factors returns a scaled copy.
+    can be accumulated over an epoch, e.g. ``total = sum(containers)`` (adding None or 0 returns the container). Multiplying by a number or a dict of factors returns a scaled copy.
 
     Parameters
     ----------
@@ -146,17 +145,18 @@ class LossContainer():
     
     def __radd__(self, x):  return self.__add__(x)
     def __add__(self, x):
-        """Return the `N`-weighted average with another LossContainer (detached); ``self + None`` returns self.
+        """Return the `N`-weighted average with another LossContainer (detached); ``self + None`` and ``self + 0``
+        return self (so the built-in ``sum`` works).
 
         Raises
         ------
         ValueError
             If the two containers have different keys.
         NotImplementedError
-            If `x` is neither None nor a LossContainer.
+            If `x` is neither None, 0 nor a LossContainer.
         """
         #print(type(x))
-        if x is None:                  return self
+        if x is None or (isinstance(x, int) and not isinstance(x, bool) and x == 0): return self
         elif is_LossContainer(x): return _add_LossContainers(self, x)
         else:                          raise NotImplementedError(f"Adding {type(self)} and type {type(x)} is not supported!")
     

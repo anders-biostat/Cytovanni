@@ -42,12 +42,16 @@ def test_get_hex_distinct(n):
         assert cols == palette_28[:n]
 
 
-def test_get_hex_distinct_reproducible_and_reseeds_global_state():
-    """Documented side effect for N > 28: np.random.seed(0)."""
-    a = get_hex_distinct(40); r1 = np.random.rand()
+def test_get_hex_distinct_reproducible_and_leaves_global_state():
+    """N > 28: always the same colours (those of the former global np.random.seed(0)), global state untouched."""
+    import colorsys
+    np.random.seed(0)
+    hues = np.linspace(0, 1, 41)[np.random.permutation(40)]
+    old = [matplotlib.colors.to_hex(colorsys.hsv_to_rgb(h, np.random.uniform(.5, 1), 1)) for h in hues]
+    np.random.seed(123); r_ref = np.random.rand()
     np.random.seed(123)
-    b = get_hex_distinct(40); r2 = np.random.rand()
-    assert a == b and r1 == r2
+    a = get_hex_distinct(40); r = np.random.rand()
+    assert a == old and r == r_ref and get_hex_distinct(40) == a
 
 
 @pytest.mark.parametrize("wl, rgb", [(380, None), (440, (0, 0, 255)), (490, (0, 255, 255)), (510, (0, 255, 0)),
@@ -100,13 +104,13 @@ def test_unrolled_subplots(n, ncol, grid):
     assert len(axes) == n
     assert np.allclose(fig.get_size_inches(), [2 * grid[1], 1 * grid[0]])
     assert sum(a.axison for a in fig.axes) == n and len(fig.axes) == grid[0] * grid[1]
-    if n > 1 and (grid[0] == 1 or grid[1] == 1):
-        assert isinstance(axes, np.ndarray)
+    assert isinstance(axes, np.ndarray) and axes.ndim == 1
+    assert list(axes) == fig.axes[:n]
 
 
 def test_unrolled_subplots_single():
     fig, axes = unrolled_subplots(1)
-    assert len(axes) == 1 and isinstance(axes[0], matplotlib.axes.Axes)
+    assert isinstance(axes, np.ndarray) and axes.shape == (1,) and isinstance(axes[0], matplotlib.axes.Axes)
 
 
 # ------------------------------------------------------------------ small helpers

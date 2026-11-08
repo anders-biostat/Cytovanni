@@ -363,3 +363,11 @@ def test_collect_peakpos_fromposneg(tmp_path):
     assert list(back.index) == [0, 1, 2, 3] and list(back["dye"]) == synthetic.STAINS + ["FL4"]
     assert back["positive_peak"].isna().tolist() == [False, True, False, True]
     assert back.loc[0, "positive_peak"] == np.round(fits["FL1"].spectrum["median_positive"].max())
+
+
+def test_posneg_random_state_reaches_the_mixture():
+    adata = ss_adata("FL1", n=800)
+    f = PosNegSingleStainSpectrumFit(adata, random_state=3)
+    assert f.gmm.random_state == 3
+    g = PosNegSingleStainSpectrumFit(adata, random_state=3)
+    assert f.spectrum.equals(g.spectrum)

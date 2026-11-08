@@ -5,6 +5,7 @@ import numpy as np
 
 from ..utils import CytometerConfiguration
 from .utils import readfcs_sample
+from .h5ad import write_h5ad_with_cytoconfig, read_h5ad_with_cytoconfig
 
 
 def readfcs_rainbow_sample(rbpath, cytoconfig, N_rainbow_peak, name="", rainbow_type="default", rainbow_batch="default", metadct=None, warn_spillover=False):
@@ -82,9 +83,7 @@ def write_rainbow_h5ad(adata_, filepath):
     --------
     read_rainbow_h5ad : the inverse.
     """
-    adata = adata_.copy()
-    adata.uns["cytoconfig"] = adata.uns["cytoconfig"].to_dictionary()
-    adata.write(filepath)
+    write_h5ad_with_cytoconfig(adata_, filepath)
 
 def read_rainbow_h5ad(filepath):
     """Read a rainbow bead AnnData written by `write_rainbow_h5ad`.
@@ -106,6 +105,4 @@ def read_rainbow_h5ad(filepath):
         If the exported configuration class or its settings-hash function is not known (see
         `cytovanni.utils.register_hash_function`).
     """
-    adata = anndata.read_h5ad(filepath)
-    adata.uns["cytoconfig"] = CytometerConfiguration.from_exported(adata.uns["cytoconfig"])
-    return adata
+    return read_h5ad_with_cytoconfig(filepath)

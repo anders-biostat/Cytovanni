@@ -33,24 +33,25 @@ class CutoffUnmxGate():
         repstr = f"CutoffUnmxGate on '{self.key}', gates marker {self.x} to {'above' if self.above else 'below'} {self.xcutoff}."
         return repstr
     
-    def apply(self, ad):
+    def apply(self, ad, addkey=""):
         """Apply the gate to an AnnData.
 
         Parameters
         ----------
         ad : anndata.AnnData
             Data with the unmixed DataFrame ``ad.obsm[key]``.
+        addkey : str, default ""
+            If given, also store the mask in ``ad.obs[addkey]`` (in place).
 
         Returns
         -------
-        pandas.Series
-            Boolean mask (index: ``ad.obs_names``), True for the events kept.
+        numpy.ndarray
+            Boolean mask of shape (events,), True for the events kept.
         """
-        x = ad.obsm[self.key][self.x]
-        if self.above:
-            return x>=self.xcutoff
-        else:
-            return x<=self.xcutoff
+        mask = self.apply_df(ad.obsm[self.key])
+        if addkey:
+            ad.obs[addkey] = mask
+        return mask
 
     def apply_df(self, df):
         """Apply the gate to a DataFrame of unmixed data (what ``ad.obsm[key]`` holds, markers as columns).
@@ -125,11 +126,10 @@ class UnmxMinGate():
 
         Returns
         -------
-        pandas.Series
-            Boolean mask (index: ``ad.obs_names``), True for the events kept.
+        numpy.ndarray
+            Boolean mask of shape (events,), True for the events kept.
         """
-        vals = ad.obsm[self.key_unmx]
-        mask = np.any(vals>self.cutoff, axis=1)
+        mask = self.apply_df(ad.obsm[self.key_unmx])
         if addkey:
             ad.obs[addkey] = mask
         return mask

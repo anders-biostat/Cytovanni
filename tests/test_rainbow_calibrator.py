@@ -21,7 +21,7 @@ from cytovanni.exceptions import (CalibrationModuleException, CalibrationModuleU
 from cytovanni.io import readfcs_rainbow_sample, readfcs_sample, writefcs
 from cytovanni.rainbow import (RainbowCalibrator, RainbowFluorescenceGMMCalibrationDataset,
                                RainbowFluorescenceGMMCalibrationModule, RainbowFluorescenceGMMCalibrationTrainer,
-                               fit_rainbow_GMM, plot_eval_RBInt_fit, scale_spectra_wfactors)
+                               fit_rainbow_GMM, plot_eval_calibration, scale_spectra_wfactors)
 
 import synthetic
 
@@ -36,7 +36,7 @@ def ads(fitted_rainbow_ads):
 
 
 @pytest.fixture(scope="module")
-def rbint(fitted_rainbow_ads):
+def calibrator(fitted_rainbow_ads):
     """Calibrator on all six measurements, fluorescence fitted on the CPU with the short schedule (do not modify)."""
     rb = RainbowCalibrator([ad.copy() for ad in fitted_rainbow_ads])
     short_fit_fluorescence(rb)
@@ -44,9 +44,9 @@ def rbint(fitted_rainbow_ads):
 
 
 @pytest.fixture(scope="module")
-def saved_path(rbint, tmp_path_factory):
-    path = str(tmp_path_factory.mktemp("rbint") / "sub" / "rb.pt")
-    rbint.save(path, make_path_structure=True)
+def saved_path(calibrator, tmp_path_factory):
+    path = str(tmp_path_factory.mktemp("calibrator") / "sub" / "rb.pt")
+    calibrator.save(path, make_path_structure=True)
     return path
 
 
@@ -63,8 +63,8 @@ def batch_D(config, tmp_path_factory):
 
 
 # ======================================================================== dataset
-def test_dataset_layout(rbint, ads):
-    ds = RainbowFluorescenceGMMCalibrationDataset(rbint.rboe, ads, Nsubsample=100)
+def test_dataset_layout(calibrator, ads):
+    ds = RainbowFluorescenceGMMCalibrationDataset(calibrator.rboe, ads, Nsubsample=100)
     assert list(ds.present_types) == ["T"] and ds.channels == FL
     assert ds.data["T"].shape == (sum(ad.shape[0] for ad in ads), len(FL)) and ds.data["T"].dtype == torch.float32
     assert ds.GMM_means["T"].shape == (len(ads), NPEAK, len(FL))
@@ -76,8 +76,8 @@ def test_dataset_layout(rbint, ads):
     np.testing.assert_array_equal(ds.peak_shares_batchidx["T"].numpy(), [0, 0, 1, 1, 2, 2])
 
 
-def test_dataset_subsamples_per_measurement(rbint, ads):
-    ds = RainbowFluorescenceGMMCalibrationDataset(rbint.rboe, ads, Nsubsample=100, batch_size=250)
+def test_dataset_subsamples_per_measurement(calibrator, ads):
+    ds = RainbowFluorescenceGMMCalibrationDataset(calibrator.rboe, ads, Nsubsample=100, batch_size=250)
     inds = ds.get_sample_indices()["T"]
     assert len(inds) == 100 * len(ads)
     np.testing.assert_array_equal(np.bincount(ds.data_uid_index["T"][inds].numpy()), [100] * len(ads))
@@ -91,28 +91,28 @@ def test_dataset_subsamples_per_measurement(rbint, ads):
     assert len(next(iter(ds.sample_loaders(batch_size_override=600)["T"]))["data"]) == 600
 
 
-def test_dataset_peaks_above_linear_range_are_not_used(rbint, ads):
+def test_dataset_peaks_above_linear_range_are_not_used(calibrator, ads):
     for ad in ads[4:]:                               # batch C: gains .8, 1.3, 1.0 -> brightest peak 32000-52000
         ad.uns["cytoconfig"] = synthetic.make_config(max_linear_range=1e4)
-    ds = RainbowFluorescenceGMMCalibrationDataset(rbint.rboe, ads)
+    ds = RainbowFluorescenceGMMCalibrationDataset(calibrator.rboe, ads)
     mask = ds.peak_usemask["T"].numpy()
     assert mask[:4].all() and mask[4:, :2].all() and not mask[4:, 2].any()
     assert ds.df_channel_train.to_numpy().all()      # the other peaks still train C
 
 
-def test_dataset_untrainable_batch_warns(rbint, ads):
+def test_dataset_untrainable_batch_warns(calibrator, ads):
     for ad in ads[4:]:
         ad.uns["cytoconfig"] = synthetic.make_config(max_linear_range=100.)
     with pytest.warns(CalibrationModuleWarning, match="will not get trained"):
-        ds = RainbowFluorescenceGMMCalibrationDataset(rbint.rboe, ads)
+        ds = RainbowFluorescenceGMMCalibrationDataset(calibrator.rboe, ads)
     assert not ds.df_channel_train.loc["C"].any() and ds.df_channel_train.loc[["A", "B"]].to_numpy().all()
     assert not ds.data_usemask["T"][ds.data_intype_index["T"] >= 4].any()      # beads of C never sampled
     assert all(len(ds.data_indices_batched["T"][i]) == 0 for i in [4, 5])
 
 
-def test_dataset_channel_missing_cutoff(rbint, ads):
+def test_dataset_channel_missing_cutoff(calibrator, ads):
     """A channel counts as missing in a measurement if every peak is below the cutoff (brightest peak 4e4 * gain)."""
-    ds = RainbowFluorescenceGMMCalibrationDataset(rbint.rboe, ads, channel_missing_cutoff=5e4, warn_missing=False)
+    ds = RainbowFluorescenceGMMCalibrationDataset(calibrator.rboe, ads, channel_missing_cutoff=5e4, warn_missing=False)
     missing = (synthetic.PEAKS[-1] * synthetic.GAINS < 5e4)                 # (batch, channel)
     pd.testing.assert_frame_equal(ds.df_channel_train, ~missing, check_dtype=False)
     usemask = ds.peak_usemask["T"].numpy()
@@ -120,16 +120,16 @@ def test_dataset_channel_missing_cutoff(rbint, ads):
         np.testing.assert_array_equal(usemask[i].all(axis=0), ~missing.loc[b].to_numpy())
 
 
-def test_dataset_warn_missing_false_still_sets_df_channel_train_R2b_G2_10(rbint, ads):
+def test_dataset_warn_missing_false_still_sets_df_channel_train_R2b_G2_10(calibrator, ads):
     """R2b-G2-10: df_channel_train (needed by the trainer) is set with warn_missing=False too; only the warning
     depends on it."""
     with warnings.catch_warnings():
         warnings.simplefilter("error")
-        ds_f = RainbowFluorescenceGMMCalibrationDataset(rbint.rboe, ads, warn_missing=False, channel_missing_cutoff=1e9)
+        ds_f = RainbowFluorescenceGMMCalibrationDataset(calibrator.rboe, ads, warn_missing=False, channel_missing_cutoff=1e9)
     with pytest.warns(CalibrationModuleWarning):
-        ds_t = RainbowFluorescenceGMMCalibrationDataset(rbint.rboe, ads, warn_missing=True, channel_missing_cutoff=1e9)
+        ds_t = RainbowFluorescenceGMMCalibrationDataset(calibrator.rboe, ads, warn_missing=True, channel_missing_cutoff=1e9)
     pd.testing.assert_frame_equal(ds_f.df_channel_train, ds_t.df_channel_train)
-    ds = RainbowFluorescenceGMMCalibrationDataset(rbint.rboe, ads, warn_missing=False)
+    ds = RainbowFluorescenceGMMCalibrationDataset(calibrator.rboe, ads, warn_missing=False)
     rb = RainbowCalibrator(ads)
     ShortTrainer(rb.rfim).fit_init(ds)                                   # AttributeError before the fix
     assert rb.rfim.df_batch_trained.to_numpy().all()
@@ -158,14 +158,14 @@ def test_dataset_requires_gmm_fit(ads):
 
 
 @pytest.mark.parametrize("key", ["rainbow_batch", "rainbow_type", "uid"])
-def test_dataset_unknown_labels_raise(rbint, ads, key):
+def test_dataset_unknown_labels_raise(calibrator, ads, key):
     ads[0].uns[key] = "unknown"
     with pytest.raises(CalibrationModuleException):
-        RainbowFluorescenceGMMCalibrationDataset(rbint.rboe, ads)
+        RainbowFluorescenceGMMCalibrationDataset(calibrator.rboe, ads)
 
 
-def test_dataset_on_device(rbint, ads, device):
-    ds = RainbowFluorescenceGMMCalibrationDataset(rbint.rboe, ads, device=device, Nsubsample=50)
+def test_dataset_on_device(calibrator, ads, device):
+    ds = RainbowFluorescenceGMMCalibrationDataset(calibrator.rboe, ads, device=device, Nsubsample=50)
     assert ds.data["T"].device.type == device and ds.peak_usemask["T"].device.type == device
     batch = next(iter(ds.sample_loaders()["T"]))
     assert batch["data"].device.type == device and batch["peak_islinear"].device.type == device
@@ -215,41 +215,41 @@ def test_construction_sets_up_models(ads):
 
 
 # ======================================================================== recovery (C)
-def test_fluorescence_factors_recover_gains(rbint):
-    F = rbint.get_calibration_factors_all()
+def test_fluorescence_factors_recover_gains(calibrator):
+    F = calibrator.get_calibration_factors_all()
     assert list(F.index) == synthetic.BATCHES and list(F.columns) == SCATTER_TARGETS + FL
     np.testing.assert_allclose(F[FL], expected_rainbow_factors(), rtol=.02)
     np.testing.assert_allclose(np.log(F[FL]).mean(axis=0), 0., atol=1e-5)          # geometric mean 1
     # scatter: factor ratio to A is 1 / scatter gain
     np.testing.assert_allclose(F["FSC-A"] / F.loc["A", "FSC-A"], 1 / synthetic.SCATTER_GAINS, rtol=.01)
-    assert rbint.rfim.is_trained and rbint.rfim_trainer.is_trained
+    assert calibrator.rfim.is_trained and calibrator.rfim_trainer.is_trained
 
 
-def test_calibrated_rainbow_peaks_coincide(rbint, ads):
+def test_calibrated_rainbow_peaks_coincide(calibrator, ads):
     """After calibration the GMM peak means of all batches agree (the purpose of the calibration)."""
     means = []
     for ad in ads:
-        f = rbint.get_calibration_factor(adata=ad)
+        f = calibrator.get_calibration_factor(adata=ad)
         means.append(ad.uns["GMM_means"] * f[FL].to_numpy()[None])
     means = np.array(means)
     np.testing.assert_allclose(means, np.broadcast_to(means.mean(0), means.shape), rtol=.03)
 
 
-def test_get_calibration_factor_by_name_and_by_adata(rbint, ads):
-    f = rbint.get_calibration_factor(rainbow_batch="B")
+def test_get_calibration_factor_by_name_and_by_adata(calibrator, ads):
+    f = calibrator.get_calibration_factor(rainbow_batch="B")
     assert list(f.index) == SCATTER_TARGETS + FL
-    pd.testing.assert_series_equal(rbint.get_calibration_factor(adata=ads[2]), f)
-    f_all, mask = rbint.get_calibration_factor_all_single("B")
+    pd.testing.assert_series_equal(calibrator.get_calibration_factor(adata=ads[2]), f)
+    f_all, mask = calibrator.get_calibration_factor_all_single("B")
     pd.testing.assert_series_equal(f_all, f)
     assert mask.all() and list(mask.index) == FL
 
 
-def test_get_calibration_factor_infers_batch_of_cells(rbint, cell_files, config):
+def test_get_calibration_factor_infers_batch_of_cells(calibrator, cell_files, config):
     """A sample without 'rainbow_batch' gets the batch of the closest rainbow measurement with the same settings."""
     for b in synthetic.BATCHES:
         cells = readfcs_sample(cell_files[b], config)
         assert "rainbow_batch" not in cells.uns
-        pd.testing.assert_series_equal(rbint.get_calibration_factor(adata=cells), rbint.get_calibration_factor(rainbow_batch=b))
+        pd.testing.assert_series_equal(calibrator.get_calibration_factor(adata=cells), calibrator.get_calibration_factor(rainbow_batch=b))
 
 
 @pytest.mark.slow
@@ -279,88 +279,88 @@ def test_longer_fit_recovers_gains_and_shift(fitted_rainbow_ads, config, tmp_pat
 
 
 # ======================================================================== applying the calibration
-def test_add_calibrated_multiplies_raw(rbint, ads):
+def test_add_calibrated_multiplies_raw(calibrator, ads):
     ad = ads[2]
-    rbint.add_calibrated(ad)
-    f = rbint.get_calibration_factor(rainbow_batch="B").loc[list(ad.var_names)]
+    calibrator.add_calibrated(ad)
+    f = calibrator.get_calibration_factor(rainbow_batch="B").loc[list(ad.var_names)]
     np.testing.assert_allclose(ad.layers["calibrated"], ad.layers["raw"] * f.to_numpy()[None], rtol=1e-6)
-    rbint.add_calibrated(ad, rainbow_batch="C", addlayer="asC")
-    fC = rbint.get_calibration_factor(rainbow_batch="C").loc[list(ad.var_names)]
+    calibrator.add_calibrated(ad, rainbow_batch="C", addlayer="asC")
+    fC = calibrator.get_calibration_factor(rainbow_batch="C").loc[list(ad.var_names)]
     np.testing.assert_allclose(ad.layers["asC"], ad.layers["raw"] * fC.to_numpy()[None], rtol=1e-6)
 
 
-def test_add_calibrated_sample_without_a_calibrated_channel_R2_A2(rbint, ads):
+def test_add_calibrated_sample_without_a_calibrated_channel_R2_A2(calibrator, ads):
     """R2-A2: a calibrated channel missing from the sample (FSC-H) is skipped with a warning; its factor is not
     applied to any other column (it hit the last column before)."""
     ad = ads[2][:, [c for c in ads[2].var_names if c != "FSC-H"]].copy()
-    f = rbint.get_calibration_factor(rainbow_batch="B")
+    f = calibrator.get_calibration_factor(rainbow_batch="B")
     with pytest.warns(CalibrationModuleWarning, match="FSC-H"):
-        rbint.add_calibrated(ad)
+        calibrator.add_calibrated(ad)
     np.testing.assert_allclose(ad.layers["calibrated"], ad.layers["raw"] * f.loc[list(ad.var_names)].to_numpy()[None], rtol=1e-6)
     with pytest.warns(CalibrationModuleWarning, match="FSC-H"):
-        rbint.add_calibrated_rainbow(ad, include_shift=False)
+        calibrator.add_calibrated_rainbow(ad, include_shift=False)
     np.testing.assert_allclose(ad.layers["calibrated"], ad.layers["raw"] * f.loc[list(ad.var_names)].to_numpy()[None], rtol=1e-6)
     with pytest.warns(CalibrationModuleWarning, match="FSC-H"):
-        rbint.add_calibration_factor(ad)
+        calibrator.add_calibration_factor(ad)
     assert "FSC-H" not in ad.var.index
     np.testing.assert_allclose(ad.var["rainbow_calibration_factor"], f.loc[list(ad.var_names)])
 
 
-def test_add_calibration_factor_nan_for_channels_without_factor(rbint):
+def test_add_calibration_factor_nan_for_channels_without_factor(calibrator):
     ad = synthetic.make_adata(np.ones((3, 4)), FL + ["X-A"], layer="raw", rainbow_batch="C")
     with pytest.warns(CalibrationModuleWarning):          # the scatter channels are not in this sample
-        rbint.add_calibration_factor(ad, addkey="f")
+        calibrator.add_calibration_factor(ad, addkey="f")
     assert np.isnan(ad.var.loc["X-A", "f"])
-    np.testing.assert_allclose(ad.var.loc[FL, "f"], rbint.get_calibration_factor(rainbow_batch="C")[FL])
+    np.testing.assert_allclose(ad.var.loc[FL, "f"], calibrator.get_calibration_factor(rainbow_batch="C")[FL])
 
 
-def test_add_calibrated_rainbow_with_and_without_shift(rbint, ads):
+def test_add_calibrated_rainbow_with_and_without_shift(calibrator, ads):
     ad = ads[4]
-    f = rbint.get_calibration_factor(rainbow_batch="C").loc[list(ad.var_names)].to_numpy()
-    shift = rbint.rfim.get_calibration_rainbow_shift(adata=ad)
+    f = calibrator.get_calibration_factor(rainbow_batch="C").loc[list(ad.var_names)].to_numpy()
+    shift = calibrator.rfim.get_calibration_rainbow_shift(adata=ad)
     s = pd.Series(0., index=ad.var_names); s[FL] = shift
-    rbint.add_calibrated_rainbow(ad, addlayer="with")
-    rbint.add_calibrated_rainbow(ad, include_shift=False, addlayer="without")
-    rbint.add_calibrated_rainbow(ad, only_shift=True, addlayer="shiftonly")
+    calibrator.add_calibrated_rainbow(ad, addlayer="with")
+    calibrator.add_calibrated_rainbow(ad, include_shift=False, addlayer="without")
+    calibrator.add_calibrated_rainbow(ad, only_shift=True, addlayer="shiftonly")
     raw = ad.layers["raw"]
     np.testing.assert_allclose(ad.layers["with"], (raw + s.to_numpy()[None]) * f[None], rtol=1e-5)
     np.testing.assert_allclose(ad.layers["without"], raw * f[None], rtol=1e-6)
     np.testing.assert_allclose(ad.layers["shiftonly"], raw + s.to_numpy()[None], rtol=1e-6)
 
 
-def test_rainbow_shifts_all(rbint, ads):
-    shifts = rbint.get_rainbow_shifts_all()
+def test_rainbow_shifts_all(calibrator, ads):
+    shifts = calibrator.get_rainbow_shifts_all()
     assert list(shifts) == ["T"]
     df = shifts["T"]
     assert list(df.columns) == FL and set(df.index) == {ad.uns["uid"] for ad in ads}
-    pd.testing.assert_series_equal(df.loc[ads[3].uns["uid"]], rbint.rfim.get_calibration_rainbow_shift(adata=ads[3]),
+    pd.testing.assert_series_equal(df.loc[ads[3].uns["uid"]], calibrator.rfim.get_calibration_rainbow_shift(adata=ads[3]),
                                    check_names=False)
 
 
-def test_rainbow_peak_parameters_describe_the_shifted_data(rbint, ads):
+def test_rainbow_peak_parameters_describe_the_shifted_data(calibrator, ads):
     ad = ads[2]
-    mean, cov, shares, islinear, cof = rbint.get_rainbow_peak_parameters(ad, ["FL3-A", "FL1-A"])
+    mean, cov, shares, islinear, cof = calibrator.get_rainbow_peak_parameters(ad, ["FL3-A", "FL1-A"])
     assert mean.shape == (NPEAK, 2) and cov.shape == (NPEAK, 2, 2) and shares.shape == (NPEAK,)
     assert islinear.shape == (NPEAK, 2) and islinear.dtype == bool and islinear.all()
-    assert cof == rbint.rfim.class_cofactor["T"]
+    assert cof == calibrator.rfim.class_cofactor["T"]
     assert shares.sum() == pytest.approx(1., abs=1e-5)
-    shift = rbint.rfim.get_calibration_rainbow_shift(adata=ad)[["FL3-A", "FL1-A"]].to_numpy()
+    shift = calibrator.rfim.get_calibration_rainbow_shift(adata=ad)[["FL3-A", "FL1-A"]].to_numpy()
     gmm = np.arcsinh((ad.uns["GMM_means"][:, [2, 0]] + shift[None]) / cof)
     np.testing.assert_allclose(mean, gmm, atol=.05)
     np.testing.assert_allclose(cov, np.transpose(cov, (0, 2, 1)), atol=1e-6)
     assert (np.linalg.eigvalsh(cov) > 0).all()
 
 
-def test_apply_arcsinh(rbint):
+def test_apply_arcsinh(calibrator):
     x = np.array([0., 100., 1e4])
-    np.testing.assert_allclose(rbint.apply_ArcSinh(x, "T"), np.arcsinh(x / rbint.rfim.class_cofactor["T"]))
+    np.testing.assert_allclose(calibrator.apply_ArcSinh(x, "T"), np.arcsinh(x / calibrator.rfim.class_cofactor["T"]))
 
 
-def test_calibrated_spectra(rbint):
+def test_calibrated_spectra(calibrator):
     spectra = synthetic.SPECTRA.T
-    out = rbint.get_calibrated_spectra(spectra, "B", spectral=True)
-    pd.testing.assert_frame_equal(out, scale_spectra_wfactors(spectra, rbint.get_calibration_factor(rainbow_batch="B"), spectral=True))
-    conv = rbint.get_calibrated_spectra(spectra, "B")
+    out = calibrator.get_calibrated_spectra(spectra, "B", spectral=True)
+    pd.testing.assert_frame_equal(out, scale_spectra_wfactors(spectra, calibrator.get_calibration_factor(rainbow_batch="B"), spectral=True))
+    conv = calibrator.get_calibrated_spectra(spectra, "B")
     np.testing.assert_allclose(np.diag(conv.loc[FL, synthetic.STAINS]), 1.)
 
 
@@ -392,8 +392,8 @@ def test_untrained_factors_are_one_with_warning(ads):
 
 
 # ======================================================================== fluorescence module
-def test_rainbow_shift_lookup_fallbacks_and_errors(rbint, ads):
-    rfim, ad = rbint.rfim, ads[0]
+def test_rainbow_shift_lookup_fallbacks_and_errors(calibrator, ads):
+    rfim, ad = calibrator.rfim, ads[0]
     ref = rfim.get_calibration_rainbow_shift(adata=ad)
     pd.testing.assert_series_equal(rfim.get_calibration_rainbow_shift(uid=ad.uns["uid"], tp="T"), ref)
     with pytest.warns(CalibrationModuleWarning, match="Uid"):
@@ -417,14 +417,14 @@ def test_rainbow_shift_lookup_fallbacks_and_errors(rbint, ads):
         rfim.get_calibration_rainbow_shift(adata=bad)
 
 
-def test_fluorescence_module_export_round_trip(rbint):
-    back = RainbowFluorescenceGMMCalibrationModule.from_exported(rbint.rfim.export())
-    assert back.is_trained and back.dct_Npeak == rbint.rfim.dct_Npeak
+def test_fluorescence_module_export_round_trip(calibrator):
+    back = RainbowFluorescenceGMMCalibrationModule.from_exported(calibrator.rfim.export())
+    assert back.is_trained and back.dct_Npeak == calibrator.rfim.dct_Npeak
     assert sorted(back.frozen_batches) == [0, 1, 2]
-    pd.testing.assert_frame_equal(back.df_batch_trained, rbint.rfim.df_batch_trained, check_dtype=False)
+    pd.testing.assert_frame_equal(back.df_batch_trained, calibrator.rfim.df_batch_trained, check_dtype=False)
     for b in synthetic.BATCHES:
         pd.testing.assert_series_equal(back.get_calibration_factor(rainbow_batch=b),
-                                       rbint.rfim.get_calibration_factor(rainbow_batch=b), rtol=1e-6)
+                                       calibrator.rfim.get_calibration_factor(rainbow_batch=b), rtol=1e-6)
 
 
 def test_fluorescence_module_extend_with_other_peak_number_raises(ads):
@@ -433,11 +433,11 @@ def test_fluorescence_module_extend_with_other_peak_number_raises(ads):
         rb.rfim.extend(rb.rboe, {"rainbow_batch": [], "uid": [], "rainbow_type": []}, dct_Npeak={"T": NPEAK + 1})
 
 
-def test_dist_parameters_and_nll(rbint, ads):
-    rfim = rbint.rfim
+def test_dist_parameters_and_nll(calibrator, ads):
+    rfim = calibrator.rfim
     with pytest.raises(ValueError):
         rfim.get_dist_parameters({"T": torch.tensor([0])}, {})
-    ds = RainbowFluorescenceGMMCalibrationDataset(rbint.rboe, ads, Nsubsample=20)
+    ds = RainbowFluorescenceGMMCalibrationDataset(calibrator.rboe, ads, Nsubsample=20)
     batch = next(iter(ds.sample_loaders()["T"]))
     rfim.update_params()
     nll = rfim.get_nll_batch(batch, "T", accumulate=False)
@@ -449,9 +449,9 @@ def test_dist_parameters_and_nll(rbint, ads):
     torch.testing.assert_close(params["peak_position_scaled"], params["peak_position"] * params["scale"])
 
 
-def test_trainer_plots(rbint):
-    rbint.rfim_trainer.plot_fit_init()
-    rbint.rfim_trainer.plot_fit()
+def test_trainer_plots(calibrator):
+    calibrator.rfim_trainer.plot_fit_init()
+    calibrator.rfim_trainer.plot_fit()
 
 
 # ======================================================================== fit_fluorescence options, save / load
@@ -494,19 +494,19 @@ def test_fit_fluorescence_on_device_then_peak_parameters_R2b_G2_01(ads, device, 
         np.testing.assert_allclose(a, b, rtol=1e-4, atol=1e-5)
 
 
-def test_save_and_load(rbint, saved_path):
+def test_save_and_load(calibrator, saved_path):
     back = RainbowCalibrator.from_saved(saved_path)
-    pd.testing.assert_frame_equal(back.get_calibration_factors_all(), rbint.get_calibration_factors_all())
-    assert back.channel_missing_cutoff == rbint.channel_missing_cutoff == -np.inf
+    pd.testing.assert_frame_equal(back.get_calibration_factors_all(), calibrator.get_calibration_factors_all())
+    assert back.channel_missing_cutoff == calibrator.channel_missing_cutoff == -np.inf
     assert not hasattr(back, "adatas")
-    pd.testing.assert_frame_equal(back.get_rainbow_shifts_all()["T"], rbint.get_rainbow_shifts_all()["T"])
+    pd.testing.assert_frame_equal(back.get_rainbow_shifts_all()["T"], calibrator.get_rainbow_shifts_all()["T"])
     with pytest.raises(CalibrationModuleException, match="no training data"):
         back.fit_fluorescence(gpu=False)
 
 
-def test_save_without_folder_raises(rbint, tmp_path):
+def test_save_without_folder_raises(calibrator, tmp_path):
     with pytest.raises(Exception):
-        rbint.save(str(tmp_path / "missing" / "rb.pt"))
+        calibrator.save(str(tmp_path / "missing" / "rb.pt"))
 
 
 def test_extend_fit_new_batch_keeps_known_factors(saved_path, batch_D):
@@ -552,22 +552,22 @@ def test_extend_fit_new_type_in_new_batch_with_known_type(saved_path, batch_D):
 
 
 # ======================================================================== .fcs output
-def test_make_calibrated_fcs(rbint, cell_files, config, tmp_path):
+def test_make_calibrated_fcs(calibrator, cell_files, config, tmp_path):
     out = str(tmp_path / "cal.fcs")
-    rbint.make_calibrated_fcs(cell_files["B"], out, config)
+    calibrator.make_calibrated_fcs(cell_files["B"], out, config)
     raw = readfcs_sample(cell_files["B"], config)
     cal = readfcs_sample(out, config)
-    f = rbint.get_calibration_factor(rainbow_batch="B").loc[list(raw.var_names)].to_numpy()
+    f = calibrator.get_calibration_factor(rainbow_batch="B").loc[list(raw.var_names)].to_numpy()
     np.testing.assert_allclose(cal.layers["raw"], raw.layers["raw"] * f[None], rtol=1e-5)
     np.testing.assert_allclose(cal.obs["Time"].astype(float), raw.obs["Time"].astype(float))
     assert fk.Sample(out, preprocess=False).metadata["__cytovanni_rainbow_calibrated"] == "True"
     # a marked file is not calibrated again
     out2 = str(tmp_path / "cal2.fcs")
     with pytest.warns(UserWarning, match="already been calibrated"):
-        rbint.make_calibrated_fcs(out, out2, config)
+        calibrator.make_calibrated_fcs(out, out2, config)
     np.testing.assert_allclose(readfcs_sample(out2, config).layers["raw"], cal.layers["raw"], rtol=1e-6)
     out3 = str(tmp_path / "cal3.fcs")
-    rbint.make_calibrated_fcs(out, out3, config, force=True, rainbow_batch="B")
+    calibrator.make_calibrated_fcs(out, out3, config, force=True, rainbow_batch="B")
     np.testing.assert_allclose(readfcs_sample(out3, config).layers["raw"], cal.layers["raw"] * f[None], rtol=1e-5)
 
 
@@ -579,13 +579,13 @@ class _ThresholdGate:
         return (df[self.channel] > self.threshold).to_numpy()
 
 
-def test_make_calibrated_fcs_gates_on_raw_values(rbint, cell_files, config, tmp_path):
+def test_make_calibrated_fcs_gates_on_raw_values(calibrator, cell_files, config, tmp_path):
     out = str(tmp_path / "gated.fcs")
     raw = readfcs_sample(cell_files["A"], config)
     keep = raw.to_df(layer="raw")["FL1-A"].to_numpy() > 2000.
-    rbint.make_calibrated_fcs(cell_files["A"], out, config, gates=[_ThresholdGate("FL1-A", 2000.)])
+    calibrator.make_calibrated_fcs(cell_files["A"], out, config, gates=[_ThresholdGate("FL1-A", 2000.)])
     cal = readfcs_sample(out, config)
-    f = rbint.get_calibration_factor(rainbow_batch="A").loc[list(raw.var_names)].to_numpy()
+    f = calibrator.get_calibration_factor(rainbow_batch="A").loc[list(raw.var_names)].to_numpy()
     assert cal.shape[0] == keep.sum()
     np.testing.assert_allclose(cal.layers["raw"], raw.layers["raw"][keep] * f[None], rtol=1e-5)
 
@@ -625,15 +625,15 @@ def test_make_calibrated_fcs_without_calibrated_channels_raises(tmp_path, config
 
 
 # ======================================================================== plots
-def test_plot_eval_fit_adds_layers(rbint, ads):
-    plot_eval_RBInt_fit(rbint, ads[:3], legendkey="rainbow_batch", ylim=(0, 1), bins=50)
+def test_plot_eval_fit_adds_layers(calibrator, ads):
+    plot_eval_calibration(calibrator, ads[:3], legendkey="rainbow_batch", ylim=(0, 1), bins=50)
     for ad in ads[:3]:
         assert {"calibrated_rb", "calibrated_rb_noshift"} <= set(ad.layers)
-    plot_eval_RBInt_fit(rbint, ads[3:4], channels=["FL2-A"])
+    plot_eval_calibration(calibrator, ads[3:4], channels=["FL2-A"])
 
 
-def test_plot_rainbow_with_pdf(rbint, ads):
-    rbint.plot_rainbow_with_PDF(ads[1], channels=["FL1-A"], bins=50)
+def test_plot_rainbow_with_pdf(calibrator, ads):
+    calibrator.plot_rainbow_with_PDF(ads[1], channels=["FL1-A"], bins=50)
     assert "_calibratedos" in ads[1].layers
-    rbint.plot_rainbow_with_PDF(ads[1])
-    rbint.rsim.plot()
+    calibrator.plot_rainbow_with_PDF(ads[1])
+    calibrator.rsim.plot()

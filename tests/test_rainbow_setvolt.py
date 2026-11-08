@@ -116,3 +116,11 @@ def test_color_voltageconfig(targetconfig, rainbow_files, config):
     full = color_voltageconfig(vc, errorlevel=100, simplify=False)
     assert "factor" in full.columns
     assert all(i.startswith(cyan) for i in full.index)
+
+
+def test_random_state_gives_identical_results(rainbow_files, config):
+    run = lambda: get_config_from_rainbow_reference(config, rainbow_files["A"][0], SET, NPEAK, plot=False, random_state=0)
+    tc = run()
+    assert tc.equals(run())
+    vc = lambda: get_voltages_from_rainbow(config, tc, rainbow_files["B"][0], plot=False, random_state=0)
+    assert vc().equals(vc())
