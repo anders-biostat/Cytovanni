@@ -18,6 +18,31 @@ sed '/    # custom packages/a\    uv pip install --system package1 package2' -i 
 where package1 package2 should be replaced by whatever additional packages you need. Then rebuild the container to include the new packages.
 
 
+## Run the Tests
+The container also holds the test tools (pytest, pytest-cov, pytest-xdist). The tests are not part of the installed
+package: run them from a clone of the repository, where pytest uses the code of the clone (`src/`) rather than the
+installed version.
+```bash
+git clone https://github.com/anders-biostat/Cytovanni.git && cd Cytovanni
+apptainer exec --nv /path/to/cytovanni-container.sif python -m pytest -n 4
+```
+The default run uses small synthetic data and takes about 5 minutes with 6 workers (`-n 6`); `-m "not slow"` leaves out the larger
+fits, and `--cov` adds a coverage report. Tests that need a GPU are skipped without one (`--nv` passes the GPU to the
+container).
+
+The end-to-end tests run the tutorial pipelines on a part of the example data and are not part of the default run:
+```bash
+CYTOVANNI_TEST_DATA=/path/to/data CYTOVANNI_TEST_CACHE=/path/to/cache \
+    apptainer exec --nv /path/to/cytovanni-container.sif python -m pytest -m data tests/e2e
+```
+`CYTOVANNI_TEST_DATA` is the folder with the example data sets (`example_fixed-spectra`, `example_variable-spectra`).
+Every stage of the pipelines writes its results to `CYTOVANNI_TEST_CACHE`, so a later run reuses them;
+`-m "data and not slow"` runs only the stages that need no model training. The other options are described in
+`tests/e2e/conftest.py`. Apptainer passes environment variables of the host into the container.
+
+The tests marked `keops` need a working KeOps compilation (`-m keops`); `tests/snapshots/README.md` describes the
+stored results that `tests/test_snapshots.py` compares with.
+
 ## Use Container as Jupyter Kernel
 Our preferred way is using this container as a Jupyter kernel.
 For this, you need to create a script `init_kernel.sh` containing

@@ -5,7 +5,9 @@ From: pytorch/pytorch:2.8.0-cuda12.9-cudnn9-devel
     pip install --no-cache-dir uv
 
     uv pip install --system jupyter ipykernel
-    uv pip install --system cytovanni[all,test]
+    uv pip install --system cytovanni[all]
+    # test suite (run from a clone of the repository, see docs/tutorials/container.md)
+    uv pip install --system pytest pytest-cov pytest-xdist
 
     # custom packages
     #uv pip install --system 
@@ -24,10 +26,15 @@ From: pytorch/pytorch:2.8.0-cuda12.9-cudnn9-devel
     # no user python packages to avoid host contamination
     export PYTHONNOUSERSITE=1
 
+%test
+    export HOME=$(mktemp -d)   # pykeops writes its cache under ~
+    python -c "import cytovanni, torch, geomloss, datashader, pytest, xdist, pytest_cov; print('cytovanni', cytovanni.__version__)"
+
 %labels
     Author valentinwust
     Version v1.0.0
 
 %help
-    Container that can run all parts of Cytovanni.
+    Container that can run all parts of Cytovanni, including its test suite.
+    Tests: in a clone of the repository, apptainer exec --nv cytovanni-container.sif python -m pytest -n 4
 
