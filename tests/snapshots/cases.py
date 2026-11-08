@@ -3,7 +3,7 @@
 Each case is a function returning a dict of numpy arrays. Everything runs on the CPU with fixed seeds, so the
 results are reproducible up to floating point differences between machines; the comparison (tests/test_snapshots.py)
 uses `RTOL` / `ATOL`. Regenerate after an intended change with ``python tests/snapshots/generate.py [case ...]`` and
-record the change in FIXLOG.md.
+record the change in CHANGELOG.md.
 
 The cases cover the main numerical steps: rainbow GMM, rainbow fluorescence + scatter calibration (also with the
 covariance penalty), single-stain spectrum fits, the reference model with a scaling and with a spectral-fit
