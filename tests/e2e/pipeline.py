@@ -259,7 +259,7 @@ def variable_model(cal, dye, out, Niter=1500):
     sfm.save(os.path.join(out, "model_init.pt"))
     sfm.fit(Niter=Niter, lr=2e-2)
     sfm.save(os.path.join(out, "model.pt"))
-    sfm.transformer.learned_stainscale.to_csv(os.path.join(out, "stainscale.csv"))
+    np.exp(sfm.transformer.learned_stainlogscale).to_csv(os.path.join(out, "stainscale.csv"))
 
 
 def aliquot_mismatch(adatas, key, cofactor=1500, quantiles=(.5, .9)):
