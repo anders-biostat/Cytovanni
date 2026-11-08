@@ -634,16 +634,89 @@ class RainbowFluorescenceGMMCalibrationTrainer():
     """Training schedule of `RainbowFluorescenceGMMCalibrationModule` (as run by `RainbowCalibrator.fit_fluorescence`).
 
     `fit_init` fits the peak positions to the GMM means (`fit_init_peak`), then the covariances alone
-    (`fit_init_cov`); `fit` then fits all parameters by maximum likelihood.
+    (`fit_init_cov`); `fit` then fits all parameters by maximum likelihood, optionally with a penalty on how far the
+    peak covariances of every measurement move away from their values after `fit_init` (`get_cov_penalty`).
 
     Parameters
     ----------
     module : RainbowFluorescenceGMMCalibrationModule
         Module to train (in place).
+    cov_penalty : float, default 0
+        Weight of the covariance penalty in `fit`; 0 disables it.
+    cov_penalty_broaden_only : bool, default True
+        Penalise only broadening relative to the reference (eigenvalues of ``P Sigma0`` below 1, with P the current
+        precision and Sigma0 the reference covariance); narrowing stays free.
+
+    Attributes
+    ----------
+    cov_reference : dict or None
+        Reference covariances per bead type, set by `set_cov_reference` (at the first `fit` call if `cov_penalty` > 0).
     """
-    def __init__(self, module):
+    def __init__(self, module, cov_penalty=0., cov_penalty_broaden_only=True):
         self.module = module
+        self.cov_penalty = cov_penalty
+        self.cov_penalty_broaden_only = cov_penalty_broaden_only
+        self.cov_reference = None
         self.is_trained = False
+
+    def set_cov_reference(self, dataset):
+        """Store the current peak covariances of the measurements in `dataset` as the reference of the penalty.
+
+        Normally called after `fit_init` (done by the first `fit` call if `cov_penalty` > 0).
+
+        Parameters
+        ----------
+        dataset : RainbowFluorescenceGMMCalibrationDataset
+            Training data; the measurements whose covariances are stored.
+
+        Returns
+        -------
+        None
+            Sets `cov_reference`: per bead type (measurement indices, covariance, log-determinant of the precision,
+            Cholesky factor of the covariance).
+        """
+        self.cov_reference = {}
+        with torch.no_grad():
+            for tp in self.module.param_cov:
+                if tp not in dataset.peak_shares_uididx:
+                    continue
+                idx = dataset.peak_shares_uididx[tp]
+                precision, logdet = self.module.param_cov[tp]()
+                cov = torch.linalg.inv(precision[idx])
+                cov = .5 * (cov + cov.transpose(-1, -2))
+                self.cov_reference[tp] = (idx, cov, logdet[idx], torch.linalg.cholesky(cov))
+
+    def get_cov_penalty(self):
+        r"""Covariance penalty: how far the peak covariances moved away from the reference (`set_cov_reference`).
+
+        For every measurement and peak the KL divergence between zero-mean normal distributions with the reference
+        covariance :math:`\Sigma_0` and the current one, :math:`\frac12 [\operatorname{tr}(P \Sigma_0) - d -
+        \log\det(P \Sigma_0)]` with P the current precision and d the number of channels; summed over the peaks,
+        averaged over the measurements, summed over the bead types. With `cov_penalty_broaden_only`, only the
+        eigenvalues e < 1 of :math:`P \Sigma_0` (directions in which the peak is broader than the reference) contribute,
+        :math:`\frac12 (e - 1 - \log e)` each.
+
+        The precisions of every measurement and peak are free parameters; without the penalty a peak can broaden until
+        it covers neighbouring peaks, after which the measurement's factors can drift at little cost in likelihood
+        (seen for calibration beads with one bright peak per laser).
+
+        Returns
+        -------
+        torch.Tensor
+            Scalar penalty (without the weight `cov_penalty`), with gradient.
+        """
+        total = 0.
+        for tp, (idx, cov0, logdet0, chol0) in self.cov_reference.items():
+            precision, logdet = self.module.param_cov[tp]()
+            precision, logdet = precision[idx], logdet[idx]
+            if self.cov_penalty_broaden_only:
+                M = chol0.transpose(-1, -2) @ precision @ chol0
+                e = torch.linalg.eigvalsh(.5 * (M + M.transpose(-1, -2))).clamp_min(1e-12)
+                kl = (.5 * (e - 1 - torch.log(e)) * (e < 1)).sum(-1)
+            else:
+                kl = .5 * ((precision * cov0.transpose(-1, -2)).sum((-1, -2)) - precision.shape[-1] - logdet + logdet0)
+            total = total + kl.sum(-1).mean()
+        return total
         
     def fit_init_peak(self, dataset, Niter=1000, lr=1e-3, momentum=.6, showprogress=False):
         """Initial fit of the peak positions, gains and shifts to the GMM peak means.
@@ -807,9 +880,11 @@ class RainbowFluorescenceGMMCalibrationTrainer():
         Returns
         -------
         None
-            Sets `fit_losshistory` (mean NLL per step).
+            Sets `fit_losshistory` (mean NLL per step, plus the weighted covariance penalty if `cov_penalty` > 0).
         """
         if not self.is_trained:
+            if self.cov_penalty > 0 and self.cov_reference is None:
+                self.set_cov_reference(dataset)
             self.optimizer = torch.optim.Adam(self.module.parameters(), lr=0 if warmup>0 else lr)
             self.fit_losshistory = []
             self.is_trained = True
@@ -822,6 +897,10 @@ class RainbowFluorescenceGMMCalibrationTrainer():
                     self.optimizer.param_groups[0]["lr"] = lr * (it+1)/warmup
                 self.optimizer.zero_grad()
                 loss = self.module.accumulate_nll_gradients(dataset)
+                if self.cov_penalty > 0:
+                    penalty = self.cov_penalty * self.get_cov_penalty()
+                    penalty.backward()
+                    loss += penalty.item()
                 self.fit_losshistory.append(loss)
                 if showprogress: pbar.set_postfix({'nll': loss}, refresh=False)
                 self.optimizer.step()

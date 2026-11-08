@@ -206,7 +206,10 @@ class RBF_batched(Module):
         if self.bandwidth is None:
             n_samples = L2_distances.shape[-2]
             return L2_distances.data.mean(-1, keepdim=True).mean(-2, keepdim=True) / (1 - 1/n_samples) # mean across non-diagonal
-        return self.bandwidth
+        bandwidth = torch.as_tensor(self.bandwidth, dtype=L2_distances.dtype, device=L2_distances.device)
+        if bandwidth.ndim == 0:
+            bandwidth = bandwidth.reshape(1, 1)
+        return bandwidth
     
     @classmethod
     def estimate_bandwidth(cls, X):

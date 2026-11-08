@@ -175,9 +175,10 @@ class ExtendableParameter(Module):
         inds : list of int
             Indices that must exist afterwards (empty: no new entries, see `freeze`).
         keep_prior_trainable_structure : bool, default False
-            If False, the current values (`forward_param_sum`) of all existing entries are moved into the fixed part
-            and frozen, only the new entries are trainable, and the mean normalisation keeps running over the
-            previously used entries only (the new entries do not enter the mean), so the zero point stays as fitted.
+            If False, the current values of all existing entries (`forward`, i.e. after the mean normalisation) are
+            moved into the fixed part and frozen, only the new entries are trainable and start at `init_value`, and
+            the mean normalisation keeps running over the previously used entries only (the new entries do not enter
+            the mean), so the zero point stays as fitted.
             If True, the existing entries stay as they are (trainable where they were), and the new entries are
             trainable and enter the mean normalisation.
         """
@@ -207,8 +208,11 @@ class ExtendableParameter(Module):
                                                        axis=self.axis_extend),
                                              requires_grad=False)
         else:
-            # New fixed part is full old plus zeros at new
-            self.param_fixed = Parameter(torch.cat([self.forward_param_sum().detach(),
+            # New fixed part is full old plus zeros at new. With the mean normalisation, the old entries are stored
+            # normalised (their masked mean is then 0), so the new entries start at init_value and the old ones keep
+            # their value.
+            current = (self.forward() if self.axis_norm is not None else self.forward_param_sum()).detach()
+            self.param_fixed = Parameter(torch.cat([current,
                                                     torch.zeros(addshape, dtype=torch.float32, device=self.param_fixed.device)],
                                                    axis=self.axis_extend),
                                          requires_grad=False)
@@ -362,5 +366,7 @@ class CovarianceTrilExtendableParameter(ExtendableParameter):
     
     def get_initial_trainable_mask(self, shape, device="cpu"):
         """Return the trainable mask: ones on and below the diagonal, on `device`."""
+        if len(shape)<2:
+            raise ValueError(f"Covariance decomposition shape must be at least two dimensions, not {shape}!")
         return torch.tril(torch.ones(shape, dtype=torch.float32, device=device))
 

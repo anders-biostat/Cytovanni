@@ -50,7 +50,7 @@ def make_AutoSpill_fcs_config(single_stain_path, cytoconfig, warn_missing=True, 
     fcs_control = pd.DataFrame([cytoconfig.channels_fluorescence], index=["dye"]).T
     fcs_control["wavelength"] = fcs_control.index+1
     fcs_control["channel_name"] = fcs_control["dye"].apply(lambda x: x[:-2] if x.endswith("-A") else x)
-    fcs_control["filename_regex"] = fcs_control["channel_name"].apply(lambda c: rf'Compensation Controls_(.*){re.escape(c)} Stained Control\.fcs$')
+    fcs_control["filename_regex"] = fcs_control["channel_name"].apply(lambda c: rf'Compensation Controls_(?:(.*) )?{re.escape(c)} Stained Control\.fcs$')
 
     fcs_control[["filename", "antigen"]] = ""
     for name, row in fcs_control.iterrows():

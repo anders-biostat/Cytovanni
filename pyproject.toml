@@ -40,9 +40,34 @@ dependencies = [
 geom = ["geomloss", "pykeops"]
 plot = ["datashader", "colorcet"]
 all = ["cytovanni[geom,plot]"]
+test = ["pytest", "pytest-cov", "pytest-xdist"]
 
 [project.urls]
 Repository = "https://github.com/anders-biostat/Cytovanni"
 
 [tool.hatch.version]
 path = "src/cytovanni/version.py"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers -m 'not data and not keops'"
+markers = [
+    "slow: larger fits (deselect with -m 'not slow')",
+    "gpu: needs CUDA (skipped without a GPU)",
+    "keops: needs a working pykeops (KeOps compilation)",
+    "data: needs the example data (env CYTOVANNI_TEST_DATA); run with -m data",
+    "snapshot: compares with stored results of an earlier version (tests/snapshots)",
+]
+filterwarnings = [
+    "ignore::DeprecationWarning:flowkit.*",
+    "ignore::FutureWarning:anndata.*",
+]
+
+[tool.coverage.run]
+source = ["cytovanni"]
+branch = true
+
+[tool.coverage.report]
+fail_under = 70
+show_missing = false
+skip_empty = true

@@ -93,7 +93,7 @@ def collect_bead_controls_regularflow(single_stain_path, cytoconfig, collect_dat
     """
     fcs_control = pd.DataFrame([cytoconfig.channels_fluorescence], index=["channel"]).T
     fcs_control["dye"] = fcs_control["channel"].apply(lambda x: x[:-2] if x.endswith("-A") else x)
-    fcs_control["filename_regex"] = fcs_control["dye"].apply(lambda c: rf'Compensation Controls_(.*){re.escape(c)} Stained Control\.fcs$')
+    fcs_control["filename_regex"] = fcs_control["dye"].apply(lambda c: rf'Compensation Controls_(?:(.*) )?{re.escape(c)} Stained Control\.fcs$')
     
     fcs_control[["filename", "antigen"]] = ""
     for name, row in fcs_control.iterrows():

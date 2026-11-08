@@ -215,7 +215,8 @@ class RainbowCalibrator():
         return df_meta
     
     
-    def fit_fluorescence(self, gpu=True, device="cuda:0", verbosity=2, freeze=True, channel_missing_cutoff=-np.inf):
+    def fit_fluorescence(self, gpu=True, device="cuda:0", verbosity=2, freeze=True, channel_missing_cutoff=-np.inf,
+                         cov_penalty=0., cov_penalty_broaden_only=True):
         """Fit the fluorescence model on the training data.
 
         Builds a `RainbowFluorescenceGMMCalibrationDataset` and runs `RainbowFluorescenceGMMCalibrationTrainer` with its
@@ -238,6 +239,14 @@ class RainbowCalibrator():
             Channels in which every peak of a measurement has a GMM mean below this value (raw units) are treated like
             off-scale peaks (not used for the factors) in that measurement, e.g. a laser that was switched off. The
             default uses all channels.
+        cov_penalty : float, default 0
+            Weight of a penalty that keeps the peak covariances of every measurement close to their values after the
+            initial fit (`RainbowFluorescenceGMMCalibrationTrainer.get_cov_penalty`). Without it, a peak can broaden
+            over neighbouring peaks, after which the measurement's factors can drift at little cost in likelihood; this
+            happens for bead types with few peaks per laser (e.g. calibration beads; 0.3 with
+            `cov_penalty_broaden_only` works there). 0 disables it.
+        cov_penalty_broaden_only : bool, default True
+            Penalise only broadening of the peak covariances, not narrowing.
 
         Returns
         -------
@@ -272,7 +281,8 @@ class RainbowCalibrator():
         if verbosity>=1: printwtime("Initializing Dataset")
         self.dataset = RainbowFluorescenceGMMCalibrationDataset(self.rboe, self.adatas, device=device, channel_missing_cutoff=self.channel_missing_cutoff)
         self.rfim.to(device)
-        self.rfim_trainer = RainbowFluorescenceGMMCalibrationTrainer(self.rfim)
+        self.rfim_trainer = RainbowFluorescenceGMMCalibrationTrainer(self.rfim, cov_penalty=cov_penalty,
+                                                                     cov_penalty_broaden_only=cov_penalty_broaden_only)
         
         if verbosity>=1: printwtime("Fit Initialization")
         self.rfim_trainer.fit_init(self.dataset, showprogress=verbosity>=1)
