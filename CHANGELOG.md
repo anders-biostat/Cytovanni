@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 1.2.1 (2026-11-09)
 
 - `cytovanni.utils.batcheval.gaussian_negative` has a `threshold_on` argument. The default `"raw"` replaces every value
   below `cutoff`, also large negative ones; `"abs"` replaces the values in [-cutoff, cutoff], which is what 1.2.0 does.
