@@ -242,9 +242,9 @@ class RainbowCalibrator():
         cov_penalty : float, default 0
             Weight of a penalty that keeps the peak covariances of every measurement close to their values after the
             initial fit (`RainbowFluorescenceGMMCalibrationTrainer.get_cov_penalty`). Without it, a peak can broaden
-            over neighbouring peaks, after which the measurement's factors can drift at little cost in likelihood; this
-            happens for bead types with few peaks per laser (e.g. calibration beads; 0.3 with
-            `cov_penalty_broaden_only` works there). 0 disables it.
+            over neighbouring peaks, after which the measurement's factors can drift at little cost in likelihood.
+            0 (no penalty) is fine for normal rainbow beads. QC beads that do not fluoresce as much in every channel
+            (few bright peaks per laser) may need it; 0.3 with `cov_penalty_broaden_only` works there.
         cov_penalty_broaden_only : bool, default True
             Penalise only broadening of the peak covariances, not narrowing.
 
