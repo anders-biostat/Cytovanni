@@ -14,19 +14,14 @@ import cytovanni.rainbow.rbim as rbim
 from cytovanni.rainbow import (RainbowCalibrator, RainbowFluorescenceGMMCalibrationDataset,
                                RainbowFluorescenceGMMCalibrationTrainer)
 
-from test_rainbow_calibrator import ShortTrainer, read_fit, short_fit_fluorescence
+from synthetic import ShortTrainer, short_fit_fluorescence
 
 FL = ["FL1-A", "FL2-A", "FL3-A"]
 
 
-@pytest.fixture(scope="module")
-def fitted_ads(rainbow_files, config):
-    return [read_fit(p, config, b) for b, paths in rainbow_files.items() for p in paths]
-
-
-def initialised(fitted_ads, **kw):
+def initialised(fitted_rainbow_ads, **kw):
     """Calibrator, dataset and trainer after `fit_init` (short schedule, CPU), reference covariances set."""
-    rb = RainbowCalibrator([ad.copy() for ad in fitted_ads])
+    rb = RainbowCalibrator([ad.copy() for ad in fitted_rainbow_ads])
     ds = RainbowFluorescenceGMMCalibrationDataset(rb.rboe, rb.adatas, device="cpu")
     tr = ShortTrainer(rb.rfim, **kw)
     tr.fit_init(ds)
@@ -42,18 +37,18 @@ def scale_precision(rb, c):
             p.param_fixed.data *= np.sqrt(c)
 
 
-def test_penalty_zero_at_reference(fitted_ads):
-    rb, ds, tr = initialised(fitted_ads)
+def test_penalty_zero_at_reference(fitted_rainbow_ads):
+    rb, ds, tr = initialised(fitted_rainbow_ads)
     for broaden_only in [True, False]:
         tr.cov_penalty_broaden_only = broaden_only
         assert abs(tr.get_cov_penalty().item()) < 1e-4
 
 
 @pytest.mark.parametrize("c", [.5, .8])
-def test_penalty_isotropic_broadening_equals_kl(fitted_ads, c):
+def test_penalty_isotropic_broadening_equals_kl(fitted_rainbow_ads, c):
     """P = c P0 (all peaks broader by 1/c): both variants give the KL d/2 (c - 1 - ln c) per peak, summed over the
     peaks and averaged over the measurements."""
-    rb, ds, tr = initialised(fitted_ads)
+    rb, ds, tr = initialised(fitted_rainbow_ads)
     scale_precision(rb, c)
     npeak = sum(cov.shape[1] for _, cov, _, _ in tr.cov_reference.values())
     d = len(FL)
@@ -63,8 +58,8 @@ def test_penalty_isotropic_broadening_equals_kl(fitted_ads, c):
         assert tr.get_cov_penalty().item() == pytest.approx(expected, rel=1e-3)
 
 
-def test_penalty_broaden_only_ignores_narrowing(fitted_ads):
-    rb, ds, tr = initialised(fitted_ads)
+def test_penalty_broaden_only_ignores_narrowing(fitted_rainbow_ads):
+    rb, ds, tr = initialised(fitted_rainbow_ads)
     scale_precision(rb, 2.)                       # all peaks narrower
     tr.cov_penalty_broaden_only = True
     assert abs(tr.get_cov_penalty().item()) < 1e-4
@@ -72,9 +67,9 @@ def test_penalty_broaden_only_ignores_narrowing(fitted_ads):
     assert tr.get_cov_penalty().item() > .1
 
 
-def test_penalty_gradient_narrows_broadened_peaks(fitted_ads):
+def test_penalty_gradient_narrows_broadened_peaks(fitted_rainbow_ads):
     """A gradient step on the penalty alone moves broadened precisions back up (towards the reference)."""
-    rb, ds, tr = initialised(fitted_ads)
+    rb, ds, tr = initialised(fitted_rainbow_ads)
     scale_precision(rb, .5)
     p = next(iter(rb.rfim.param_cov.values()))
     before = p()[0].detach().diagonal(dim1=-2, dim2=-1).sum()
@@ -85,25 +80,25 @@ def test_penalty_gradient_narrows_broadened_peaks(fitted_ads):
     assert after > before
 
 
-def test_fit_fluorescence_passes_penalty_to_trainer(fitted_ads):
-    rb = RainbowCalibrator([ad.copy() for ad in fitted_ads])
+def test_fit_fluorescence_passes_penalty_to_trainer(fitted_rainbow_ads):
+    rb = RainbowCalibrator([ad.copy() for ad in fitted_rainbow_ads])
     short_fit_fluorescence(rb, cov_penalty=.3, cov_penalty_broaden_only=False)
     assert rb.rfim_trainer.cov_penalty == .3 and rb.rfim_trainer.cov_penalty_broaden_only is False
     assert rb.rfim_trainer.cov_reference is not None
 
 
-def test_default_trainer_has_no_penalty(fitted_ads):
-    rb = RainbowCalibrator([ad.copy() for ad in fitted_ads])
+def test_default_trainer_has_no_penalty(fitted_rainbow_ads):
+    rb = RainbowCalibrator([ad.copy() for ad in fitted_rainbow_ads])
     tr = RainbowFluorescenceGMMCalibrationTrainer(rb.rfim)
     assert tr.cov_penalty == 0 and tr.cov_reference is None
 
 
-def test_penalty_zero_gives_the_unpenalised_fit(fitted_ads):
+def test_penalty_zero_gives_the_unpenalised_fit(fitted_rainbow_ads):
     """cov_penalty=0 is the fit without the option (same seeds -> identical factors and loss history)."""
     out = []
     for kw in [{}, {"cov_penalty": 0.}]:
         torch.manual_seed(0); np.random.seed(0)
-        rb = RainbowCalibrator([ad.copy() for ad in fitted_ads])
+        rb = RainbowCalibrator([ad.copy() for ad in fitted_rainbow_ads])
         short_fit_fluorescence(rb, **kw)
         out.append((rb.get_calibration_factors_all()[FL].to_numpy(), list(rb.rfim_trainer.fit_losshistory)))
         assert rb.rfim_trainer.cov_reference is None
@@ -123,13 +118,13 @@ class MediumTrainer(RainbowFluorescenceGMMCalibrationTrainer):
 
 
 @pytest.mark.slow
-def test_penalty_limits_broadening_during_fit(fitted_ads):
+def test_penalty_limits_broadening_during_fit(fitted_rainbow_ads):
     """During the full fit, the penalised run's covariances stay closer to the reference than the unpenalised run's
     (broadening-only KL to the covariances after fit_init), and the factors are still recovered."""
     kl, factors = {}, {}
     for lam in [0., 10.]:
         torch.manual_seed(0); np.random.seed(0)
-        rb = RainbowCalibrator([ad.copy() for ad in fitted_ads])
+        rb = RainbowCalibrator([ad.copy() for ad in fitted_rainbow_ads])
         ds = RainbowFluorescenceGMMCalibrationDataset(rb.rboe, rb.adatas, device="cpu")
         tr = MediumTrainer(rb.rfim, cov_penalty=lam)
         tr.fit_init(ds, showprogress=False)

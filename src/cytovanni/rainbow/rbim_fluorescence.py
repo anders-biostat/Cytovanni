@@ -642,7 +642,8 @@ class RainbowFluorescenceGMMCalibrationTrainer():
     module : RainbowFluorescenceGMMCalibrationModule
         Module to train (in place).
     cov_penalty : float, default 0
-        Weight of the covariance penalty in `fit`; 0 disables it.
+        Weight of the covariance penalty in `fit`; 0 disables it. 0 is fine for normal rainbow beads; QC beads that
+        do not fluoresce as much in every channel may need 0.3 (see `RainbowCalibrator.fit_fluorescence`).
     cov_penalty_broaden_only : bool, default True
         Penalise only broadening relative to the reference (eigenvalues of ``P Sigma0`` below 1, with P the current
         precision and Sigma0 the reference covariance); narrowing stays free.

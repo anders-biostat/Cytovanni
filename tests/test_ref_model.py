@@ -12,22 +12,10 @@ from cytovanni.ref import (DummyTransformer, MultiOrdinalEncoder, OverlapFitMode
                            SampleOverlapDataset, ScalingTransformer, SpectralFitTransformer, UnmxErrorExclusionMultiplier)
 from cytovanni.ref.model import _sum_loss_separate_markers, _sum_loss_separate_markers_loop
 from cytovanni.torch import GeomSampleLoss, MMDLoss
-from test_ref_transformer import COMPONENTS, make_panelconfig, set_params, spectra_of
+from synthetic import overlap_adatas, PANEL_COMPONENTS, make_panelconfig_csv, panel_spectra_of, set_transformer_params
 
 CH = synthetic.CHANNELS_FLUORESCENCE
 ST = synthetic.STAINS
-
-
-def overlap_adatas(n=1000, batches=synthetic.BATCHES, abundances=None):
-    """One reference sample measured in every batch, on the calibrated scale (stain scales of synthetic.STAIN_SCALES)."""
-    ab = synthetic.cell_abundances(n, np.random.default_rng(7)) if abundances is None else abundances
-    ads = []
-    for i, b in enumerate(batches):
-        rng = np.random.default_rng(i)
-        sp = synthetic.SPECTRA.to_numpy()
-        x = (ab * synthetic.STAIN_SCALES.loc[b].to_numpy()[None]) @ sp + 15 * rng.normal(size=ab.shape)
-        ads.append(synthetic.make_adata(x, CH, batch=b, uid=f"ref_{b}", type="ref"))
-    return ads
 
 
 def quiet(f, *a, **k):
@@ -151,7 +139,7 @@ def test_marker_weights_enter_the_loss(ads, moe):
 
 def test_checkpoint_gives_same_loss_and_gradient(moe):
     tr = scaling(moe)
-    set_params(tr, stain=[[.1, .2, .3], [0., -.2, .1], [.3, 0., -.1]])
+    set_transformer_params(tr, stain=[[.1, .2, .3], [0., -.2, .1], [.3, 0., -.1]])
     x, y = torch.randn(80, 3), torch.randn(70, 3) + .5
     grads = []
     for cp in [True, False]:
@@ -231,8 +219,8 @@ def test_fit_records_history_and_reduces_loss(ads, moe, device):
 def test_fit_keeps_spectralfit_anchor_parameters(tmp_path, device):
     ads = overlap_adatas(n=600, batches=["A", "B"])
     moe = MultiOrdinalEncoder.from_adatas(ads, ["batch"])
-    pc = make_panelconfig(tmp_path)
-    pem = PanelEmbeddingModule.from_data(pc, moe, pd.Series("batch", index=COMPONENTS.index), anchor_bidx={"batch": [0]})
+    pc = make_panelconfig_csv(tmp_path)
+    pem = PanelEmbeddingModule.from_data(pc, moe, pd.Series("batch", index=PANEL_COMPONENTS.index), anchor_bidx={"batch": [0]})
     tr = SpectralFitTransformer.from_data(moe, pem, scale_stains=True, scale_channels=True, anchor_bidx={"batch": [0]})
     ds = make_dataset(ads, moe, device=device, sN_cells=300)
     m = OverlapFitModel(moe, tr, dataset=ds).to(device)
@@ -246,7 +234,7 @@ def test_fit_keeps_spectralfit_anchor_parameters(tmp_path, device):
 def test_save_load_roundtrip_scaling(ads, moe, tmp_path):
     ds = make_dataset(ads, moe)
     tr = scaling(moe)
-    set_params(tr, stain=np.random.default_rng(0).normal(scale=.3, size=(3, 3)))
+    set_transformer_params(tr, stain=np.random.default_rng(0).normal(scale=.3, size=(3, 3)))
     m = OverlapFitModel(moe, tr, dataset=ds, DDIST_kwargs={"blur": .3}, checkpoint_DDIST=False)
     m.losshistory["train"].append({"loss": 1., "step": 0})
     path = str(tmp_path / "sub" / "model.pt")
@@ -264,11 +252,11 @@ def test_save_load_roundtrip_scaling(ads, moe, tmp_path):
 def test_export_roundtrip_spectralfit_with_weights_and_multiplier(tmp_path):
     ads = overlap_adatas(n=300, batches=["A", "B"])
     moe = MultiOrdinalEncoder.from_adatas(ads, ["batch"])
-    pem = PanelEmbeddingModule.from_data(make_panelconfig(tmp_path), moe, pd.Series("batch", index=COMPONENTS.index),
+    pem = PanelEmbeddingModule.from_data(make_panelconfig_csv(tmp_path), moe, pd.Series("batch", index=PANEL_COMPONENTS.index),
                                          anchor_bidx={"batch": [0]})
     tr = SpectralFitTransformer.from_data(moe, pem, scale_stains=True, anchor_bidx={"batch": [0]})
     tr.set_smp(UnmxErrorExclusionMultiplier(tr, groups=[("FL1", 4e3, ["FL2"])]))
-    set_params(tr, emb=np.full((3, 2), .5), stain=np.full((2, 3), .2))
+    set_transformer_params(tr, emb=np.full((3, 2), .5), stain=np.full((2, 3), .2))
     m = OverlapFitModel(moe, tr, markerweight=RareMarkerWeights(tr, groups=[("FL1", 4e3, 2.5)]))
     m2 = OverlapFitModel.from_exported(m.export())
     assert isinstance(m2.markerweight, RareMarkerWeights) and m2.markerweight.groups == [("FL1", 4e3, 2.5)]
@@ -302,7 +290,7 @@ def test_dummy_transformer_with_model(tmp_path):
 @pytest.mark.parametrize("name_by, columns", [("both", ST), ("stain", ST), ("marker", ST)])
 def test_add_ad_standardised_scaling(ads, moe, name_by, columns, device):
     tr = scaling(moe)
-    set_params(tr, stain=[[.1, .2, .3], [0., -.2, .1], [.3, 0., -.1]])
+    set_transformer_params(tr, stain=[[.1, .2, .3], [0., -.2, .1], [.3, 0., -.1]])
     m = OverlapFitModel(moe, tr, eval_only=True).to(device)
     ad = ads[2]
     m.add_ad_standardised(ad, batch_size=300, name_by=name_by)
@@ -321,7 +309,7 @@ def test_add_ad_standardised_scaling(ads, moe, name_by, columns, device):
 def test_add_ad_standardised_spectralfit_names_and_invalid(tmp_path):
     ads = overlap_adatas(n=200, batches=["A", "B"])
     moe = MultiOrdinalEncoder.from_adatas(ads, ["batch"])
-    pem = PanelEmbeddingModule.from_data(make_panelconfig(tmp_path), moe, pd.Series("batch", index=COMPONENTS.index))
+    pem = PanelEmbeddingModule.from_data(make_panelconfig_csv(tmp_path), moe, pd.Series("batch", index=PANEL_COMPONENTS.index))
     tr = SpectralFitTransformer.from_data(moe, pem)
     m = OverlapFitModel(moe, tr, eval_only=True)
     for name_by, cols in [("both", [f"{s} | {mk}" for s, mk in zip(ST, synthetic.MARKERS)]), ("marker", synthetic.MARKERS),
@@ -339,7 +327,7 @@ def test_incorporate_stain_scaling_keeps_class_and_warns_on_clip(moe):
     tr = scaling(moe, max_abslogstain=.5)
     m = MyModel(moe, tr)
     tr_o = scaling(moe)
-    set_params(tr_o, stain=[[1., 0., 0.], [-1., 0., 0.], [0., 0., 0.]])
+    set_transformer_params(tr_o, stain=[[1., 0., 0.], [-1., 0., 0.], [0., 0., 0.]])
     with pytest.warns(OverlapStandardisationWarning, match="clipped"):
         new = m.incorporate_stain_scaling(MyModel(moe, tr_o))
     assert type(new) is MyModel and new is not m
@@ -350,7 +338,7 @@ def test_incorporate_stain_scaling_adds_differences(moe):
     tr = scaling(moe)
     m = OverlapFitModel(moe, tr)
     tr_o = scaling(moe)
-    set_params(tr_o, stain=[[.2, 0., 0.], [-.1, .1, 0.], [-.1, -.1, 0.]])
+    set_transformer_params(tr_o, stain=[[.2, 0., 0.], [-.1, .1, 0.], [-.1, -.1, 0.]])
     new = m.incorporate_stain_scaling(OverlapFitModel(moe, tr_o))
     assert np.allclose(new.transformer.learned_stainlogscale, tr_o.learned_stainlogscale, atol=1e-6)
     assert not hasattr(new, "ddist")
@@ -380,11 +368,11 @@ def test_spectralfit_transformer_recovers_embedding_shift(tmp_path, device):
     ab = synthetic.cell_abundances(2000, np.random.default_rng(3))
     ads = []  # no stain scaling: only the spectra differ between the batches
     for i, b in enumerate(["A", "B"]):
-        sp = spectra_of(true_emb if b == "B" else np.zeros(3))
+        sp = panel_spectra_of(true_emb if b == "B" else np.zeros(3))
         x = ab @ sp + 15 * np.random.default_rng(i).normal(size=ab.shape)
         ads.append(synthetic.make_adata(x, CH, batch=b, uid=f"ref_{b}", type="ref"))
     moe = MultiOrdinalEncoder.from_adatas(ads, ["batch"])
-    pem = PanelEmbeddingModule.from_data(make_panelconfig(tmp_path), moe, pd.Series("batch", index=COMPONENTS.index),
+    pem = PanelEmbeddingModule.from_data(make_panelconfig_csv(tmp_path), moe, pd.Series("batch", index=PANEL_COMPONENTS.index),
                                          anchor_bidx={"batch": [0]})
     tr = SpectralFitTransformer.from_data(moe, pem, anchor_bidx={"batch": [0]}, arcsinh_cofactor=1500)
     ds = make_dataset(ads, moe, device=device, sN_cells=1000)

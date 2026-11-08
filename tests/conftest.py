@@ -85,3 +85,9 @@ def no_warnings():
     with warnings.catch_warnings():
         warnings.simplefilter("error")
         yield
+
+
+@pytest.fixture(scope="module")
+def fitted_rainbow_ads(rainbow_files, config):
+    """GMM-fitted rainbow measurements, two per batch (A, A, B, B, C, C); copy before changing them."""
+    return [synthetic.read_rainbow_fit(p, config, b) for b, paths in rainbow_files.items() for p in paths]

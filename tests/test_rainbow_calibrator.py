@@ -15,6 +15,7 @@ import pytest
 import torch
 
 import cytovanni.rainbow.rbim as rbim
+from synthetic import ShortTrainer, expected_rainbow_factors, read_rainbow_fit, short_fit_fluorescence
 from cytovanni.exceptions import (CalibrationModuleException, CalibrationModuleUntrainedParameterWarning,
                                   CalibrationModuleWarning, MissingChannelException, MissingGPUWarning)
 from cytovanni.io import readfcs_rainbow_sample, readfcs_sample, writefcs
@@ -29,54 +30,15 @@ NPEAK = len(synthetic.PEAKS)
 SCATTER_TARGETS = ["FSC-A", "FSC-H", "SSC-A", "SSC-H"]
 
 
-class ShortTrainer(RainbowFluorescenceGMMCalibrationTrainer):
-    """The trainer with a short default schedule, for `fit_fluorescence` in tests."""
-    def fit_init_peak(self, dataset, Niter=200, **kw):
-        return super().fit_init_peak(dataset, Niter=Niter, **kw)
-
-    def fit_init_cov(self, dataset, Niter=5, **kw):
-        return super().fit_init_cov(dataset, Niter=Niter, **kw)
-
-    def fit(self, dataset, Niter=10, **kw):
-        return super().fit(dataset, Niter=Niter, **kw)
-
-
-def short_fit_fluorescence(rb, trainer=ShortTrainer, **kwargs):
-    """`rb.fit_fluorescence(**kwargs)` with `trainer` instead of the full training schedule."""
-    kwargs = {"gpu": False, "verbosity": 0, **kwargs}
-    with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(rbim, "RainbowFluorescenceGMMCalibrationTrainer", trainer)
-        rb.fit_fluorescence(**kwargs)
-
-
-def expected_factors(batches=synthetic.BATCHES):
-    """True fluorescence factors 1 / gain, geometric mean 1 over `batches`."""
-    f = 1 / synthetic.GAINS.loc[batches]
-    return f / np.exp(np.log(f).mean())
-
-
-def read_fit(path, config, batch, rainbow_type="T", seed=0):
-    ad = readfcs_rainbow_sample(path, config, NPEAK, name=os.path.basename(path), rainbow_batch=batch,
-                                rainbow_type=rainbow_type)
-    fit_rainbow_GMM(ad, random_state=seed)
-    return ad
-
-
-@pytest.fixture(scope="module")
-def fitted_ads(rainbow_files, config):
-    """GMM-fitted rainbow measurements, two per batch (A, A, B, B, C, C); copy before changing them."""
-    return [read_fit(p, config, b) for b, paths in rainbow_files.items() for p in paths]
-
-
 @pytest.fixture
-def ads(fitted_ads):
-    return [ad.copy() for ad in fitted_ads]
+def ads(fitted_rainbow_ads):
+    return [ad.copy() for ad in fitted_rainbow_ads]
 
 
 @pytest.fixture(scope="module")
-def rbint(fitted_ads):
+def rbint(fitted_rainbow_ads):
     """Calibrator on all six measurements, fluorescence fitted on the CPU with the short schedule (do not modify)."""
-    rb = RainbowCalibrator([ad.copy() for ad in fitted_ads])
+    rb = RainbowCalibrator([ad.copy() for ad in fitted_rainbow_ads])
     short_fit_fluorescence(rb)
     return rb
 
@@ -93,9 +55,9 @@ def batch_D(config, tmp_path_factory):
     """Two measurements of a new batch 'D' with the gains of batch C (same type 'T'), and a new measurement of the
     known batch C (last)."""
     folder = tmp_path_factory.mktemp("rainbow_D")
-    new = [read_fit(synthetic.write_rainbow_fcs(str(folder / f"rb_D_{k}.fcs"), "C", btim=f"1{2+k}:00:00", seed=50 + k),
+    new = [read_rainbow_fit(synthetic.write_rainbow_fcs(str(folder / f"rb_D_{k}.fcs"), "C", btim=f"1{2+k}:00:00", seed=50 + k),
                     config, "D") for k in range(2)]
-    new.append(read_fit(synthetic.write_rainbow_fcs(str(folder / "rb_C_new.fcs"), "C", btim="10:00:00", seed=60),
+    new.append(read_rainbow_fit(synthetic.write_rainbow_fcs(str(folder / "rb_C_new.fcs"), "C", btim="10:00:00", seed=60),
                         config, "C"))
     return new
 
@@ -231,6 +193,18 @@ def test_empty_calibrator():
     assert not hasattr(rb, "rfim") and rb.channel_missing_cutoff is None
 
 
+@pytest.mark.parametrize("drop", ["obs", "layer"])
+def test_construction_without_gmm_obs_or_raw_layer_warns_and_raises(ads, drop):
+    """Inputs that were not set up with fit_rainbow_GMM (obs labels) or lack the raw data are refused."""
+    if drop == "obs":
+        del ads[1].obs[RainbowCalibrator.REQUIRED_GMM_OBS[0]]
+    else:
+        del ads[1].layers["raw"]
+    with pytest.warns(CalibrationModuleWarning, match="missing"):
+        with pytest.raises(CalibrationModuleException):
+            RainbowCalibrator(ads)
+
+
 def test_construction_sets_up_models(ads):
     rb = RainbowCalibrator(ads)
     assert rb.rsim.is_trained and not rb.rfim.is_trained
@@ -244,7 +218,7 @@ def test_construction_sets_up_models(ads):
 def test_fluorescence_factors_recover_gains(rbint):
     F = rbint.get_calibration_factors_all()
     assert list(F.index) == synthetic.BATCHES and list(F.columns) == SCATTER_TARGETS + FL
-    np.testing.assert_allclose(F[FL], expected_factors(), rtol=.02)
+    np.testing.assert_allclose(F[FL], expected_rainbow_factors(), rtol=.02)
     np.testing.assert_allclose(np.log(F[FL]).mean(axis=0), 0., atol=1e-5)          # geometric mean 1
     # scatter: factor ratio to A is 1 / scatter gain
     np.testing.assert_allclose(F["FSC-A"] / F.loc["A", "FSC-A"], 1 / synthetic.SCATTER_GAINS, rtol=.01)
@@ -279,12 +253,12 @@ def test_get_calibration_factor_infers_batch_of_cells(rbint, cell_files, config)
 
 
 @pytest.mark.slow
-def test_longer_fit_recovers_gains_and_shift(fitted_ads, config, tmp_path):
+def test_longer_fit_recovers_gains_and_shift(fitted_rainbow_ads, config, tmp_path):
     """Longer schedule: factors within 1 %; a measurement with an added offset of +300 (raw units) gets a fitted shift
     300 lower than the other measurements of its batch (calibrated = (raw + shift) * factor)."""
     path = synthetic.write_rainbow_fcs(str(tmp_path / "rb_A_shift.fcs"), "A", btim="10:00:00", seed=77, shift=300.)
-    shifted = read_fit(path, config, "A")
-    rb = RainbowCalibrator([ad.copy() for ad in fitted_ads] + [shifted])
+    shifted = read_rainbow_fit(path, config, "A")
+    rb = RainbowCalibrator([ad.copy() for ad in fitted_rainbow_ads] + [shifted])
 
     class Longer(RainbowFluorescenceGMMCalibrationTrainer):
         def fit_init_peak(self, dataset, Niter=1000, **kw):
@@ -297,9 +271,9 @@ def test_longer_fit_recovers_gains_and_shift(fitted_ads, config, tmp_path):
             return super().fit(dataset, Niter=Niter, **kw)
     short_fit_fluorescence(rb, trainer=Longer)
     F = rb.get_calibration_factors_all()
-    np.testing.assert_allclose(F[FL], expected_factors(), rtol=.01)
+    np.testing.assert_allclose(F[FL], expected_rainbow_factors(), rtol=.01)
     shifts = rb.get_rainbow_shifts_all()["T"]
-    others = [ad.uns["uid"] for ad in fitted_ads[:2]]
+    others = [ad.uns["uid"] for ad in fitted_rainbow_ads[:2]]
     diff = shifts.loc[shifted.uns["uid"]] - shifts.loc[others].mean()
     np.testing.assert_allclose(diff, -300., atol=60.)
 
@@ -489,6 +463,20 @@ def test_fit_fluorescence_gpu_fallback_and_cutoff_warning(ads):
         with pytest.warns(CalibrationModuleWarning, match="channel_missing_cutoff"):
             short_fit_fluorescence(rb, gpu=True, verbosity=2)
     assert next(rb.rfim.parameters()).device.type == "cpu" and rb.channel_missing_cutoff == -np.inf
+
+
+def test_fit_fluorescence_warns_on_changed_channel_missing_cutoff(ads):
+    rb = RainbowCalibrator(ads[:4])
+    rb.channel_missing_cutoff = 5.
+    with pytest.warns(CalibrationModuleWarning, match="channel_missing_cutoff"):
+        short_fit_fluorescence(rb, gpu=False)
+    assert rb.channel_missing_cutoff == -np.inf
+
+
+def test_fit_fluorescence_after_loading_raises(saved_path):
+    rb = RainbowCalibrator.from_saved(saved_path)
+    with pytest.raises(CalibrationModuleException, match="extend"):
+        rb.fit_fluorescence(gpu=False, verbosity=0)
 
 
 def test_fit_fluorescence_on_device_then_peak_parameters_R2b_G2_01(ads, device, tmp_path):
