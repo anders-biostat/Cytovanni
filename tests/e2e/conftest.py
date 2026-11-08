@@ -10,6 +10,8 @@ Environment:
   if it is not set or missing.
 - ``CYTOVANNI_TEST_CACHE``: folder for the stage outputs (default: a pytest temporary folder, i.e. no reuse between
   runs). A stage counts as done when its folder holds a ``DONE`` file; delete the folder to rerun the stage.
+- ``CYTOVANNI_TEST_QC_BEADS``: folder with GMM-fitted Aria III calibration-bead measurements (.h5ad) for the
+  covariance-penalty regression test (test_rainbow_qc_beads.py); skipped without it.
 - ``CYTOVANNI_TEST_REFERENCE``: optional folder with the outputs of the full tutorial runs (the docs/tutorials folder
   after running the notebooks); the comparisons with the full runs are skipped without it.
 

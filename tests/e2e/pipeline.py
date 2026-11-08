@@ -131,7 +131,6 @@ def fixed_ref(cal, out):
     sfm.fit(Niter=500, lr=2e-1, momentum=.7, optimizer="SGD")
     sfm.save(os.path.join(out, "standardisation_model.pt"))
     sfm.transformer.learned_stainscale.to_csv(os.path.join(out, "normalization_factors.csv"))
-    pd.Series(sfm.losshistory if hasattr(sfm, "losshistory") else []).to_csv(os.path.join(out, "losshistory.csv"))
 
 
 # ======================================================================== variable spectra
