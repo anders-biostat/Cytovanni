@@ -52,7 +52,7 @@ class SpilloverMeasurement():
 
     Parameters
     ----------
-    rbint : cytovanni.rainbow.RainbowCalibrator, optional
+    calibrator : cytovanni.rainbow.RainbowCalibrator, optional
         Rainbow calibration; its fluorescence channels are used, and it provides the calibration factor. Required if
         `rainbow_batch` or `rainbow_batch_adata` is given.
     is_spectral : bool, default False
@@ -64,12 +64,12 @@ class SpilloverMeasurement():
         Measurement from which the rainbow batch is inferred instead (see
         `cytovanni.rainbow.RainbowCalibrator.get_calibration_factor`).
     channels : list of str, optional
-        Fluorescence channels; required if `rbint` is not given.
+        Fluorescence channels; required if `calibrator` is not given.
 
     Raises
     ------
     ValueError
-        If neither `rbint` nor `channels` is given.
+        If neither `calibrator` nor `channels` is given.
 
     Attributes
     ----------
@@ -87,22 +87,22 @@ class SpilloverMeasurement():
         Metadata per dye, index the dye names (columns of the spectra), e.g. ``channel``, ``antigen``,
         ``set_hash`` and further columns added by the user (``fluorophore``, ``is_bad``, ``positive_peak``, ...).
     """
-    def __init__(self, rbint=None, is_spectral=False, rainbow_batch=None, rainbow_batch_adata=None, channels=None):
-        self.rbint = rbint
-        if (rbint is not None) + (channels is not None) ==0:
-            raise ValueError("Needs either rbint or channels to be set!")
-        self.channels = rbint.rfim.channels if self.rbint is not None else channels
+    def __init__(self, calibrator=None, is_spectral=False, rainbow_batch=None, rainbow_batch_adata=None, channels=None):
+        self.calibrator = calibrator
+        if (calibrator is not None) + (channels is not None) ==0:
+            raise ValueError("Needs either calibrator or channels to be set!")
+        self.channels = calibrator.rfim.channels if self.calibrator is not None else channels
         self.spectra = {}
         self.spectra_calibrated = {}
         self.is_spectral = is_spectral
         
         # calibration factors
         if (rainbow_batch is not None) + (rainbow_batch_adata is not None) >0:
-            self.calibration_factor = rbint.get_calibration_factor(rainbow_batch=rainbow_batch, adata=rainbow_batch_adata)
+            self.calibration_factor = calibrator.get_calibration_factor(rainbow_batch=rainbow_batch, adata=rainbow_batch_adata)
     
     
     @classmethod
-    def from_custom(cls, rbint, custom_data_folder, rainbow_batch=None, abort_inconsistent=True, asp_folder=None, is_spectral=False, clip_negative=True):
+    def from_custom(cls, calibrator, custom_data_folder, rainbow_batch=None, abort_inconsistent=True, asp_folder=None, is_spectral=False, clip_negative=True):
         """Load the spectra of the package's own single-stain fits of one measurement.
 
         Expects `custom_data_folder` as produced by `collect_bead_controls_regularflow` (or
@@ -119,7 +119,7 @@ class SpilloverMeasurement():
 
         Parameters
         ----------
-        rbint : cytovanni.rainbow.RainbowCalibrator
+        calibrator : cytovanni.rainbow.RainbowCalibrator
             Rainbow calibration that covers the single-stain recording.
         custom_data_folder : str
             Folder of the measurement (see above).
@@ -153,7 +153,7 @@ class SpilloverMeasurement():
             If negative entries are clipped.
         """
         adata = read_bead_h5ad(_find_smallest_h5ad(os.path.join(custom_data_folder, "data"))) if (rainbow_batch is None) else None
-        spm = cls(rbint, is_spectral=is_spectral, rainbow_batch=rainbow_batch, rainbow_batch_adata=adata)
+        spm = cls(calibrator, is_spectral=is_spectral, rainbow_batch=rainbow_batch, rainbow_batch_adata=adata)
         spm.custom_data_folder = custom_data_folder
         
         spm.panel_meta = pd.read_table(os.path.join(spm.custom_data_folder, "panel_meta.csv"), sep=",", index_col=0)
@@ -180,7 +180,7 @@ class SpilloverMeasurement():
         return spm
     
     @classmethod
-    def from_AutoSpill(cls, rbint, asp_folder, rainbow_batch, is_spectral=False, clip_negative=True):
+    def from_AutoSpill(cls, calibrator, asp_folder, rainbow_batch, is_spectral=False, clip_negative=True):
         """Load the spectra fitted by AutoSpill for one measurement.
 
         Reads the metadata from ``{asp_folder}/fcs_control.csv`` (as made by `make_AutoSpill_fcs_config`; dye names
@@ -191,7 +191,7 @@ class SpilloverMeasurement():
 
         Parameters
         ----------
-        rbint : cytovanni.rainbow.RainbowCalibrator
+        calibrator : cytovanni.rainbow.RainbowCalibrator
             Rainbow calibration that covers the single-stain recording.
         asp_folder : str
             Folder where AutoSpill stored its results.
@@ -211,7 +211,7 @@ class SpilloverMeasurement():
         SpilloverException
             If a dye in the spectra has no metadata.
         """
-        spm = cls(rbint, is_spectral=is_spectral, rainbow_batch=rainbow_batch)
+        spm = cls(calibrator, is_spectral=is_spectral, rainbow_batch=rainbow_batch)
         spm.asp_folder = asp_folder
         
         spm.panel_meta = pd.read_table(os.path.join(asp_folder, "fcs_control.csv"), sep=",", index_col=0)
@@ -629,7 +629,7 @@ class SpilloverCollection():
     Examples
     --------
     >>> spcollection = SpilloverCollection(pd.Series(spillovers, index=runs), register_on="dye")
-    >>> spcollection.normalize_spectra(key_dye_channel)
+    >>> spcollection.normalize_spectra(norm_channels)
     >>> spcollection.add_PCA_fit("linearos", calibrated=True)
     """
     def __init__(self, spillovers, register_on="dye"):
@@ -653,23 +653,23 @@ class SpilloverCollection():
     def __getitem__(self, key):
         return self.single_stains[key]
 
-    def normalize_spectra(self, dye_channel_key=None):
+    def normalize_spectra(self, norm_channels=None):
         """Normalise all spectra of every stain (see `SingleStainSpilloverCollection.normalize_spectra`).
 
         Parameters
         ----------
-        dye_channel_key : pandas.Series, optional
+        norm_channels : pandas.Series, optional
             Channel to set to 1 per stain: index the stains (values of `register_on`), values the channels. Stains
             missing from it get a warning and use the channel with the highest mean intensity, as all stains do if it is
             not given.
         """
         for key in self.available_keys:
             norm_channel = None
-            if dye_channel_key is not None:
+            if norm_channels is not None:
                 try:
-                    norm_channel = dye_channel_key.loc[key]
+                    norm_channel = norm_channels.loc[key]
                 except KeyError:
-                    warnings.warn(f"Dye channel key was given, but could not find an entry for {key}!")
+                    warnings.warn(f"norm_channels was given, but has no entry for stain {key}!")
             self[key].normalize_spectra(norm_channel)
     
     def plot_peak_position(self):

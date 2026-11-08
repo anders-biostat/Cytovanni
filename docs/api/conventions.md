@@ -44,7 +44,9 @@ Every docstring states the orientation it uses.
   `cytovanni.utils.evl`). Gate thresholds are on the scale of the data they gate.
 - **embedding units**: panel embeddings are in units of the standard deviation of each component over the
   single-stain measurements, so `embedding_step=1` or `max_abs_embedding=6` are in standard deviations.
-- **CVs** (`cytovanni.utils.evl`) are fractions, not percent.
+- **CVs** (`cytovanni.utils.evl`, and the tables of `cytovanni.utils.batcheval` unless `percent=True`) are
+  fractions, not percent. `cytovanni.utils.alignment` and `cytovanni.utils.batcheval` take linear intensities and use
+  the evaluation cofactor 1500.
 
 ## Calibration factors
 - Calibrated = raw × factor, one factor per (batch, channel); the instrument gain relative to the reference is

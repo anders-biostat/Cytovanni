@@ -176,13 +176,13 @@ def test_polygon_plot_adata_runs(points):
     assert "Polygon gate 'p'" in repr(g)
 
 
-def test_polygon_plot_needs_array_vertices():
-    """Documented: `vertices` must be an array for `plot`; a list works for apply."""
+def test_polygon_list_vertices_work_for_apply_and_plot():
     g = PolygonGate("a", "b", SQUARE.tolist())
+    assert isinstance(g.vertices, np.ndarray)
     assert g.apply_points(np.array([[5., 5.]])).tolist() == [True]
     fig, ax = plt.subplots()
-    with pytest.raises(TypeError):
-        g.plot(ax)
+    g.plot(ax)
+    assert len(ax.lines) == 1
 
 
 # ------------------------------------------------------------------------------------------------ LineGate
@@ -289,9 +289,9 @@ def unmx_adata():
 @pytest.mark.parametrize("above,expected", [(True, [False, False, True, True, True]), (False, [True, True, True, False, False])])
 def test_cutoff_unmx_inclusive(unmx_adata, above, expected):
     g = CutoffUnmxGate("m0", 2, above=above)
-    r = g.apply(unmx_adata)
-    assert isinstance(r, pd.Series) and list(r.index) == list(unmx_adata.obs_names)  # documented: a Series
-    assert r.tolist() == expected
+    r = g.apply(unmx_adata, addkey="cut")
+    assert isinstance(r, np.ndarray) and r.dtype == bool
+    assert r.tolist() == expected and unmx_adata.obs["cut"].tolist() == expected
     assert g.apply_df(unmx_adata.obsm["unmx"]).tolist() == expected  # R2-E21
 
 
@@ -306,7 +306,7 @@ def test_cutoff_unmx_key_and_repr(unmx_adata):
 def test_unmx_min_strict_any_marker(unmx_adata):
     g = UnmxMinGate("unmx", 2.)
     m = g.apply(unmx_adata, addkey="anyhigh")
-    assert np.asarray(m).tolist() == [False, False, True, True, True]  # > 2 strict: (2, 3) via m1
+    assert isinstance(m, np.ndarray) and m.tolist() == [False, False, True, True, True]  # > 2 strict: (2, 3) via m1
     assert unmx_adata.obs["anyhigh"].tolist() == [False, False, True, True, True]
     assert g.apply_df(unmx_adata.obsm["unmx"]).tolist() == [False, False, True, True, True]  # R2-E21
     assert g.apply_df(unmx_adata.obsm["unmx"].to_numpy()).tolist() == [False, False, True, True, True]

@@ -61,8 +61,8 @@ def copy_folder(src, tmp_path):
     return dst
 
 
-def test_init_needs_rbint_or_channels():
-    with pytest.raises(ValueError, match="rbint or channels"):
+def test_init_needs_calibrator_or_channels():
+    with pytest.raises(ValueError, match="calibrator or channels"):
         SpilloverMeasurement()
     spm = SpilloverMeasurement(channels=CH)
     assert spm.channels == CH and spm.spectra == {} and spm.spectra_calibrated == {}

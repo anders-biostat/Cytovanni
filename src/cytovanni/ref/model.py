@@ -185,15 +185,18 @@ class OverlapFitModel(Module):
         else:
             self.ddist = lambda *args: self.ddist_fct(*args)
     
-    def export(self, include_history=True):
+    def export(self, include_history=False):
         """Export the model (encoder, transformer, marker weighting, loss settings) to a dict.
 
-        The datasets are not included.
+        The datasets are not included. The loss per step (``losshistory['train']`` and ``['test']``, used by
+        `plot_losshistory`) is always included.
 
         Parameters
         ----------
-        include_history : bool, default True
-            Include the loss history and the transformer's parameter history.
+        include_history : bool, default False
+            Also include the per-step loss matrices (``losshistory['train_DDIST_mat']`` and ``['test_DDIST_mat']``)
+            and the transformer's parameter history (needed for its history plots after loading; makes the export
+            much larger).
 
         Returns
         -------
@@ -211,20 +214,22 @@ class OverlapFitModel(Module):
         exportdct["DDIST_mode"] = self.DDIST_mode
         exportdct["DDIST_kwargs"] = self.DDIST_kwargs
         exportdct["DDIST_separate"] = self.DDIST_separate
-        if include_history:
-            exportdct["losshistory"] = self.losshistory
+        exportdct["losshistory"] = {key: val if include_history or not key.endswith("_DDIST_mat") else []
+                                    for key, val in self.losshistory.items()}
         return exportdct
     
     def save(self, savepath, include_history=False):
         """Save the model to a file (``torch.save`` of `export`); creates the parent folder if needed.
+
+        The loss per step is always saved (`plot_losshistory` works after loading).
 
         Parameters
         ----------
         savepath : str
             File path, e.g. ``"model.pt"``.
         include_history : bool, default False
-            Include the loss and parameter history (needed for `plot_losshistory` and the transformer's history
-            plots after loading; makes the file larger).
+            Also save the per-step loss matrices and the transformer's parameter history (needed for its history
+            plots after loading; makes the file much larger).
         """
         exportdct = self.export(include_history=include_history)
         from pathlib import Path

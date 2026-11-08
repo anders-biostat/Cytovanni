@@ -5,11 +5,17 @@
   `apply_unmixing_inv`, `apply_unmixing_lstsq`, `add_adata_unmixed`.
 - Evaluation of paired measurements: `get_positive_paired_CV`, `get_asinh_paired_CV` and variants,
   `symmetric_correlation`.
-- Plotting: colours and legends, `label_axis_ArcSinh`, NxN scatter grids (`base_plot_NxN`, `base_plot_NxN_ds`).
+- Evaluation of batch corrections with replicate pairs (submodules; their functions are not exported here):
+  `cytovanni.utils.alignment` (k-nearest-neighbour mixing, Seurat alignment score) and `cytovanni.utils.batcheval`
+  (per-cell-type summaries, MFI / population width / proportion CV tables, counting-noise corrections, the
+  Gaussian-negative control, replicate correlations).
+- Plotting: colours and legends, the ``"arcsinh"`` axis scale (`ArcSinhScale`, registered on import) and
+  `set_arcsinh_ticks` for already transformed data, NxN scatter grids (`base_plot_NxN`, `base_plot_NxN_ds`).
 - Misc: subsampling, AnnData concatenation, `EventRateEstimator`, `CustomOrdinalEncoder`.
 """
 from .misc import textcolor, palette_20, palette_28, get_cmap, get_cmap_and_markers, cmap_to_legendhandles, cmap_to_legendhandles_wmarker
-from .misc import unrolled_subplots, labelscolors_to_legendhandles, label_axis_ArcSinh
+from .misc import unrolled_subplots, labelscolors_to_legendhandles
+from .scale import ArcSinhScale, ArcSinhLocator, ArcSinhFormatter, set_arcsinh_ticks
 from .misc import wavelength_to_rgb, wavelength_to_hex
 from .misc import silent_log
 from .misc import printwtime
@@ -36,3 +42,5 @@ from .nxn import base_plot_NxN, base_plot_NxN_ds
 
 from .evl import symmetric_correlation, get_positive_paired_CV, get_positive_paired_CV_alongdiag, get_positive_single_CV
 from .evl import get_asinh_paired_CV, get_asinh_single_CV, get_asinh_paired_CV_alongdiag
+
+from . import alignment, batcheval

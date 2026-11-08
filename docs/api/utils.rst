@@ -13,7 +13,10 @@ Utilities (cytovanni.utils)
    cmap_to_legendhandles_wmarker
    unrolled_subplots
    labelscolors_to_legendhandles
-   label_axis_ArcSinh
+   ArcSinhScale
+   ArcSinhLocator
+   ArcSinhFormatter
+   set_arcsinh_ticks
    wavelength_to_rgb
    wavelength_to_hex
    silent_log
@@ -54,3 +57,50 @@ Utilities (cytovanni.utils)
    get_asinh_paired_CV
    get_asinh_single_CV
    get_asinh_paired_CV_alongdiag
+
+Batch mixing (cytovanni.utils.alignment)
+----------------------------------------
+
+.. automodule:: cytovanni.utils.alignment
+   :no-members:
+
+.. currentmodule:: cytovanni.utils.alignment
+
+.. autosummary::
+   :toctree: generated
+   :nosignatures:
+
+   knn_same_batch_counts
+   knn_same_batch_counts_grouped
+   alignment_score_from_counts
+   alignment_design
+   alignment_scores
+   pair_alignment_scores
+   weighted_celltype_score
+   stable_seed
+   resolve_device
+
+Batch evaluation (cytovanni.utils.batcheval)
+--------------------------------------------
+
+.. automodule:: cytovanni.utils.batcheval
+   :no-members:
+
+.. currentmodule:: cytovanni.utils.batcheval
+
+.. autosummary::
+   :toctree: generated
+   :nosignatures:
+
+   celltype_counts
+   celltype_marker_summary
+   wide_by_marker
+   mfi_cv_table
+   width_cv_table
+   proportion_cv_table
+   replicate_correlation_table
+   resample_pair_shares
+   proportion_cv_counting_noise
+   mfi_cv_counting_noise
+   subtract_counting_noise
+   gaussian_negative

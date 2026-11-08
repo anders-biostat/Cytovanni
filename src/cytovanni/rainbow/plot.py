@@ -108,7 +108,7 @@ def plot_GMM_llh(adata, cutoff=-2., clippercent=5, dropmaxpercent=10, ax=None, p
         ax.axvline(v, color=palette_20[i], linestyle="--")
 
 
-def plot_eval_RBInt_fit(rbint, adatas, channels=None, legendkey=None, bins=300, ylim=None):
+def plot_eval_calibration(calibrator, adatas, channels=None, legendkey=None, bins=300, ylim=None):
     """Plot rainbow bead histograms before and after calibration, to check a `RainbowCalibrator` fit.
 
     One row per channel, three columns: raw data, calibrated without the fitted shift, and calibrated with the shift.
@@ -116,10 +116,10 @@ def plot_eval_RBInt_fit(rbint, adatas, channels=None, legendkey=None, bins=300, 
 
     Parameters
     ----------
-    rbint : RainbowCalibrator
+    calibrator : RainbowCalibrator
         Fitted calibrator.
     adatas : list of anndata.AnnData
-        Rainbow bead measurements known to `rbint` (their batch, uid and rainbow type must be in the model).
+        Rainbow bead measurements known to `calibrator` (their batch, uid and rainbow type must be in the model).
         Changed in place: layers 'calibrated_rb' (with shift) and 'calibrated_rb_noshift' are added (overwritten),
         see `RainbowCalibrator.add_calibrated_rainbow`.
     channels : list of str, optional
@@ -142,16 +142,16 @@ def plot_eval_RBInt_fit(rbint, adatas, channels=None, legendkey=None, bins=300, 
     (`RainbowCalibrator.apply_ArcSinh`); histograms are normalised to density.
     """
     if channels is None:
-        channels = rbint.rfim.channels
+        channels = calibrator.rfim.channels
     
     for ad in adatas:
-        rbint.add_calibrated_rainbow(ad, include_shift=True, addlayer="calibrated_rb")
-        rbint.add_calibrated_rainbow(ad, include_shift=False, addlayer="calibrated_rb_noshift")
+        calibrator.add_calibrated_rainbow(ad, include_shift=True, addlayer="calibrated_rb")
+        calibrator.add_calibrated_rainbow(ad, include_shift=False, addlayer="calibrated_rb_noshift")
     
     fig, ax = plt.subplots(len(channels), 3, figsize=(20, len(channels)*3.5), layout="tight")
     if len(ax.shape)<2: ax = ax[None]
     
-    get_data = lambda ad, l, c: rbint.apply_ArcSinh(ad[:,c].layers[l][:,0], ad.uns["rainbow_type"])
+    get_data = lambda ad, l, c: calibrator.apply_ArcSinh(ad[:,c].layers[l][:,0], ad.uns["rainbow_type"])
     
     cmap = get_cmap([ad.uns[legendkey] for ad in adatas]) if legendkey is not None else None
 

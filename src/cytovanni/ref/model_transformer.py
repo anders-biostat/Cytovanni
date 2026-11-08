@@ -121,12 +121,12 @@ class DummyTransformer(Module):
         
         return dt
     
-    def export(self, include_history=True):
+    def export(self, include_history=False):
         """Export to a dict (channels and stains).
 
         Parameters
         ----------
-        include_history : bool, default True
+        include_history : bool, default False
             Ignored (there is no parameter history).
 
         Returns
@@ -564,12 +564,12 @@ class SpectralFitTransformer(Module):
         sft = cls(moe, pem, config, smp)
         return sft
     
-    def export(self, include_history=True):
+    def export(self, include_history=False):
         """Export the transformer (panel module, encoder, scale multiplier, config, parameters) to a dict.
 
         Parameters
         ----------
-        include_history : bool, default True
+        include_history : bool, default False
             Include the parameter history (``paramhistory``).
 
         Returns
@@ -967,7 +967,7 @@ class SpectralFitTransformer(Module):
 
         return channelscale, stainscale, spectra, unmx_int_matrix, spectra_embedding
     
-    def add_standardisation_parameters(self, adata, rbint_key="rainbow_calibration_factor", label_include_stain=False):
+    def add_standardisation_parameters(self, adata, calibration_factor_key="rainbow_calibration_factor", label_include_stain=False):
         """Store the standardisation parameters of the sample's batches in `adata` (in place).
 
         Writes (from `get_standardisationparams_fromad`):
@@ -978,7 +978,7 @@ class SpectralFitTransformer(Module):
         - ``adata.varm['sfm_standardise_unmx']``: DataFrame (var, stain), standardisation and unmixing matrix on the
           calibrated data, 0 rows for other variables: ``adata.to_df(layer='calibrated') @
           adata.varm['sfm_standardise_unmx']`` gives the standardised, unmixed intensities.
-        - ``adata.varm['rb_sfm_standardise_unmx']``, only if ``adata.var[rbint_key]`` exists: the same matrix with the
+        - ``adata.varm['rb_sfm_standardise_unmx']``, only if ``adata.var[calibration_factor_key]`` exists: the same matrix with the
           rainbow calibration factors included (channels without factor: 0), for the raw data:
           ``adata.to_df(layer='raw') @ adata.varm['rb_sfm_standardise_unmx']``.
         - ``adata.uns['panel_embedding']``: numpy.ndarray, embedding of the spectra.
@@ -987,7 +987,7 @@ class SpectralFitTransformer(Module):
         ----------
         adata : anndata.AnnData
             Sample; ``adata.uns`` needs the keys of ``moe.necessary_keys``, ``adata.var`` the transformer's channels.
-        rbint_key : str, default "rainbow_calibration_factor"
+        calibration_factor_key : str, default "rainbow_calibration_factor"
             Column of ``adata.var`` with the rainbow calibration factors (`RainbowCalibrator.add_calibration_factor`).
         label_include_stain : bool, default False
             Stain names, see `get_standardisationparams_fromad`.
@@ -999,8 +999,8 @@ class SpectralFitTransformer(Module):
 
         adata.varm["sfm_spectra"] = spectra.reindex(adata.var.index)
         adata.varm["sfm_standardise_unmx"] = unmx_int_matrix.reindex(adata.var.index, fill_value=0.)
-        if rbint_key in adata.var:
-            adata.varm["rb_sfm_standardise_unmx"] = adata.var[rbint_key].fillna(0).to_numpy()[:,None] * adata.varm["sfm_standardise_unmx"]
+        if calibration_factor_key in adata.var:
+            adata.varm["rb_sfm_standardise_unmx"] = adata.var[calibration_factor_key].fillna(0).to_numpy()[:,None] * adata.varm["sfm_standardise_unmx"]
 
         stainscale_ext = pd.DataFrame(np.repeat([stainscale],adata.shape[1], axis=0), columns=stainscale.index, index=adata.var.index)
         adata.varm["sfm_stain_factor"] = stainscale_ext
@@ -1207,12 +1207,12 @@ class ScalingTransformer(Module):
         sft = cls(moe, pem, config, smp)
         return sft
 
-    def export(self, include_history=True):
+    def export(self, include_history=False):
         """Export the transformer (panel module, encoder, scale multiplier, config, parameters) to a dict.
 
         Parameters
         ----------
-        include_history : bool, default True
+        include_history : bool, default False
             Include the parameter history (``paramhistory``).
 
         Returns
@@ -1438,6 +1438,9 @@ class ScalingTransformer(Module):
 
         Returns
         -------
+        channelscale : None
+            No channel factors in this transformer (same return values as
+            `SpectralFitTransformer.get_standardisationparams_fromad`).
         stainscale : pandas.Series
             Stain factor per stain (index the stain names).
         spectra : pandas.DataFrame of shape (channel, stain)
@@ -1445,6 +1448,8 @@ class ScalingTransformer(Module):
         unmx_int_matrix : pandas.DataFrame of shape (channel, stain)
             Combined unmixing and scaling matrix: data (events, channel) @ this matrix gives the standardised,
             unmixed intensities, the same as ``standardise(..., evl=True)``.
+        spectra_embedding : None
+            No panel embedding (fixed spectra).
         """
         bidx = self.moe.transform_ad(ad)
 
@@ -1459,7 +1464,7 @@ class ScalingTransformer(Module):
         spectra_inv = invert_spectra(spectra.T) # spectra is (channel, stain), invert_spectra takes (stain, channel)
         unmx_int_matrix = spectra_inv * stainscale.to_numpy()[None]
         
-        return stainscale, spectra, unmx_int_matrix
+        return None, stainscale, spectra, unmx_int_matrix, None
     
     def add_standardisation_parameters(self, adata, label_include_stain=False):
         """Store the standardisation parameters of the sample's batch in `adata` (in place).
@@ -1483,7 +1488,7 @@ class ScalingTransformer(Module):
         label_include_stain : bool, default False
             Stain names, see `get_standardisationparams_fromad`.
         """
-        stainscale, spectra, unmx_int_matrix = self.get_standardisationparams_fromad(adata, label_include_stain=label_include_stain)
+        _, stainscale, spectra, unmx_int_matrix, _ = self.get_standardisationparams_fromad(adata, label_include_stain=label_include_stain)
 
         adata.varm["sfm_spectra"] = spectra.reindex(adata.var.index)
         adata.varm["sfm_standardise_unmx"] = unmx_int_matrix.reindex(adata.var.index, fill_value=0.)

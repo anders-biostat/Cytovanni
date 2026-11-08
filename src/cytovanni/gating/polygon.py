@@ -15,9 +15,9 @@ class PolygonGate():
     x, y : str
         Channel names of the two axes: ``adata.var`` index / DataFrame columns, or column names of
         ``adata.obsm[x_obsm]`` / ``adata.obsm[y_obsm]`` if those are given.
-    vertices : numpy.ndarray
+    vertices : array-like
         Polygon vertices of shape (vertices, 2), columns x and y, in the units of the data gated (e.g. raw or
-        calibrated intensities). The polygon is closed automatically. Must be an array (not a list) for `plot`.
+        calibrated intensities). The polygon is closed automatically.
     name : str, default ""
         Gate name, used as plot label.
     color : color, optional
@@ -39,7 +39,7 @@ class PolygonGate():
     """
     def __init__(self, x, y, vertices, name="", color=None, layer="raw", onlog=False, x_obsm=None, y_obsm=None):
         self.x, self.y = x, y
-        self.vertices = vertices
+        self.vertices = np.asarray(vertices, dtype=float)
         self.name = name
         self.color = color
         self.layer = layer

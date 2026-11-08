@@ -28,12 +28,14 @@ def test_add_detaches():
     assert not tot["a"].requires_grad
 
 
-def test_sum_with_none_start_works_builtin_sum_raises():
+def test_builtin_sum_with_and_without_none_start():
     cs = [LossContainer({"a": float(i)}, N=1) for i in range(4)]
     assert sum(cs, None)["a"].item() == pytest.approx(1.5)
-    with pytest.raises(NotImplementedError):
-        sum(cs)
-    assert (cs[0] + None) is cs[0]
+    assert sum(cs)["a"].item() == pytest.approx(1.5)
+    assert (cs[0] + None) is cs[0] and (0 + cs[0]) is cs[0]
+    for bad in [1, 0.5, False]:
+        with pytest.raises(NotImplementedError):
+            cs[0] + bad
 
 
 def test_add_with_different_keys_raises():

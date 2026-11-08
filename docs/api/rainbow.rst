@@ -15,7 +15,7 @@ Rainbow bead calibration (cytovanni.rainbow)
    get_rainbow_GMM_gate
    plot_rainbow_channel_GMM_single
    plot_GMM_llh
-   plot_eval_RBInt_fit
+   plot_eval_calibration
    get_config_from_rainbow_reference
    get_voltages_from_rainbow
    color_voltageconfig

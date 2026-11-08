@@ -141,6 +141,11 @@ A fix can change results relative to one of these and not the other; both are st
 | R4-B9 | `get_voltages_from_rainbow` crashed on a targetconfig read from .csv | no (crash -> works) | targetconfig round-tripped through .csv |
 | R4-B10 | `ExtendableParameter.extend` with mean norm: new entries started at -mean(old raw values) | starting point of new batches only; fitted values after `extend` + fit up to convergence | `RainbowCalibrator.extend_fit` (hd7-01), `ScalingTransformer.extend`, `fit_factor_*` extension |
 | R4-P4d | rainbow fit: optional penalty on the broadening of the per-measurement peak covariances | no by default (`cov_penalty=0`); yes where used | `fit_fluorescence(cov_penalty>0)`: reproducibility clbr2pks fits (.3, broadening only) |
+| R5-A1 | arcsinh axis scale; `label_axis_ArcSinh` -> `set_arcsinh_ticks` | plots only (ticks/labels) | every `label_axis_ArcSinh` call (renamed) |
+| R5-B7 | rainbow fluorescence `fit`: `lr` of a later call | yes, repeated `fit` calls with a different `lr` | second `fit` call on the same trainer |
+| R5-B6 | random states (`random_state` arguments, `get_hex_distinct` local state) | no by default; global draws after `get_hex_distinct(N>28)` differ | `get_hex_distinct` with N > 28 |
+| R5-C | API changes before 1.2.0 (renames, return types, export defaults) | no (code must be ported) | renamed functions/arguments, see section |
+| R5-D1 | new modules `utils.alignment`, `utils.batcheval` | no (new) | batch-integration evaluation |
 
 Entry format: see the review notes (todo/00_CONVENTIONS.md "Fix log" in the review project).
 
@@ -1613,3 +1618,84 @@ Every fix has the reproducer that found it (previously a strict xfail) as its te
   variants, narrowing free with broadening only, gradient direction, option reaches the trainer, 0 = unpenalised fit;
   slow: penalised fit stays closer to the reference covariances, factors unchanged within 5% on synthetic beads).
 
+
+## R5 (improvements)
+
+### R5-A1 arcsinh axis scale; `label_axis_ArcSinh` replaced by `set_arcsinh_ticks`
+- New: `ax.set_xscale("arcsinh", cofactor=...)` for data in its own units (`cytovanni.utils.scale`, registered on
+  import). Major ticks 0 and +-10^p in log-axis notation (tick label font); powers near 0 left out as far as needed
+  for the labels to fit (gap `label_gap` .5 em, next to the 0 `zero_gap` 1 em on x, 2 em on y); m x 10^p labels when
+  fewer than two labels; minor ticks 2..9 x 10^p continued below the labels while >= 2.5 pt apart; the 0 label sits on
+  the baseline of the power labels. Recomputed at every draw.
+- `set_arcsinh_ticks(ax, cofactor, axis="x", minpower=None, mark_cofactor=False)` for already transformed data
+  replaces `label_axis_ArcSinh(ax, cofactor, onx=True, minpower=2, mark_cofactor=False)` (removed).
+- Affected: plots only (tick positions and labels; label text now `$\mathdefault{10^{3}}$`). No numerical results.
+- Action: port calls of `label_axis_ArcSinh` (reproducibility code, ~50 calls): new name, `onx=False` -> `axis="y"`;
+  `minpower` is now automatic by default (pass `minpower=2` for the earlier labels).
+
+### R5-B7 rainbow fluorescence `fit`: `lr` of a later call with `warmup=0`
+- Before: `RainbowFluorescenceGMMCalibrationTrainer.fit` set the learning rate only during the warm-up, so a later call
+  with `warmup=0` kept the learning rate of the previous call and ignored `lr`.
+- Now: the learning rate is set in every step (`lr * min(1, (step+1)/warmup)`, or `lr` without warm-up).
+- Effect on results: none for a single `fit` call and for later calls with `warmup > 0` (identical learning rates).
+  Changes only repeated calls with `warmup=0` and a different `lr`.
+- Affected analyses: none known (all usages call `fit` once, via `fit_fluorescence` / `extend_fit`).
+- Tests: tests/test_rainbow_covpenalty.py::test_refit_uses_the_given_lr.
+
+### R5-B6 random states
+- `get_config_from_rainbow_reference` and `get_voltages_from_rainbow` take `random_state` (passed to
+  `fit_rainbow_GMM`); `PosNegSingleStainSpectrumFit(adata, random_state=None)` passes it to its mixture. Default
+  None: as before (numpy's global random state).
+- `get_hex_distinct` (N > 28) uses its own seeded generator instead of `np.random.seed(0)`: same colours, numpy's
+  global random state is no longer reset.
+- Everything else draws from numpy's / torch's global random state, so `np.random.seed` + `torch.manual_seed` before
+  a call makes it repeatable (as done in the reproducibility code); no further arguments.
+- Effect on results: none by default, except that random draws after a `get_hex_distinct(N > 28)` call no longer
+  start from seed 0 (code that relied on this implicit reseed draws different subsamples there).
+- Tests: test_rainbow_setvolt.py::test_random_state_gives_identical_results,
+  test_spill_stainfit.py::test_posneg_random_state_reaches_the_mixture,
+  test_utils_misc.py::test_get_hex_distinct_reproducible_and_leaves_global_state.
+
+### R5-C API changes before the 1.2.0 pin (no numerical results change)
+- C3: `cytovanni.rainbow.plot_eval_RBInt_fit(rbint, ...)` -> `plot_eval_calibration(calibrator, ...)`;
+  `SpilloverCollection(rbint=...)`, `.from_custom(rbint, ...)`, `.from_AutoSpill(rbint, ...)` -> `calibrator`
+  (attribute `.rbint` -> `.calibrator`); `SpectralFitTransformer.add_standardisation_parameters(rbint_key=...)` ->
+  `calibration_factor_key`.
+- C4: `SpilloverCollection.normalize_spectra(dye_channel_key=...)` -> `norm_channels` (Series stain -> channel).
+- C5: `CutoffUnmxGate.apply` and `UnmxMinGate.apply` return a numpy bool array (were pandas Series, like the other
+  gates now); `CutoffUnmxGate.apply` takes `addkey`; `PolygonGate` converts `vertices` to an array (a list works for
+  `plot`).
+- C2: `OverlapFitModel.export` and `.save` default to `include_history=False` (export was True). The loss per step
+  (`losshistory['train']`, `['test']`) is now always saved; the per-step loss matrices and the transformer's parameter
+  history only with `include_history=True`. The transformers' `export` default to False as well.
+- C6: `PanelModule.get_grouped_jac_fromad(include_unused=True)` (was fixed True; default unchanged);
+  `get_grouped_jac_single_fromad(s_dig=...)` -> `decimals`.
+- C7: `ScalingTransformer.get_standardisationparams_fromad` returns 5 values like the SpectralFitTransformer one:
+  `(None, stainscale, spectra, unmx_int_matrix, None)` (was 3).
+- C11: `write/read_bead_h5ad` and `write/read_rainbow_h5ad` share one implementation (`cytovanni.io.h5ad`); names
+  and behaviour unchanged.
+- C12: `unrolled_subplots` always returns a 1-D numpy array of the N axes (was a list for 2-D grids);
+  `sum(loss_containers)` works (adding 0 returns the container).
+- Affected analyses: code calling the renamed functions/arguments must be ported (reproducibility: 2 files
+  `plot_eval_RBInt_fit`, 2 files `rbint=`; tutorials ported); code that used the Series index of a CutoffUnmxGate /
+  UnmxMinGate mask (none found: all usages index AnnData or combine masks); models saved without history now also
+  contain the loss per step (larger by that list only).
+
+### R5-D1 new modules `cytovanni.utils.alignment` and `cytovanni.utils.batcheval` (batch-integration evaluation)
+- New: k-nearest-neighbour batch mixing and the Seurat alignment score (`alignment`: `knn_same_batch_counts`,
+  `knn_same_batch_counts_grouped`, `alignment_design`, `alignment_scores`, `pair_alignment_scores`,
+  `weighted_celltype_score`, ...) and the replicate-pair evaluation of the HD7 batch-integration paper (`batcheval`:
+  per-cell-type summaries, MFI / sigmaFI / proportion CV tables, counting-noise corrections, Gaussian-negative
+  control, replicate correlations). Ported from the reproducibility project's own evaluation code; built on
+  `cytovanni.utils.evl` (unchanged).
+- Fix during the port: `gaussian_negative` on a DataFrame uses `DataFrame.mask` (same values; the staged version
+  assigned float64 noise into float32 columns, a FutureWarning under pandas 2 and a TypeError under pandas 3).
+- Changes against the staged version (user 2026-11-08): `alignment_scores(scope="global")` gives NaN for cell types
+  that fail the minimum-cell rule (were scored); `celltype_marker_summary` without the float32 special case of the
+  mean (values may differ from the project's by one unit in the last place); `proportion_cv_table` ``log_std`` with
+  ddof=1 also for pairs (was ddof=0; descriptive column only, the CVs are unchanged); `subtract_counting_noise`
+  checks that the marker / cell type of every noise row matches the table.
+- Effect on results: none for existing package code. For the reproducibility project: same numbers as its own code
+  (checked there, bit-identical on the CPU and GPU) except that the single-sample (`samples=`, Ref0) proportion and
+  sigmaFI CVs use `evl.get_positive_single_CV` with ddof=1 (project: ddof=0), larger by about sqrt(n / (n - 1)).
+- Tests: tests/test_utils_alignment.py, tests/test_utils_batcheval.py (synthetic data, CPU and CUDA).

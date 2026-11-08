@@ -1,6 +1,6 @@
 """Write and read bead AnnData objects (e.g. single-stain controls) as .h5ad, including the cytometer configuration."""
-import anndata
-from ..utils import CytometerConfiguration
+from .h5ad import write_h5ad_with_cytoconfig, read_h5ad_with_cytoconfig
+
 
 def write_bead_h5ad(adata_, filepath):
     """Write a bead AnnData (e.g. a single-stain control) to .h5ad.
@@ -19,9 +19,7 @@ def write_bead_h5ad(adata_, filepath):
     --------
     read_bead_h5ad : the inverse.
     """
-    adata = adata_.copy()
-    adata.uns["cytoconfig"] = adata.uns["cytoconfig"].to_dictionary()
-    adata.write(filepath)
+    write_h5ad_with_cytoconfig(adata_, filepath)
 
 def read_bead_h5ad(filepath):
     """Read a bead AnnData written by `write_bead_h5ad`.
@@ -43,6 +41,4 @@ def read_bead_h5ad(filepath):
         If the exported configuration class or its settings-hash function is not known (see
         `cytovanni.utils.register_hash_function`).
     """
-    adata = anndata.read_h5ad(filepath)
-    adata.uns["cytoconfig"] = CytometerConfiguration.from_exported(adata.uns["cytoconfig"])
-    return adata
+    return read_h5ad_with_cytoconfig(filepath)

@@ -443,11 +443,11 @@ class PanelModule(Module):
                                          batch_size=batch_size)[-1]
         return pd.DataFrame(R, index=adata.obs.index, columns=self.panelconfig.stain_marker_name if label_marker else self.stains)
 
-    def get_grouped_jac_fromad(self, adata, embedding_np, stainscale_np=None, key_layer="calibrated", arcsinh_cofactor=1500, batch_size=1e4, label_marker=True, apply_factors=True):
+    def get_grouped_jac_fromad(self, adata, embedding_np, stainscale_np=None, key_layer="calibrated", arcsinh_cofactor=1500, batch_size=1e4, label_marker=True, apply_factors=True, include_unused=True):
         """Mean Jacobian of the unmixed, arcsinh-transformed data with respect to the embedding, over an AnnData.
 
-        Shows which panel components (also those not used in the panel: all components enter, ``include_unused=True``)
-        most affect the unmixed values of a population; subset `adata` to the events of interest first.
+        Shows which panel components (by default also those not used in the panel) most affect the unmixed values of a
+        population; subset `adata` to the events of interest first.
 
         Parameters
         ----------
@@ -469,6 +469,9 @@ class PanelModule(Module):
         apply_factors : bool, default True
             Multiply the layer by the stored channel factors and use the stored stain factors, as in
             `get_unmixing_resistance_fromad`. If False, the layer is used as given.
+        include_unused : bool, default True
+            Let the components not used in the panel enter the spectra, so the Jacobian is also non-zero for them. If
+            False they are masked and their rows are 0.
 
         Returns
         -------
@@ -487,11 +490,11 @@ class PanelModule(Module):
             for batch in x_np_batches:
                 x = torch.as_tensor(batch, dtype=torch.float32).to(self.device)
                 jacob.append(self.get_jacobian_ashunmx(x, embedding, stainscale=stainscale,
-                                                       include_unused=True, arcsinh_cofactor=arcsinh_cofactor).cpu().numpy())
+                                                       include_unused=include_unused, arcsinh_cofactor=arcsinh_cofactor).cpu().numpy())
         mean_jac = np.vstack(jacob).mean(0)
         return pd.DataFrame(mean_jac, index=self.panelconfig.stain_marker_name if label_marker else self.stains, columns=self.components).T
     
-    def get_grouped_jac_single_fromad(self, adata, stain, key_layer="calibrated", arcsinh_cofactor=1500, s_dig=3, include=10):
+    def get_grouped_jac_single_fromad(self, adata, stain, key_layer="calibrated", arcsinh_cofactor=1500, decimals=3, include=10):
         """Rank the panel components by their mean effect on one stain, for an AnnData with standardisation parameters.
 
         Runs `get_grouped_jac_fromad` with the embedding and stain factors that ``add_standardisation_parameters`` of a
@@ -509,7 +512,7 @@ class PanelModule(Module):
             Layer with the intensities to unmix.
         arcsinh_cofactor : float, default 1500
             Cofactor of the arcsinh transform, in the units of the data.
-        s_dig : int, default 3
+        decimals : int, default 3
             Number of decimal places the Jacobian is rounded to.
         include : int or None, default 10
             Keep only this many components with the largest absolute Jacobian (None: all).
@@ -529,7 +532,7 @@ class PanelModule(Module):
         """
         jac = self.get_grouped_jac_fromad(adata, embedding_np=adata.uns["panel_embedding"], key_layer=key_layer,
                                           arcsinh_cofactor=arcsinh_cofactor, batch_size=1e4, label_marker=True, apply_factors=True)
-        jac_marker = np.round(jac[stain], s_dig)
+        jac_marker = np.round(jac[stain], decimals)
 
         df = pd.DataFrame([jac_marker.abs(), jac_marker, self.panelconfig.pca_components_use], index=["abs. Jacobian", "Jacobian", "in Panel"]).T.sort_values("abs. Jacobian", ascending=False)
         df["in Panel"] = df["in Panel"].astype(bool)

@@ -315,6 +315,8 @@ def test_grouped_jac_fromad_is_mean_jacobian(pm):
     assert list(jac.index) == list(pm.components) and list(jac.columns) == list(pm.panelconfig.stain_marker_name)
     assert np.allclose(jac.to_numpy(), ref.numpy().T, atol=1e-6)
     assert (jac.loc["FL1_PC1"].abs() > 0).any()  # unused components are included
+    jac_used = pm.get_grouped_jac_fromad(ad, e, include_unused=False)
+    assert (jac_used.loc["FL1_PC1"] == 0).all() and (jac_used.abs().to_numpy() > 0).any()
     # an explicit stain scale overrides the stored one
     jac1 = pm.get_grouped_jac_fromad(ad, e, stainscale_np=np.ones(3), label_marker=False)
     assert list(jac1.columns) == synthetic.STAINS and not np.allclose(jac1.to_numpy(), jac.to_numpy())
@@ -326,6 +328,9 @@ def test_grouped_jac_single_fromad(pm):
     ad = _adata_with_factors(x, [1.2, .9, 1.1], [1.5, 1., .7])
     ad.uns["panel_embedding"] = e
     df, style = pm.get_grouped_jac_single_fromad(ad, "FL2 | CD2", include=3)
+    df1, _ = pm.get_grouped_jac_single_fromad(ad, "FL2 | CD2", include=3, decimals=1)
+    full1 = pm.get_grouped_jac_fromad(ad, e)["FL2 | CD2"]
+    assert np.allclose(df1["Jacobian"].to_numpy(dtype=float), np.round(full1.loc[df1.index], 1))
     assert list(df.columns) == ["abs. Jacobian", "Jacobian", "in Panel"] and len(df) == 3
     assert df["in Panel"].dtype == bool
     assert (np.diff(df["abs. Jacobian"].to_numpy(dtype=float)) <= 0).all()

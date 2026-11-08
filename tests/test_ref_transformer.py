@@ -207,10 +207,10 @@ def test_spectralfit_export_roundtrip_with_multiplier(panelconfig):
     tr.set_smp(UnmxErrorExclusionMultiplier(tr, groups=[("FL1", 4e3, ["FL2"])]))
     set_transformer_params(tr, emb=np.random.default_rng(1).normal(size=(3, 3)), stain=np.full((3, 3), .2), channel=np.full((3, 3), .1))
     tr.append_history()
-    tr2 = SpectralFitTransformer.from_exported(tr.export())
+    tr2 = SpectralFitTransformer.from_exported(tr.export(include_history=True))
     assert isinstance(tr2.smp, UnmxErrorExclusionMultiplier) and tr2.smp.groups == tr.smp.groups
     assert len(tr2.paramhistory["embedding"]) == 1
-    assert "paramhistory" not in tr.export(include_history=False)
+    assert "paramhistory" not in tr.export()  # parameter history only on request
     x = torch.rand(4, 3) * 1e4
     bidx = {"batch": torch.tensor([2])}
     assert torch.allclose(tr.standardise(x, bidx), tr2.standardise(x, bidx))
@@ -380,7 +380,8 @@ def test_scaling_standardisation_params_spectral_panel():
     tr = scaling_transformer(anchor=0, spectra=sp)
     set_transformer_params(tr, stain=[[.5, -.5], [.1, .2], [0., 0.]])
     ad = adata_of("B", channels=CH + ["FSC-A"])
-    scale, spectra, unmx = tr.get_standardisationparams_fromad(ad)
+    cs, scale, spectra, unmx, emb = tr.get_standardisationparams_fromad(ad)
+    assert cs is None and emb is None
     assert unmx.index.tolist() == CH and spectra.shape == (3, 2)
     A = np.array([[1., 2.], [3., -1.]])
     assert np.allclose((A @ sp.to_numpy()) @ unmx.to_numpy(), A * scale.to_numpy()[None], atol=1e-5)
@@ -414,7 +415,7 @@ def test_scaling_export_roundtrip_and_aux_loss():
     tr = scaling_transformer(anchor=2, L1weight_stainscale=2., max_abslogstain=1.)
     set_transformer_params(tr, stain=np.random.default_rng(0).normal(size=(3, 3)))
     tr.append_history()
-    tr2 = ScalingTransformer.from_exported(tr.export())
+    tr2 = ScalingTransformer.from_exported(tr.export(include_history=True))
     assert tr2.anchor_idx == [2] and len(tr2.paramhistory["stainlogscale"]) == 1
     assert np.allclose(tr2.learned_stainlogscale, tr.learned_stainlogscale)
     aux = tr.get_aux_loss()

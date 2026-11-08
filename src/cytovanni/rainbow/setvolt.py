@@ -12,7 +12,8 @@ from .gmm import fit_rainbow_GMM
 from .plot import plot_rainbow_channel_GMM_single
 
 def get_config_from_rainbow_reference(cytoconfig, rainbow_reference_path, set_channels, N_rainbow_peaks,
-                                      safety_factor_linear=.75, use_highest_peak=True, PMT_exponent=7., plot=True):
+                                      safety_factor_linear=.75, use_highest_peak=True, PMT_exponent=7., plot=True,
+                                      random_state=None):
     """Target intensities for setting PMT voltages, from a reference rainbow bead measurement.
 
     Reads the reference, gates it on scatter (`cytovanni.gating.gate_scatter_bead_sample`) and fits the peaks
@@ -40,6 +41,8 @@ def get_config_from_rainbow_reference(cytoconfig, rainbow_reference_path, set_ch
         all channels, or a Series with index `set_channels` (e.g. fitted with `PMTExponentFitter`).
     plot : bool, default True
         Show the scatter gate and the GMM fit (to check them).
+    random_state : int, numpy.random.RandomState or None, default None
+        Passed to `fit_rainbow_GMM`; None draws from numpy's global random state.
 
     Returns
     -------
@@ -75,7 +78,7 @@ def get_config_from_rainbow_reference(cytoconfig, rainbow_reference_path, set_ch
     adata = gate_scatter_bead_sample(adata, plot=plot, plotpath="")
     if plot: plt.show()
 
-    fit_rainbow_GMM(adata)
+    fit_rainbow_GMM(adata, random_state=random_state)
     if plot:
         plot_rainbow_channel_GMM_single(adata)
         plt.show()
@@ -124,7 +127,7 @@ def get_config_from_rainbow_reference(cytoconfig, rainbow_reference_path, set_ch
 
     return targetconfig
 
-def get_voltages_from_rainbow(cytoconfig, targetconfig, rainbow_path, plot=True):
+def get_voltages_from_rainbow(cytoconfig, targetconfig, rainbow_path, plot=True, random_state=None):
     """Estimate the PMT voltages that reproduce the targets of `get_config_from_rainbow_reference`.
 
     Reads a newly measured rainbow bead file, gates and fits it like the reference, and measures every channel's
@@ -143,6 +146,8 @@ def get_voltages_from_rainbow(cytoconfig, targetconfig, rainbow_path, plot=True)
         Path of the new rainbow bead .fcs file.
     plot : bool, default True
         Show the scatter gate and the GMM fit.
+    random_state : int, numpy.random.RandomState or None, default None
+        Passed to `fit_rainbow_GMM`; None draws from numpy's global random state.
 
     Returns
     -------
@@ -173,7 +178,7 @@ def get_voltages_from_rainbow(cytoconfig, targetconfig, rainbow_path, plot=True)
     adata = gate_scatter_bead_sample(adata, plot=plot, plotpath="")
     if plot: plt.show()
 
-    fit_rainbow_GMM(adata)
+    fit_rainbow_GMM(adata, random_state=random_state)
     if plot:
         plot_rainbow_channel_GMM_single(adata)
         plt.show()

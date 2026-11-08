@@ -103,7 +103,7 @@ class RainbowCalibrator():
     See Also
     --------
     fit_rainbow_GMM : per-measurement peak assignment needed as input.
-    plot_eval_RBInt_fit : check the fit.
+    plot_eval_calibration : check the fit.
 
     Notes
     -----
@@ -125,10 +125,10 @@ class RainbowCalibrator():
 
     Examples
     --------
-    >>> rbint = RainbowCalibrator(adatas)
-    >>> rbint.fit_fluorescence(gpu=True)
-    >>> rbint.save("rainbow_calibrator.pt")
-    >>> rbint.add_calibrated(adata_sample)  # adds adata_sample.layers["calibrated"]
+    >>> calibrator = RainbowCalibrator(adatas)
+    >>> calibrator.fit_fluorescence(gpu=True)
+    >>> calibrator.save("rainbow_calibrator.pt")
+    >>> calibrator.add_calibrated(adata_sample)  # adds adata_sample.layers["calibrated"]
     """
     REQUIRED_UNS = ["cytometer", "rainbow_batch", "rainbow_type", "uid", "set_hash"]
     REQUIRED_GMM_UNS = ["GMM_means", "GMM_asinh_cofactor"]
@@ -326,9 +326,9 @@ class RainbowCalibrator():
 
         Examples
         --------
-        >>> rbint = RainbowCalibrator.from_saved("rainbow_calibrator.pt")
-        >>> rbint.extend_fit(new_adatas)
-        >>> rbint.save("rainbow_calibrator_extended.pt")
+        >>> calibrator = RainbowCalibrator.from_saved("rainbow_calibrator.pt")
+        >>> calibrator.extend_fit(new_adatas)
+        >>> calibrator.save("rainbow_calibrator_extended.pt")
         """
         self._check_adatas(adatas)
         df_meta = self._process_adatas_meta(adatas)
@@ -404,12 +404,12 @@ class RainbowCalibrator():
             with `fit_fluorescence`.
         """
         exported = torch.load(filepath, map_location=torch.device("cpu"), weights_only=False)
-        rbint = cls()
-        rbint.rboe = RainbowBatchOrdinalEncoder.from_exported(exported["rboe"])
-        rbint.rsim = RainbowScatterCalibrationModule.from_exported(exported["rsim"], rbint.rboe)
-        rbint.rfim = RainbowFluorescenceGMMCalibrationModule.from_exported(exported["rfim"], rbint.rboe)
-        rbint.channel_missing_cutoff = exported["channel_missing_cutoff"]
-        return rbint
+        calibrator = cls()
+        calibrator.rboe = RainbowBatchOrdinalEncoder.from_exported(exported["rboe"])
+        calibrator.rsim = RainbowScatterCalibrationModule.from_exported(exported["rsim"], calibrator.rboe)
+        calibrator.rfim = RainbowFluorescenceGMMCalibrationModule.from_exported(exported["rfim"], calibrator.rboe)
+        calibrator.channel_missing_cutoff = exported["channel_missing_cutoff"]
+        return calibrator
     
     
     def get_calibration_factor(self, rainbow_batch=None, adata=None):
@@ -674,7 +674,7 @@ class RainbowCalibrator():
 
         Examples
         --------
-        >>> rbint.add_calibrated(adata, rainbow_batch="12_11_2021")
+        >>> calibrator.add_calibrated(adata, rainbow_batch="12_11_2021")
         >>> adata.layers["calibrated"]
         """
         adata.layers[addlayer] = adata.layers["raw"].copy()

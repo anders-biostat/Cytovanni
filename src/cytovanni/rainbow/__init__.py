@@ -11,7 +11,7 @@ from .utils import scale_spectra_wfactors, extract_logfactor_laserfactor, extrac
 
 from .gmm import fit_rainbow_GMM, get_rainbow_GMM_gate
 
-from .plot import plot_rainbow_channel_GMM_single, plot_GMM_llh, plot_eval_RBInt_fit
+from .plot import plot_rainbow_channel_GMM_single, plot_GMM_llh, plot_eval_calibration
 
 from .setvolt import get_config_from_rainbow_reference
 from .setvolt import get_voltages_from_rainbow, color_voltageconfig

@@ -1,4 +1,4 @@
-"""Tests of cytovanni.utils.misc: colours, legends, subplots, arcsinh axis labels, subsampling, concatenation."""
+"""Tests of cytovanni.utils.misc: colours, legends, subplots, subsampling, concatenation."""
 import re
 
 import anndata
@@ -10,7 +10,7 @@ import pytest
 
 from cytovanni.utils import (anndata_concat, anndata_subsample, check_pulse_width_independence, cmap_to_legendhandles,
                              cmap_to_legendhandles_wmarker, df_subsample, get_cmap, get_cmap_and_markers,
-                             label_axis_ArcSinh, labelscolors_to_legendhandles, palette_20, palette_28, printwtime,
+                             labelscolors_to_legendhandles, palette_20, palette_28, printwtime,
                              silent_log, subsample_label_indices, textcolor, unrolled_subplots, wavelength_to_hex,
                              wavelength_to_rgb)
 from cytovanni.utils.misc import MARKERS, get_hex_distinct, get_scanpy_palette_20
@@ -42,12 +42,16 @@ def test_get_hex_distinct(n):
         assert cols == palette_28[:n]
 
 
-def test_get_hex_distinct_reproducible_and_reseeds_global_state():
-    """Documented side effect for N > 28: np.random.seed(0)."""
-    a = get_hex_distinct(40); r1 = np.random.rand()
+def test_get_hex_distinct_reproducible_and_leaves_global_state():
+    """N > 28: always the same colours (those of the former global np.random.seed(0)), global state untouched."""
+    import colorsys
+    np.random.seed(0)
+    hues = np.linspace(0, 1, 41)[np.random.permutation(40)]
+    old = [matplotlib.colors.to_hex(colorsys.hsv_to_rgb(h, np.random.uniform(.5, 1), 1)) for h in hues]
+    np.random.seed(123); r_ref = np.random.rand()
     np.random.seed(123)
-    b = get_hex_distinct(40); r2 = np.random.rand()
-    assert a == b and r1 == r2
+    a = get_hex_distinct(40); r = np.random.rand()
+    assert a == old and r == r_ref and get_hex_distinct(40) == a
 
 
 @pytest.mark.parametrize("wl, rgb", [(380, None), (440, (0, 0, 255)), (490, (0, 255, 255)), (510, (0, 255, 0)),
@@ -100,13 +104,13 @@ def test_unrolled_subplots(n, ncol, grid):
     assert len(axes) == n
     assert np.allclose(fig.get_size_inches(), [2 * grid[1], 1 * grid[0]])
     assert sum(a.axison for a in fig.axes) == n and len(fig.axes) == grid[0] * grid[1]
-    if n > 1 and (grid[0] == 1 or grid[1] == 1):
-        assert isinstance(axes, np.ndarray)
+    assert isinstance(axes, np.ndarray) and axes.ndim == 1
+    assert list(axes) == fig.axes[:n]
 
 
 def test_unrolled_subplots_single():
     fig, axes = unrolled_subplots(1)
-    assert len(axes) == 1 and isinstance(axes[0], matplotlib.axes.Axes)
+    assert isinstance(axes, np.ndarray) and axes.shape == (1,) and isinstance(axes[0], matplotlib.axes.Axes)
 
 
 # ------------------------------------------------------------------ small helpers
@@ -119,60 +123,6 @@ def test_silent_log(no_warnings):
     out = silent_log(np.array([np.e, 0., -1., np.nan]))
     assert out[0] == pytest.approx(1.) and out[1] == -np.inf and np.isnan(out[2]) and np.isnan(out[3])
     assert silent_log(1.) == 0.
-
-
-# ------------------------------------------------------------------ label_axis_ArcSinh
-def _ticks(ax, onx=True):
-    axis = ax.xaxis if onx else ax.yaxis
-    major = axis.get_majorticklocs()
-    fmt = axis.get_major_formatter()  # the labels set with the fixed locations, by position
-    labels = [fmt(loc, pos) for pos, loc in enumerate(major)]
-    return major, labels, axis.get_minorticklocs()
-
-
-def test_label_axis_ArcSinh_major_ticks_and_labels():
-    cof = 1500.
-    fig, ax = plt.subplots()
-    lim = (np.arcsinh(-2e4 / cof), np.arcsinh(3e5 / cof))
-    ax.set_xlim(*lim)
-    label_axis_ArcSinh(ax, cof, minpower=3)
-    major, labels, minor = _ticks(ax)
-    assert ax.get_xlim() == pytest.approx(lim)  # limits kept
-    lin = np.sinh(major) * cof
-    shown = [(lb, v) for lb, v in zip(labels, lin) if lim[0] <= np.arcsinh(v / cof) <= lim[1]]
-    assert [lb for lb, _ in shown] == [r"$-10^4$", r"$-10^3$", r"$0$", r"$10^3$", r"$10^4$", r"$10^5$"]
-    for lb, v in shown:  # tick positions are arcsinh(10^p / cofactor)
-        p = 0 if lb == "$0$" else int(lb.strip("$").split("^")[1])
-        assert v == pytest.approx(0 if p == 0 else np.sign(v) * 10.**p, rel=1e-9)
-    minor_lin = np.sinh(minor) * cof
-    assert np.any(np.isclose(minor_lin, 2e3)) and np.any(np.isclose(minor_lin, -5e3)) and np.any(np.isclose(minor_lin, 100.))
-
-
-def test_label_axis_ArcSinh_y_axis_and_cofactor_marks():
-    fig, ax = plt.subplots()
-    ax.set_ylim(np.arcsinh(-1e3 / 10), np.arcsinh(1e5 / 10))
-    label_axis_ArcSinh(ax, 10., onx=False, minpower=2, mark_cofactor=True)
-    _, labels, _ = _ticks(ax, onx=False)
-    assert "$10^2$" in labels and "$10^1$" not in labels and "$0$" in labels
-    marks = [l.get_xydata()[0, 1] for l in ax.get_lines()]  # axhline at y = arcsinh(+-1)
-    assert sorted(np.round(marks, 6)) == sorted(np.round([np.arcsinh(1), np.arcsinh(-1)], 6))
-
-
-def test_label_axis_ArcSinh_x_cofactor_marks():
-    fig, ax = plt.subplots()
-    ax.set_xlim(-3, 8)
-    label_axis_ArcSinh(ax, 100., mark_cofactor=True)
-    assert sorted(round(l.get_xdata()[0], 6) for l in ax.get_lines()) == [round(-np.arcsinh(1), 6), round(np.arcsinh(1), 6)]
-
-
-@pytest.mark.parametrize("lim", [(-.1, .1), (.01, .02), (-.02, -.01), (0, .5), (-3, 8), (2, 9)])
-def test_label_axis_ArcSinh_narrow_and_one_sided_ranges(lim):
-    """R2-E3: a single major tick (e.g. only 0) gives no minor ticks instead of crashing."""
-    fig, ax = plt.subplots()
-    ax.set_xlim(*lim); ax.set_ylim(*lim)
-    label_axis_ArcSinh(ax, 1.)
-    label_axis_ArcSinh(ax, 1., onx=False)
-    assert ax.get_xlim() == pytest.approx(lim)
 
 
 # ------------------------------------------------------------------ anndata_concat / subsample

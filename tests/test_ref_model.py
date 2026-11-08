@@ -237,16 +237,21 @@ def test_save_load_roundtrip_scaling(ads, moe, tmp_path):
     set_transformer_params(tr, stain=np.random.default_rng(0).normal(scale=.3, size=(3, 3)))
     m = OverlapFitModel(moe, tr, dataset=ds, DDIST_kwargs={"blur": .3}, checkpoint_DDIST=False)
     m.losshistory["train"].append({"loss": 1., "step": 0})
+    m.losshistory["train_DDIST_mat"].append(pd.DataFrame([[1.]]))
     path = str(tmp_path / "sub" / "model.pt")
     m.save(path)
     m2 = OverlapFitModel.from_saved(path)
     assert type(m2.transformer) is ScalingTransformer and m2.dataset is None
     assert m2.DDIST_kwargs == {"blur": .3} and m2.checkpoint_DDIST is False
     assert not hasattr(m2, "ddist")  # eval_only by default
-    assert m2.losshistory["train"] == []  # history not saved by default
+    assert m2.losshistory["train"] == [{"loss": 1., "step": 0}]  # the loss per step is always saved
+    assert m2.losshistory["train_DDIST_mat"] == [] and m2.transformer.paramhistory["stainlogscale"] == []
     assert np.allclose(m2.transformer.learned_stainlogscale, tr.learned_stainlogscale)
+    tr.append_history()
     m.save(path, include_history=True)
-    assert OverlapFitModel.from_saved(path, eval_only=False).losshistory["train"] == [{"loss": 1., "step": 0}]
+    m3 = OverlapFitModel.from_saved(path, eval_only=False)
+    assert m3.losshistory["train"] == [{"loss": 1., "step": 0}] and len(m3.losshistory["train_DDIST_mat"]) == 1
+    assert len(m3.transformer.paramhistory["stainlogscale"]) == 1
 
 
 def test_export_roundtrip_spectralfit_with_weights_and_multiplier(tmp_path):

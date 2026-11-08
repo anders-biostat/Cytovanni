@@ -135,3 +135,14 @@ def test_penalty_limits_broadening_during_fit(fitted_rainbow_ads):
         factors[lam] = rb.get_calibration_factors_all()[FL]
     assert kl[10.] < kl[0.]
     np.testing.assert_allclose(factors[10.].to_numpy(), factors[0.].to_numpy(), rtol=.05)
+
+
+@pytest.mark.parametrize("warmup", [0, 3])
+def test_refit_uses_the_given_lr(fitted_rainbow_ads, warmup):
+    """A later `fit` call uses its own `lr` after the warm-up, also with warmup=0 (before: the old lr was kept)."""
+    rb, ds, tr = initialised(fitted_rainbow_ads)
+    tr.fit(ds, Niter=4, lr=1e-2, warmup=2, showprogress=False)
+    assert tr.optimizer.param_groups[0]["lr"] == pytest.approx(1e-2)
+    tr.fit(ds, Niter=4, lr=1e-4, warmup=warmup, showprogress=False)
+    assert tr.optimizer.param_groups[0]["lr"] == pytest.approx(1e-4)
+    assert len(tr.fit_losshistory) == 8
