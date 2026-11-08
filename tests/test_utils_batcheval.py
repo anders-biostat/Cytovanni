@@ -257,16 +257,24 @@ def test_subtract_counting_noise_checks_row_keys(counts, pairs):
 def test_gaussian_negative(rng):
     values = pd.DataFrame(rng.normal(500, 2000, size=(20000, 3)), columns=list("abc"), index=np.arange(20000) + 7)
     res = gaussian_negative(values, rng=5)
-    low = values < 1000
+    low = values.abs() <= 1000
+    assert (values < -1000).sum().sum() > 1000                      # enough large negative values that must be kept
     assert res.index.equals(values.index) and res.columns.equals(values.columns)
     assert (res[~low] == values[~low]).sum().sum() == (~low).sum().sum()
     assert res.to_numpy()[low.to_numpy()].std() == pytest.approx(200, rel=.03)
     # one draw for the whole matrix before masking: the noise at a position does not depend on the other values
     other = gaussian_negative(values * 0, rng=5)
     assert np.array_equal(res.to_numpy()[low.to_numpy()], other.to_numpy()[low.to_numpy()])
-    arr = gaussian_negative(values.to_numpy(), cutoff=0, scale=25, rng=np.random.RandomState(5))
+    arr = gaussian_negative(values.to_numpy(), cutoff=500, scale=25, rng=np.random.RandomState(5))
     noise = np.random.RandomState(5).normal(0, 25, values.shape)
-    assert np.array_equal(arr, np.where(values.to_numpy() < 0, noise, values.to_numpy()))
+    assert np.array_equal(arr, np.where(np.abs(values.to_numpy()) <= 500, noise, values.to_numpy()))
+
+
+def test_gaussian_negative_replaces_the_closed_interval_only():
+    values = np.array([[-5000., -1000.01, -1000., 0., 999.9, 1000., 1000.01, 5000.]])
+    res = gaussian_negative(values, rng=0)
+    replaced = res != values
+    assert replaced.tolist() == [[False, False, True, True, True, True, False, False]]
 
 
 def test_gaussian_negative_float32_frame_and_nan(rng):
@@ -277,7 +285,7 @@ def test_gaussian_negative_float32_frame_and_nan(rng):
         warnings.simplefilter("error")
         res = gaussian_negative(values, rng=5)
     noise = np.random.RandomState(5).normal(0, 200, values.shape)
-    expected = np.where(values.to_numpy() < 1000, noise, values.to_numpy())
+    expected = np.where(np.abs(values.to_numpy()) <= 1000, noise, values.to_numpy())
     np.testing.assert_array_equal(res.to_numpy(), expected)
     assert np.isnan(res.iloc[0, 0])
 

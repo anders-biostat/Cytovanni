@@ -100,7 +100,8 @@ Many further fixes turn crashes into working calls or clear errors and do not ch
 - `cytovanni.utils.alignment`: exact k-nearest-neighbour batch mixing (scikit-learn, or torch on CPU / GPU) and the
   Seurat alignment score with balanced, seeded subsampling per sample and cell type.
 - `cytovanni.utils.batcheval`: evaluation with replicate pairs: per-cell-type summaries, MFI / population width /
-  proportion CV tables, counting-noise corrections, a Gaussian-negative control, replicate correlations.
+  proportion CV tables, counting-noise corrections, a Gaussian-negative control (intensities in [-10^3, 10^3]
+  replaced by noise), replicate correlations.
 - `"arcsinh"` matplotlib axis scale for data in its own units (`ax.set_xscale("arcsinh", cofactor=...)`) and
   `set_arcsinh_ticks` for already transformed data.
 - Rainbow fluorescence fit: optional penalty on the broadening of the per-measurement peak covariances
