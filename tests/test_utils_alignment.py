@@ -225,6 +225,7 @@ def test_alignment_scores_per_celltype(two_types, backend, device):
     assert 0.2 < scores.loc["total", "sas"] < .8
     glob = alignment_scores(x, design, k=30, cofactor=None, scope="global").set_index("celltype")
     assert glob.loc["total", "sas"] == scores.loc["total", "sas"] and glob.loc["B", "sas"] < .1
+    assert np.isnan(glob.loc["C", "sas"])                           # minimum-cell rule also with scope="global"
 
 
 def test_alignment_scores_backends_agree(two_types, device):

@@ -166,6 +166,8 @@ def test_proportion_cv_table(shares, pairs):
     assert list(res.columns) == ["mean", "log_std", "r_sym", "CV", "CV_diag", "CV_ratio"]
     assert np.allclose(res.CV, .3, rtol=.1)
     assert res.loc["T", "mean"] == pytest.approx(np.exp(np.log(shares["T"]).mean()))
+    logs = np.log(np.r_[shares["T"].loc[pairs.left], shares["T"].loc[pairs.right]])
+    assert res.loc["T", "log_std"] == pytest.approx(logs.std(ddof=1))
     assert list(proportion_cv_table(shares, pairs, exclude_celltypes=["NK"]).celltype) == ["T", "B"]
     single = proportion_cv_table(shares, samples=pairs.left).set_index("celltype")
     assert list(single.columns) == ["mean", "log_std", "CV"]
@@ -240,6 +242,15 @@ def test_subtract_counting_noise_formula():
     assert res.CV_noise_rms[0] == pytest.approx(np.sqrt((.09 + .16) / 3))
     with pytest.raises(ValueError):
         subtract_counting_noise(table, noise[:1])
+
+
+def test_subtract_counting_noise_checks_row_keys(counts, pairs):
+    """Noise from proportion_cv_counting_noise must belong to the table's cell types, in the same order."""
+    table = proportion_cv_table(counts / counts.to_numpy().sum(1, keepdims=True), pairs)
+    noise = proportion_cv_counting_noise(counts, pairs, n_resamples=3, rng=0)
+    subtract_counting_noise(table, noise)
+    with pytest.raises(ValueError, match="celltype"):
+        subtract_counting_noise(table, noise.iloc[::-1])
 
 
 # ------------------------------------------------------------------ Gaussian negative

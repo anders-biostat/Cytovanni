@@ -1685,6 +1685,11 @@ Every fix has the reproducer that found it (previously a strict xfail) as its te
   `cytovanni.utils.evl` (unchanged).
 - Fix during the port: `gaussian_negative` on a DataFrame uses `DataFrame.mask` (same values; the staged version
   assigned float64 noise into float32 columns, a FutureWarning under pandas 2 and a TypeError under pandas 3).
+- Changes against the staged version (user 2026-11-08): `alignment_scores(scope="global")` gives NaN for cell types
+  that fail the minimum-cell rule (were scored); `celltype_marker_summary` without the float32 special case of the
+  mean (values may differ from the project's by one unit in the last place); `proportion_cv_table` ``log_std`` with
+  ddof=1 also for pairs (was ddof=0; descriptive column only, the CVs are unchanged); `subtract_counting_noise`
+  checks that the marker / cell type of every noise row matches the table.
 - Effect on results: none for existing package code. For the reproducibility project: same numbers as its own code
   (checked there, bit-identical on the CPU and GPU) except that the single-sample (`samples=`, Ref0) proportion and
   sigmaFI CVs use `evl.get_positive_single_CV` with ddof=1 (project: ddof=0), larger by about sqrt(n / (n - 1)).

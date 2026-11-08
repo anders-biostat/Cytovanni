@@ -448,7 +448,8 @@ def alignment_scores(x, design, k=50, cofactor=1500, scope="celltype", backend="
     scope : {"celltype", "global"}
         ``"celltype"``: neighbours of a cell type's cells are searched among that cell type only (separate, balanced
         subsample per type). ``"global"``: every type's score uses the counts of the whole-sample search, restricted to
-        its cells.
+        its cells (the type's cells in that subsample are not balanced between the batches). In both, types that fail
+        the design's minimum-cell rule get NaN.
     backend, device, precision, chunk_size
         See `knn_same_batch_counts`.
     group_small : bool
@@ -479,7 +480,7 @@ def alignment_scores(x, design, k=50, cofactor=1500, scope="celltype", backend="
         item["sas"] = np.nan
         if group["level"] == "total":
             item["sas"] = alignment_score_from_counts(global_counts, min(k, len(inds) - 1))
-        elif scope == "global":
+        elif scope == "global" and group["eligible"]:
             use = np.isin(inds, group["mask"])
             item["sas"] = alignment_score_from_counts(global_counts[use], min(k, len(inds) - 1))
         elif group["eligible"]:

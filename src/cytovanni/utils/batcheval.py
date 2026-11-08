@@ -147,11 +147,6 @@ def celltype_marker_summary(values, annotation, cofactor=1500, clip=(-12, 12), s
     -------
     pandas.DataFrame
         Columns ``level``, ``stat``, ``celltype`` and one column per marker.
-
-    Notes
-    -----
-    For float32 data the mean is computed with ``DataFrame.mean`` per group, which can differ from
-    ``groupby().mean()`` by one unit in the last place; this keeps the values identical to our earlier evaluations.
     """
     x = np.arcsinh(values / cofactor)
     if clip is not None:
@@ -160,8 +155,7 @@ def celltype_marker_summary(values, annotation, cofactor=1500, clip=(-12, 12), s
     for level, labels in _levels(annotation).items():
         grouped = x.groupby(labels, observed=observed)
         for stat in stats:
-            df = grouped.apply(lambda g: g.mean()) if stat == "mean" and all(x.dtypes == np.float32) \
-                else getattr(grouped, stat)()
+            df = getattr(grouped, stat)()
             df.index.name = "celltype"
             df = df.reset_index()
             df.insert(0, "stat", stat)
@@ -385,8 +379,8 @@ def proportion_cv_table(shares, pairs=None, samples=None, exclude_celltypes=(), 
     -------
     pandas.DataFrame
         One row per cell type: ``celltype``, ``mean`` (geometric mean share over all samples of the pairs, a sample
-        counted once per pair it is in), ``log_std`` (standard deviation of the log shares; pairs: all left and
-        right values, ddof=0; samples: ddof=1), ``CV`` and, for pairs, ``r_sym`` (`symmetric_correlation` of the log
+        counted once per pair it is in), ``log_std`` (standard deviation of the log shares, ddof=1; pairs: over
+        all left and right values), ``CV`` and, for pairs, ``r_sym`` (`symmetric_correlation` of the log
         shares), ``CV_diag``, ``CV_ratio``.
     """
     _check_paired_or_single(pairs, samples)
@@ -396,7 +390,7 @@ def proportion_cv_table(shares, pairs=None, samples=None, exclude_celltypes=(), 
             left, right = _pairs(pairs)
             allind = np.hstack([left, right])
             df = pd.DataFrame([np.exp(np.log(shares.loc[allind]).mean())], index=["mean"]).T
-            df["log_std"] = [np.hstack([np.log(shares[c].loc[left]), np.log(shares[c].loc[right])]).std()
+            df["log_std"] = [np.hstack([np.log(shares[c].loc[left]), np.log(shares[c].loc[right])]).std(ddof=1)
                              for c in df.index]
             df["r_sym"] = [symmetric_correlation(np.log(shares[c].loc[left]), np.log(shares[c].loc[right]))
                            for c in df.index]
@@ -595,7 +589,9 @@ def subtract_counting_noise(table, noise, column="CV", quantiles=QUANTILES):
     table : pandas.DataFrame
         Observed CV table, e.g. `mfi_cv_table` or `proportion_cv_table`.
     noise : array-like or pandas.DataFrame, shape (len(table), n_redraws)
-        Simulated CVs (`mfi_cv_counting_noise`, `proportion_cv_counting_noise`), rows in the order of `table`.
+        Simulated CVs (`mfi_cv_counting_noise`, `proportion_cv_counting_noise`), rows in the order of `table`. For a
+        DataFrame, its index levels named like columns of `table` (``marker``, ``celltype``) must match them row by
+        row.
     column : str
         Column of `table` with the observed CV (same units as `noise`).
     quantiles : tuple of 3 floats
@@ -606,10 +602,20 @@ def subtract_counting_noise(table, noise, column="CV", quantiles=QUANTILES):
     pandas.DataFrame
         Copy of `table` with ``CV_noise_rms`` (root mean square of the noise CVs), ``CV_noise_minus``, ``CV_noise``,
         ``CV_noise_plus`` and ``CV_corrected_minus``, ``CV_corrected``, ``CV_corrected_plus``.
+
+    Raises
+    ------
+    ValueError
+        If the number of rows or the marker / cell type of a row differ.
     """
-    noise = np.asarray(noise)
     if len(noise) != len(table):
         raise ValueError(f"noise has {len(noise)} rows, table {len(table)}")
+    if isinstance(noise, pd.DataFrame):
+        keys = [k for k in noise.index.names if k is not None and k in table.columns]
+        if keys and not np.array_equal(noise.index.to_frame(index=False)[keys].to_numpy(dtype=object),
+                                       table[keys].to_numpy(dtype=object)):
+            raise ValueError(f"the rows of noise and table differ in {keys} (same arguments for both?)")
+    noise = np.asarray(noise)
     observed = table[column].to_numpy()[:, None]
     corrected = np.sqrt(np.clip(observed ** 2 - noise ** 2, 0, None))
     table = table.copy()
