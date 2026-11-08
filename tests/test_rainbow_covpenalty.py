@@ -1,8 +1,8 @@
 """Covariance penalty of the rainbow fluorescence fit (`fit_fluorescence(cov_penalty=..., cov_penalty_broaden_only=...)`).
 
 Without the penalty, the free per-measurement peak precisions can broaden a peak over its neighbours, after which the
-measurement's factors drift at little cost in likelihood (found for calibration beads with one bright peak per laser,
-FIXLOG R4-P4d). The tests check the penalty itself (zero at the reference, the KL formula, broadening-only), that the
+measurement's factors drift at little cost in likelihood (found for calibration beads with one bright peak per laser).
+The tests check the penalty itself (zero at the reference, the KL formula, broadening-only), that the
 option reaches the trainer, that 0 leaves the fit unchanged, and that the penalty keeps the covariances near the
 reference during a fit.
 """

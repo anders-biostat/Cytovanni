@@ -4,8 +4,7 @@
 
 A review release: about 130 bug fixes, a test suite, numpydoc docstrings for the whole API, new evaluation modules,
 and a set of API clean-ups. There are no compatibility aliases for renamed functions or arguments: code that uses the
-old names has to be updated (see "Breaking changes"). `FIXLOG.md` in the repository lists every fix with the
-conditions under which it changes results.
+old names has to be updated (see "Breaking changes").
 
 ### Breaking changes
 

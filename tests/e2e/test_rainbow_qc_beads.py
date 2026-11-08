@@ -1,4 +1,4 @@
-"""Regression test of the covariance penalty (FIXLOG R4-P4d) on real QC beads: Aria III calibration beads, which do
+"""Regression test of the covariance penalty on real QC beads: Aria III calibration beads, which do
 not fluoresce in every channel (few bright peaks per laser).
 
 Without the penalty, the free per-measurement peak precisions let a peak broaden during the full fit, and the laser

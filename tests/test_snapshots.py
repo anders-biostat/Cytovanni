@@ -1,7 +1,7 @@
 """Snapshot tests: results on fixed synthetic inputs must match the stored ones (tests/snapshots/, marker ``snapshot``).
 
 A failure means a result changed. If the change is intended, regenerate the case (tests/snapshots/generate.py) and
-record it in FIXLOG.md.
+record it in CHANGELOG.md.
 """
 import os
 import sys
