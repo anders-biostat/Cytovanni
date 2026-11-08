@@ -12,6 +12,12 @@ import pytest
 import torch
 
 sys.path.insert(0, os.path.dirname(__file__))  # makes `synthetic` importable from the test modules
+
+# Under pytest-xdist every worker would run torch on all cores (oversubscription: the full suite took > 90 min instead
+# of 5 min with 6 workers on 8 cores). Give every worker its share of the available cores.
+if "PYTEST_XDIST_WORKER_COUNT" in os.environ:
+    _ncpu = len(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else (os.cpu_count() or 1)
+    torch.set_num_threads(max(1, _ncpu // int(os.environ["PYTEST_XDIST_WORKER_COUNT"])))
 import synthetic  # noqa: E402
 
 import matplotlib  # noqa: E402
