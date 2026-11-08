@@ -1675,3 +1675,17 @@ Every fix has the reproducer that found it (previously a strict xfail) as its te
   `plot_eval_RBInt_fit`, 2 files `rbint=`; tutorials ported); code that used the Series index of a CutoffUnmxGate /
   UnmxMinGate mask (none found: all usages index AnnData or combine masks); models saved without history now also
   contain the loss per step (larger by that list only).
+
+### R5-D1 new modules `cytovanni.utils.alignment` and `cytovanni.utils.batcheval` (batch-integration evaluation)
+- New: k-nearest-neighbour batch mixing and the Seurat alignment score (`alignment`: `knn_same_batch_counts`,
+  `knn_same_batch_counts_grouped`, `alignment_design`, `alignment_scores`, `pair_alignment_scores`,
+  `weighted_celltype_score`, ...) and the replicate-pair evaluation of the HD7 batch-integration paper (`batcheval`:
+  per-cell-type summaries, MFI / sigmaFI / proportion CV tables, counting-noise corrections, Gaussian-negative
+  control, replicate correlations). Ported from the reproducibility project's own evaluation code; built on
+  `cytovanni.utils.evl` (unchanged).
+- Fix during the port: `gaussian_negative` on a DataFrame uses `DataFrame.mask` (same values; the staged version
+  assigned float64 noise into float32 columns, a FutureWarning under pandas 2 and a TypeError under pandas 3).
+- Effect on results: none for existing package code. For the reproducibility project: same numbers as its own code
+  (checked there, bit-identical on the CPU and GPU) except that the single-sample (`samples=`, Ref0) proportion and
+  sigmaFI CVs use `evl.get_positive_single_CV` with ddof=1 (project: ddof=0), larger by about sqrt(n / (n - 1)).
+- Tests: tests/test_utils_alignment.py, tests/test_utils_batcheval.py (synthetic data, CPU and CUDA).
