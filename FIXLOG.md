@@ -145,7 +145,7 @@ A fix can change results relative to one of these and not the other; both are st
 | R5-B7 | rainbow fluorescence `fit`: `lr` of a later call | yes, repeated `fit` calls with a different `lr` | second `fit` call on the same trainer |
 | R5-B6 | random states (`random_state` arguments, `get_hex_distinct` local state) | no by default; global draws after `get_hex_distinct(N>28)` differ | `get_hex_distinct` with N > 28 |
 | R5-C | API changes before 1.2.0 (renames, return types, export defaults) | no (code must be ported) | renamed functions/arguments, see section |
-| R5-D1 | new modules `utils.alignment`, `utils.batcheval` | no (new) | batch-integration evaluation |
+| R5-D1 | new modules `utils.alignment`, `utils.batcheval`; Gaussian negative on [-1e3, 1e3] | no for the package (new); vs the project's code: SAS^GN (values < -1e3 kept), Ref0 proportion/sigmaFI CVs (ddof=1) | batch-integration evaluation |
 
 Entry format: see the review notes (todo/00_CONVENTIONS.md "Fix log" in the review project).
 
@@ -1695,7 +1695,12 @@ Every fix has the reproducer that found it (previously a strict xfail) as its te
   mean (values may differ from the project's by one unit in the last place); `proportion_cv_table` ``log_std`` with
   ddof=1 also for pairs (was ddof=0; descriptive column only, the CVs are unchanged); `subtract_counting_noise`
   checks that the marker / cell type of every noise row matches the table.
+- `gaussian_negative` replaces the values in [-cutoff, cutoff] (user 2026-11-08: "the gaussian negative sas should
+  replace [-1e3,1e3], not <1e3"; the project's code and the staged version replaced every value < cutoff, including
+  large negative ones). This is the method as described in the paper; values below -cutoff are now kept.
 - Effect on results: none for existing package code. For the reproducibility project: same numbers as its own code
   (checked there, bit-identical on the CPU and GPU) except that the single-sample (`samples=`, Ref0) proportion and
-  sigmaFI CVs use `evl.get_positive_single_CV` with ddof=1 (project: ddof=0), larger by about sqrt(n / (n - 1)).
+  sigmaFI CVs use `evl.get_positive_single_CV` with ddof=1 (project: ddof=0), larger by about sqrt(n / (n - 1)),
+  and every Gaussian-negative result (SAS^GN, both the 200 and the narrow 25 variant) changes for markers with values
+  below -1000 (those are no longer replaced by noise): recompute them with the package function.
 - Tests: tests/test_utils_alignment.py, tests/test_utils_batcheval.py (synthetic data, CPU and CUDA).
