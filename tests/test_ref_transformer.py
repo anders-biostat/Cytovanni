@@ -406,6 +406,8 @@ def test_scaling_add_stain_logscale_only_differences_take_effect():
     assert np.allclose(after[["FL2", "FL3"]], before[["FL2", "FL3"]])
     with pytest.raises(OverlapStandardisationException):
         tr.add_stain_logscale_toself(ls.iloc[1:])
+    with pytest.raises(OverlapStandardisationException, match="not currently present"):
+        tr.add_stain_logscale_toself(ls.rename(columns={"FL1": "XX"}))
 
 
 def test_scaling_export_roundtrip_and_aux_loss():

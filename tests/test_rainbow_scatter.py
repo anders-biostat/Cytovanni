@@ -192,6 +192,15 @@ def test_collect_data_log_median_clipped_at_min_median(rboe, rainbow_adatas):
     np.testing.assert_allclose(rsim.data_sqrtN.numpy(), np.sqrt([ad.shape[0] for ad in ads]))
 
 
+@pytest.mark.parametrize("key", ["rainbow_batch", "rainbow_type"])
+def test_collect_data_unknown_batch_or_type_raises(rboe, rainbow_adatas, key):
+    rsim = RainbowScatterCalibrationModule.from_data(rboe, rainbow_adatas)
+    ad = rainbow_adatas[0].copy()
+    ad.uns[key] = "not set up"
+    with pytest.raises(CalibrationModuleException, match=key):
+        rsim.collect_data([ad])
+
+
 def test_export_round_trip(rboe, rainbow_adatas):
     rsim = RainbowScatterCalibrationModule.from_data(rboe, rainbow_adatas)
     back = RainbowScatterCalibrationModule.from_exported(rsim.export())

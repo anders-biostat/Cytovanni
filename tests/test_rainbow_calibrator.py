@@ -193,6 +193,18 @@ def test_empty_calibrator():
     assert not hasattr(rb, "rfim") and rb.channel_missing_cutoff is None
 
 
+@pytest.mark.parametrize("drop", ["obs", "layer"])
+def test_construction_without_gmm_obs_or_raw_layer_warns_and_raises(ads, drop):
+    """Inputs that were not set up with fit_rainbow_GMM (obs labels) or lack the raw data are refused."""
+    if drop == "obs":
+        del ads[1].obs[RainbowCalibrator.REQUIRED_GMM_OBS[0]]
+    else:
+        del ads[1].layers["raw"]
+    with pytest.warns(CalibrationModuleWarning, match="missing"):
+        with pytest.raises(CalibrationModuleException):
+            RainbowCalibrator(ads)
+
+
 def test_construction_sets_up_models(ads):
     rb = RainbowCalibrator(ads)
     assert rb.rsim.is_trained and not rb.rfim.is_trained
@@ -451,6 +463,20 @@ def test_fit_fluorescence_gpu_fallback_and_cutoff_warning(ads):
         with pytest.warns(CalibrationModuleWarning, match="channel_missing_cutoff"):
             short_fit_fluorescence(rb, gpu=True, verbosity=2)
     assert next(rb.rfim.parameters()).device.type == "cpu" and rb.channel_missing_cutoff == -np.inf
+
+
+def test_fit_fluorescence_warns_on_changed_channel_missing_cutoff(ads):
+    rb = RainbowCalibrator(ads[:4])
+    rb.channel_missing_cutoff = 5.
+    with pytest.warns(CalibrationModuleWarning, match="channel_missing_cutoff"):
+        short_fit_fluorescence(rb, gpu=False)
+    assert rb.channel_missing_cutoff == -np.inf
+
+
+def test_fit_fluorescence_after_loading_raises(saved_path):
+    rb = RainbowCalibrator.from_saved(saved_path)
+    with pytest.raises(CalibrationModuleException, match="extend"):
+        rb.fit_fluorescence(gpu=False, verbosity=0)
 
 
 def test_fit_fluorescence_on_device_then_peak_parameters_R2b_G2_01(ads, device, tmp_path):
