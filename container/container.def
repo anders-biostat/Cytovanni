@@ -5,7 +5,7 @@ From: pytorch/pytorch:2.8.0-cuda12.9-cudnn9-devel
     pip install --no-cache-dir uv
 
     uv pip install --system jupyter ipykernel
-    uv pip install --system cytovanni[all]
+    uv pip install --system "cytovanni[all]==1.2.0"
     # test suite (run from a clone of the repository, see docs/tutorials/container.md)
     uv pip install --system pytest pytest-cov pytest-xdist
 

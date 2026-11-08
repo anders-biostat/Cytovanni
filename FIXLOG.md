@@ -141,6 +141,11 @@ A fix can change results relative to one of these and not the other; both are st
 | R4-B9 | `get_voltages_from_rainbow` crashed on a targetconfig read from .csv | no (crash -> works) | targetconfig round-tripped through .csv |
 | R4-B10 | `ExtendableParameter.extend` with mean norm: new entries started at -mean(old raw values) | starting point of new batches only; fitted values after `extend` + fit up to convergence | `RainbowCalibrator.extend_fit` (hd7-01), `ScalingTransformer.extend`, `fit_factor_*` extension |
 | R4-P4d | rainbow fit: optional penalty on the broadening of the per-measurement peak covariances | no by default (`cov_penalty=0`); yes where used | `fit_fluorescence(cov_penalty>0)`: reproducibility clbr2pks fits (.3, broadening only) |
+| R5-A1 | arcsinh axis scale; `label_axis_ArcSinh` -> `set_arcsinh_ticks` | plots only (ticks/labels) | every `label_axis_ArcSinh` call (renamed) |
+| R5-B7 | rainbow fluorescence `fit`: `lr` of a later call | yes, repeated `fit` calls with a different `lr` | second `fit` call on the same trainer |
+| R5-B6 | random states (`random_state` arguments, `get_hex_distinct` local state) | no by default; global draws after `get_hex_distinct(N>28)` differ | `get_hex_distinct` with N > 28 |
+| R5-C | API changes before 1.2.0 (renames, return types, export defaults) | no (code must be ported) | renamed functions/arguments, see section |
+| R5-D1 | new modules `utils.alignment`, `utils.batcheval` | no (new) | batch-integration evaluation |
 
 Entry format: see the review notes (todo/00_CONVENTIONS.md "Fix log" in the review project).
 
