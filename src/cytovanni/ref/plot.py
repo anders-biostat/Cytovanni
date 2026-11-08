@@ -4,7 +4,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 
-from ..utils import get_cmap, label_axis_ArcSinh, unrolled_subplots, cmap_to_legendhandles
+from ..utils import get_cmap, set_arcsinh_ticks, unrolled_subplots, cmap_to_legendhandles
 from ..utils import base_plot_NxN_ds, base_plot_NxN
 
 
@@ -69,7 +69,7 @@ def plot_eval_histogram(adatas, unmxkey, uid, key_uid, key_color=None, key_subse
         if log: ax[i+1].set_yscale("log")
         ax[i+1].set_ylim(ylim)
         ax[i+1].set_xlabel(xs[0].columns[i], size=20)
-        label_axis_ArcSinh(ax[i+1], cofactor, minpower=3)
+        set_arcsinh_ticks(ax[i+1], cofactor)
     fig.suptitle(uid, size=25)
     fig.set_layout_engine("constrained")
     if savepath:

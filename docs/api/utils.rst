@@ -13,7 +13,10 @@ Utilities (cytovanni.utils)
    cmap_to_legendhandles_wmarker
    unrolled_subplots
    labelscolors_to_legendhandles
-   label_axis_ArcSinh
+   ArcSinhScale
+   ArcSinhLocator
+   ArcSinhFormatter
+   set_arcsinh_ticks
    wavelength_to_rgb
    wavelength_to_hex
    silent_log

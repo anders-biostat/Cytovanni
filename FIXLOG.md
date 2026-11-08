@@ -1613,3 +1613,17 @@ Every fix has the reproducer that found it (previously a strict xfail) as its te
   variants, narrowing free with broadening only, gradient direction, option reaches the trainer, 0 = unpenalised fit;
   slow: penalised fit stays closer to the reference covariances, factors unchanged within 5% on synthetic beads).
 
+
+## R5 (improvements)
+
+### R5-A1 arcsinh axis scale; `label_axis_ArcSinh` replaced by `set_arcsinh_ticks`
+- New: `ax.set_xscale("arcsinh", cofactor=...)` for data in its own units (`cytovanni.utils.scale`, registered on
+  import). Major ticks 0 and +-10^p in log-axis notation (tick label font); powers near 0 left out as far as needed
+  for the labels to fit (gap `label_gap` .5 em, next to the 0 `zero_gap` 1 em on x, 2 em on y); m x 10^p labels when
+  fewer than two labels; minor ticks 2..9 x 10^p continued below the labels while >= 2.5 pt apart; the 0 label sits on
+  the baseline of the power labels. Recomputed at every draw.
+- `set_arcsinh_ticks(ax, cofactor, axis="x", minpower=None, mark_cofactor=False)` for already transformed data
+  replaces `label_axis_ArcSinh(ax, cofactor, onx=True, minpower=2, mark_cofactor=False)` (removed).
+- Affected: plots only (tick positions and labels; label text now `$\mathdefault{10^{3}}$`). No numerical results.
+- Action: port calls of `label_axis_ArcSinh` (reproducibility code, ~50 calls): new name, `onx=False` -> `axis="y"`;
+  `minpower` is now automatic by default (pass `minpower=2` for the earlier labels).

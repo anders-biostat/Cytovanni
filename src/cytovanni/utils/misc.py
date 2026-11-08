@@ -1,4 +1,4 @@
-"""Small helpers: colours and legends, axis labelling for arcsinh scales, subsampling, AnnData concatenation."""
+"""Small helpers: colours and legends, subsampling, AnnData concatenation."""
 import numpy as np
 from datetime import datetime
 import anndata
@@ -388,81 +388,6 @@ def silent_log(x):
     """
     with np.errstate(invalid='ignore', divide = 'ignore'):
         return np.log(x)
-
-def label_axis_ArcSinh(ax, cofactor, onx=True, minpower=2, mark_cofactor=False):
-    """Label an axis that shows ``arcsinh(x / cofactor)`` data with powers of ten of the linear values.
-
-    Places major ticks at 0 and at +-10^p for every integer power p within the current axis limits with
-    ``|p| >= minpower``, labelled ``$10^p$`` / ``$-10^p$`` / ``$0$``, and minor ticks in between (at 2..9 x 10^p
-    between neighbouring powers, at the left-out powers between 0 and +-10^minpower). Call it after plotting, since
-    it uses the current axis limits (which it keeps).
-
-    Parameters
-    ----------
-    ax : matplotlib.axes.Axes
-        Axis to relabel; the data on it must be ``arcsinh(x / cofactor)``.
-    cofactor : float
-        Cofactor of the arcsinh transform of the plotted data, in the units of the linear data.
-    onx : bool, default True
-        Relabel the x axis; if False, the y axis.
-    minpower : int, default 2
-        Smallest power of ten that is labelled: powers with ``|p| < minpower`` are left out (0 is always labelled).
-        Small powers crowd together near 0 on the arcsinh scale; e.g. 3 for a cofactor of 1500 leaves out 10 and 100.
-    mark_cofactor : bool, default False
-        Also draw short marks at the edge of the axis at x = +-`cofactor`.
-    """
-    axlim = ax.get_xlim() if onx else ax.get_ylim()
-    axlim_real = np.sinh(axlim)*cofactor
-    available_powers = []
-    if axlim_real[0]<0:
-        available_powers.extend(list(-np.arange(np.floor(np.log10(max(-axlim_real[1],10.))), np.ceil(np.log10(-axlim_real[0]))+1)[::-1]))
-    if axlim_real[0]<=0 and axlim_real[1]>=0:
-        available_powers.append(0)
-    if axlim_real[1]>0:
-        available_powers.extend(list(np.arange(np.floor(np.log10(max(axlim_real[0], 10.))), np.ceil(np.log10(axlim_real[1]))+1)))
-    else:
-        available_powers_neg = []
-    available_powers = np.asarray(available_powers)
-    available_powers = available_powers[(np.abs(available_powers)>=minpower)|(available_powers==0)]
-    
-    def get_minor(a, b):
-        if (abs(a-b)==1) and min(a,b)<0:
-            return -np.log10(10**min(abs(a),abs(b)) * np.arange(2,10))
-        if (abs(a-b)==1) and min(a,b)>0:
-            return np.log10(10**min(a,b) * np.arange(2,10))
-        else:
-            return min(a,b) + np.arange(min(abs(a),abs(b)), max(abs(a),abs(b))+1)[1:-1]
-        
-    # narrow ranges can leave a single major tick (e.g. only 0): then there are no minor ticks
-    minor_powers = np.hstack([get_minor(available_powers[i], available_powers[i+1]) for i in range(len(available_powers)-1)]) if len(available_powers)>1 else np.zeros(0)
-
-    def power_to_pos(p):
-        if p>0: return 10**p
-        elif p==0: return 0
-        else: return -10**(-p)
-    available_powers_pos = np.arcsinh(np.asarray([power_to_pos(p) for p in available_powers]) / cofactor)
-    minor_powers_pos = np.arcsinh(np.asarray([power_to_pos(p) for p in minor_powers]) / cofactor)
-
-    def format_power(p):
-        if p==0: return r"$0$"
-        elif p>0: return fr"$10^{p:.0f}$"
-        else: return fr"$-10^{-p:.0f}$"
-    labels=[format_power(p) for p in available_powers]
-    
-    if onx:
-        ax.set_xticks(available_powers_pos, labels=labels) #, va='bottom')
-        ax.set_xticks(minor_powers_pos, minor=True)
-        ax.set_xlim(axlim)
-        if mark_cofactor:
-            ax.axvline( np.arcsinh(1), 0, .05, linewidth=1, color="black")
-            ax.axvline(np.arcsinh(-1), 0, .05, linewidth=1, color="black")
-    else:
-        ax.set_yticks(available_powers_pos, labels=labels)
-        ax.set_yticks(minor_powers_pos, minor=True)
-        ax.set_ylim(axlim)
-        if mark_cofactor:
-            ax.axhline( np.arcsinh(1), 0, .05, linewidth=1, color="black")
-            ax.axhline(np.arcsinh(-1), 0, .05, linewidth=1, color="black")
 
 def anndata_concat(adatas, make_unique=False, join="inner", merge=None, permute=False):
     """Concatenate AnnData objects along the events (``anndata.concat``), silencing the duplicate-name warning.
