@@ -198,4 +198,7 @@ def test_zero_gap_only_widens_the_space_next_to_zero():
         plt.close(fig)
     near = lambda vals: min(abs(v) for v in vals if v != 0)
     assert near(out[6.]) > near(out[0.])
-    assert 1e6 in out[6.] and 1e5 in out[6.]
+    assert set(out[6.]) <= set(out[0.]) and 1e6 in out[6.] and -1e6 in out[6.]
+    dropped = set(out[0.]) - set(out[6.])
+    kept = [abs(v) for v in out[6.] if v != 0]
+    assert max(abs(v) for v in dropped) < min(kept)
