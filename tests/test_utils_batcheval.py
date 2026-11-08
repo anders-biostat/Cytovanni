@@ -246,7 +246,7 @@ def test_subtract_counting_noise_formula():
 
 def test_subtract_counting_noise_checks_row_keys(counts, pairs):
     """Noise from proportion_cv_counting_noise must belong to the table's cell types, in the same order."""
-    table = proportion_cv_table(counts / counts.to_numpy().sum(1, keepdims=True), pairs)
+    table = proportion_cv_table((counts / counts.to_numpy().sum(1, keepdims=True)).clip(lower=5e-5), pairs)
     noise = proportion_cv_counting_noise(counts, pairs, n_resamples=3, rng=0)
     subtract_counting_noise(table, noise)
     with pytest.raises(ValueError, match="celltype"):
