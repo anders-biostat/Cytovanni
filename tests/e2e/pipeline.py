@@ -264,9 +264,10 @@ def variable_model(cal, dye, out, Niter=1500):
     np.exp(sfm.transformer.learned_stainlogscale).to_csv(os.path.join(out, "stainscale.csv"))
 
 
-def variable_post(cal, model, out, Niter=800):
+def variable_post(cal, model, out, Niter=100):
     """Per-marker post-scaling of the variable-spectra tutorial: a `ScalingTransformer` on the unmixed output of the
-    spectral model (stains named by dye), added to the spectral model with `incorporate_stain_scaling`."""
+    spectral model (stains named by dye), added to the spectral model with `incorporate_stain_scaling`. The tutorial
+    runs 800 steps (about 1 h on the subset); the test runs `Niter` steps, enough to check the direction."""
     adatas = [ad for ad in variable_load_samples(cal) if ad.uns["is_train"]]
     sfm = cytovanni.ref.OverlapFitModel.from_saved(os.path.join(model, "model.pt")).to(device())
     for ad in adatas:
@@ -287,6 +288,7 @@ def variable_post(cal, model, out, Niter=800):
                                                    DDIST_kwargs={"blur": .5, "reach": 1.}, DDIST_separate=True).to(device())
     post.fit(Niter=Niter, lr=5e-3, optimizer="Adam")
     post.save(os.path.join(out, "model_post.pt"))
+    pd.DataFrame(post.losshistory["train"]).to_csv(os.path.join(out, "losshistory_post.csv"))
     np.exp(post.transformer.learned_stainlogscale).to_csv(os.path.join(out, "stainscale_post.csv"))
     combined = sfm.incorporate_stain_scaling(post)
     combined.save(os.path.join(out, "model_combined.pt"))

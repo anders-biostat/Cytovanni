@@ -122,10 +122,16 @@ def test_dye_panel(dye):
 
 
 @pytest.mark.slow
+def test_post_scaling_loss_decreases(post):
+    loss = pd.read_csv(os.path.join(post, "losshistory_post.csv"), index_col=0)["loss"].to_numpy()
+    assert loss[-20:].mean() < loss[:20].mean()
+
+
+@pytest.mark.slow
 def test_model_improves_test_aliquots(cal, model, post):
-    """On the held-out samples (is_train False), the final model of the tutorial (spectral fit + post-scaling) brings
-    the aliquots of the two dates closer than the initial model (arcsinh quantile differences), and the anchor batch
-    keeps factor 1. The spectral fit alone is evaluated as well (written to the csv, not asserted)."""
+    """On the held-out samples (is_train False), the final model of the tutorial (spectral fit + shortened post-scaling)
+    brings the aliquots of the two dates closer than the initial model (arcsinh quantile differences), and the anchor
+    batch keeps factor 1. The spectral fit alone is evaluated as well (written to the csv, not asserted)."""
     from cytovanni.ref import OverlapFitModel
     adatas = [ad for ad in pipeline.variable_load_samples(cal) if not ad.uns["is_train"]]
     keys = {"init": os.path.join(model, "model_init.pt"), "spectral": os.path.join(model, "model.pt"),
