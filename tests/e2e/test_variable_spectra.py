@@ -1,5 +1,5 @@
 """End-to-end: the variable-spectra tutorials (rainbow calibration -> calibrated samples and spectra -> dye PCA and
-panel -> panel-embedding reference model) on two dates of the example data (`pipeline.VARIABLE_DATES`), samples
+panel -> panel-embedding reference model -> per-marker post-scaling) on two dates of the example data (`pipeline.VARIABLE_DATES`), samples
 measured on both dates only."""
 import os
 
@@ -41,6 +41,11 @@ def dye(request, example_data, cal, stage_cache):
 @pytest.fixture(scope="session")
 def model(request, cal, dye, stage_cache):
     return run_stage(request, stage_cache, "variable/model", pipeline.variable_model, cal, dye, slow=True)
+
+
+@pytest.fixture(scope="session")
+def post(request, cal, model, stage_cache):
+    return run_stage(request, stage_cache, "variable/post", pipeline.variable_post, cal, model, slow=True)
 
 
 def test_subset_selection(meta):
@@ -117,18 +122,22 @@ def test_dye_panel(dye):
 
 
 @pytest.mark.slow
-def test_model_improves_test_aliquots(cal, dye, model):
-    """On the held-out samples (is_train False), the fitted model brings the aliquots of the two dates closer than
-    the initial model (arcsinh quantile differences), and the anchor batch keeps factor 1."""
+def test_model_improves_test_aliquots(cal, model, post):
+    """On the held-out samples (is_train False), the final model of the tutorial (spectral fit + post-scaling) brings
+    the aliquots of the two dates closer than the initial model (arcsinh quantile differences), and the anchor batch
+    keeps factor 1. The spectral fit alone is evaluated as well (written to the csv, not asserted)."""
     from cytovanni.ref import OverlapFitModel
     adatas = [ad for ad in pipeline.variable_load_samples(cal) if not ad.uns["is_train"]]
-    for name, key in [("model_init.pt", "unmx_init"), ("model.pt", "unmx_standardised")]:
-        sfm = OverlapFitModel.from_saved(os.path.join(model, name)).to(pipeline.device())
+    keys = {"init": os.path.join(model, "model_init.pt"), "spectral": os.path.join(model, "model.pt"),
+            "combined": os.path.join(post, "model_combined.pt")}
+    for key, path in keys.items():
+        sfm = OverlapFitModel.from_saved(path).to(pipeline.device())
         for ad in adatas:
             sfm.add_ad_standardised(ad, key_layer="raw", addkey=key)
-    before = pipeline.aliquot_mismatch(adatas, "unmx_init")
-    after = pipeline.aliquot_mismatch(adatas, "unmx_standardised")
-    pd.DataFrame({"init": before, "fitted": after}).to_csv(os.path.join(model, "aliquot_mismatch_test.csv"))
-    assert after.mean() < before.mean(), pd.DataFrame({"init": before, "fitted": after})
-    ss = pd.read_csv(os.path.join(model, "stainscale.csv"), index_col=0)
-    np.testing.assert_allclose(ss.loc[pipeline.VARIABLE_ANCHORS["batch"][0]], 1., atol=1e-5)
+    mismatch = pd.DataFrame({key: pipeline.aliquot_mismatch(adatas, key) for key in keys})
+    mismatch.to_csv(os.path.join(post, "aliquot_mismatch_test.csv"))
+    assert mismatch["combined"].mean() < mismatch["init"].mean(), mismatch
+    anchor = pipeline.VARIABLE_ANCHORS["batch"][0]
+    for csv in [os.path.join(model, "stainscale.csv"), os.path.join(post, "stainscale_combined.csv")]:
+        ss = pd.read_csv(csv, index_col=0)
+        np.testing.assert_allclose(ss.loc[anchor], 1., atol=1e-5)

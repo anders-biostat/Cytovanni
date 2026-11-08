@@ -8,7 +8,8 @@ gates), with plots only where they exercise plotting code, and with the data red
   (`FIXED_BATCHES`);
 - variable spectra: the last date and the date that shares the most samples with it (`VARIABLE_DATES`), only the
   samples measured on both dates, the reference samples of both dates, and the rainbow beads of these batches and of
-  the single-stain runs (all runs are needed for the spectra PCA).
+  the single-stain runs (all runs are needed for the spectra PCA). The variable-spectra model has two fits as in the
+  tutorial: the spectral fit (`variable_model`) and the per-marker post-scaling on top of it (`variable_post`).
 """
 import os
 import shutil
@@ -31,6 +32,7 @@ VARIABLE_DATES = [20240201, 20240418]              # last date, and the date wit
 VARIABLE_ANCHORS = {"batch": ["18-APR-2024"], "batch_ref": ["20240418_tcell_A"]}
 FIXED_MARKERS_NORMALIZE = ['BV510', 'BV605', 'BB515', 'BUV396', 'BUV805', 'APC', 'APC-R700', 'APC-H7', 'BYG670']
 VARIABLE_FIXED_INIT = "HD7_Compensation_20240418_tcell"
+VARIABLE_UNSCALED = ["BUV661", "BV605", "BB700", "PE-CF594", "PE-Cy7 (BD)", "eflour"]   # too few positive cells; live/dead
 
 
 def device():
@@ -234,7 +236,7 @@ def variable_model(cal, dye, out, Niter=1500):
     train = [ad for ad in adatas if ad.uns["is_train"]]
     pc = cytovanni.spill.PanelConfiguration.from_saved(os.path.join(dye, "panel_HD7_TCell.pt"))
     scale_stains = pd.Series(True, index=pc.stains)
-    scale_stains.loc[["BUV661", "BV605", "BB700", "PE-CF594", "PE-Cy7 (BD)", "eflour"]] = False
+    scale_stains.loc[VARIABLE_UNSCALED] = False
     key_comp_batch = pd.Series("batch", index=pc.pca_components.index.to_numpy(), dtype=str)
     key_comp_batch.loc[pc.pca_components_stain == "BV786"] = "batch_ref"
     moe = cytovanni.ref.MultiOrdinalEncoder.from_adatas(train, keys_batch=["batch", "batch_ref"],
@@ -260,6 +262,35 @@ def variable_model(cal, dye, out, Niter=1500):
     sfm.fit(Niter=Niter, lr=2e-2)
     sfm.save(os.path.join(out, "model.pt"))
     np.exp(sfm.transformer.learned_stainlogscale).to_csv(os.path.join(out, "stainscale.csv"))
+
+
+def variable_post(cal, model, out, Niter=800):
+    """Per-marker post-scaling of the variable-spectra tutorial: a `ScalingTransformer` on the unmixed output of the
+    spectral model (stains named by dye), added to the spectral model with `incorporate_stain_scaling`."""
+    adatas = [ad for ad in variable_load_samples(cal) if ad.uns["is_train"]]
+    sfm = cytovanni.ref.OverlapFitModel.from_saved(os.path.join(model, "model.pt")).to(device())
+    for ad in adatas:
+        sfm.add_ad_standardised(ad, key_layer="raw", addkey="unmx_standardised", name_by="stain")
+    stains = pd.Series(True, index=sfm.transformer.stains)
+    stains.loc[VARIABLE_UNSCALED] = False
+    moe = cytovanni.ref.MultiOrdinalEncoder.from_adatas(adatas, keys_batch=["batch", "batch_ref"],
+                                                        nested={"batch_ref": ["batch", "order_batch_ref"]})
+    anchor_bidx = moe.transform_dict_simple(VARIABLE_ANCHORS)
+    dataset = cytovanni.ref.SampleOverlapDataset(adatas, moe, stains.index[stains], keys_sample_covariate=["ovlp_uid"],
+                                                 key_id="ovlp_uid", key_layer="unmx_standardised", load_obsm=True,
+                                                 key_batch_sample="batch", data_isanchor=None, sN_cells=1500,
+                                                 sN_persample=2, device=device(), data_on_device=True)
+    transformer = cytovanni.ref.ScalingTransformer.from_data(moe, dataset.make_dummy_spectra(), scale_stains=True,
+                                                             key_scale_stains="batch", arcsinh_cofactor=5000,
+                                                             L1weight_stainscale=1e-7, anchor_bidx=anchor_bidx)
+    post = cytovanni.ref.OverlapFitModel.from_data(moe, transformer, dataset, DDIST_mode="sinkhorn",
+                                                   DDIST_kwargs={"blur": .5, "reach": 1.}, DDIST_separate=True).to(device())
+    post.fit(Niter=Niter, lr=5e-3, optimizer="Adam")
+    post.save(os.path.join(out, "model_post.pt"))
+    np.exp(post.transformer.learned_stainlogscale).to_csv(os.path.join(out, "stainscale_post.csv"))
+    combined = sfm.incorporate_stain_scaling(post)
+    combined.save(os.path.join(out, "model_combined.pt"))
+    np.exp(combined.transformer.learned_stainlogscale).to_csv(os.path.join(out, "stainscale_combined.csv"))
 
 
 def aliquot_mismatch(adatas, key, cofactor=1500, quantiles=(.5, .9)):
