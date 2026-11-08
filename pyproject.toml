@@ -50,6 +50,7 @@ path = "src/cytovanni/version.py"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["src"]        # test the checkout, also when another cytovanni version is installed
 addopts = "-ra --strict-markers -m 'not data and not keops'"
 markers = [
     "slow: larger fits (deselect with -m 'not slow')",
