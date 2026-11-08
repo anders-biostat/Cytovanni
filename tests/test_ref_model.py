@@ -12,22 +12,10 @@ from cytovanni.ref import (DummyTransformer, MultiOrdinalEncoder, OverlapFitMode
                            SampleOverlapDataset, ScalingTransformer, SpectralFitTransformer, UnmxErrorExclusionMultiplier)
 from cytovanni.ref.model import _sum_loss_separate_markers, _sum_loss_separate_markers_loop
 from cytovanni.torch import GeomSampleLoss, MMDLoss
-from synthetic import PANEL_COMPONENTS, make_panelconfig_csv, panel_spectra_of, set_transformer_params
+from synthetic import overlap_adatas, PANEL_COMPONENTS, make_panelconfig_csv, panel_spectra_of, set_transformer_params
 
 CH = synthetic.CHANNELS_FLUORESCENCE
 ST = synthetic.STAINS
-
-
-def overlap_adatas(n=1000, batches=synthetic.BATCHES, abundances=None):
-    """One reference sample measured in every batch, on the calibrated scale (stain scales of synthetic.STAIN_SCALES)."""
-    ab = synthetic.cell_abundances(n, np.random.default_rng(7)) if abundances is None else abundances
-    ads = []
-    for i, b in enumerate(batches):
-        rng = np.random.default_rng(i)
-        sp = synthetic.SPECTRA.to_numpy()
-        x = (ab * synthetic.STAIN_SCALES.loc[b].to_numpy()[None]) @ sp + 15 * rng.normal(size=ab.shape)
-        ads.append(synthetic.make_adata(x, CH, batch=b, uid=f"ref_{b}", type="ref"))
-    return ads
 
 
 def quiet(f, *a, **k):

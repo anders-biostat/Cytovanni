@@ -165,6 +165,18 @@ def cell_adata(batch, n=2000, seed=0, abundances=None, uid=None, **uns):
     return make_adata(x, CHANNELS_FLUORESCENCE, batch=batch, uid=batch if uid is None else uid, type="same", **uns)
 
 
+def overlap_adatas(n=1000, batches=BATCHES, abundances=None):
+    """One reference sample measured in every batch, on the calibrated scale (stain scales of STAIN_SCALES)."""
+    ab = cell_abundances(n, np.random.default_rng(7)) if abundances is None else abundances
+    ads = []
+    for i, b in enumerate(batches):
+        rng = np.random.default_rng(i)
+        sp = SPECTRA.to_numpy()
+        x = (ab * STAIN_SCALES.loc[b].to_numpy()[None]) @ sp + 15 * rng.normal(size=ab.shape)
+        ads.append(make_adata(x, CHANNELS_FLUORESCENCE, batch=b, uid=f"ref_{b}", type="ref"))
+    return ads
+
+
 # ======================================================================== rainbow fits (shared by test modules)
 class ShortTrainer(RainbowFluorescenceGMMCalibrationTrainer):
     """The trainer with a short default schedule, for `fit_fluorescence` in tests."""
