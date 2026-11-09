@@ -15,7 +15,7 @@ Workflow
    `mfi_cv_table`, `width_cv_table`, `replicate_correlation_table`.
 3. Optional counting-noise correction: `proportion_cv_counting_noise` / `mfi_cv_counting_noise` simulate the CVs that
    finite cell numbers alone produce, `subtract_counting_noise` removes them in quadrature.
-4. Controls: `gaussian_negative` replaces intensities around zero by Gaussian noise, so that a mixing score (e.g. the SAS of
+4. Controls: `gaussian_negative` replaces low intensities by Gaussian noise, so that a mixing score (e.g. the SAS of
    `cytovanni.utils.alignment`) no longer rewards agreement of the noise around zero.
 
 Pairs are given as a DataFrame with columns ``left`` and ``right`` (sample names, the index of the summary tables), or
@@ -627,8 +627,8 @@ def subtract_counting_noise(table, noise, column="CV", quantiles=QUANTILES):
 
 
 # ================================================================ controls
-def gaussian_negative(values, cutoff=1000, scale=200, rng=None):
-    """Replace all intensities in [-cutoff, cutoff] by Gaussian noise ``N(0, scale^2)`` (control for mixing scores).
+def gaussian_negative(values, cutoff=1000, scale=200, threshold_on="raw", rng=None):
+    """Replace low intensities by Gaussian noise ``N(0, scale^2)`` (control for mixing scores).
 
     A mixing score such as the SAS also rewards batches whose noise around zero (non-expressed markers) looks alike.
     Replacing every value around zero by the same Gaussian in all batches removes this part, so the score of the result only
@@ -640,10 +640,13 @@ def gaussian_negative(values, cutoff=1000, scale=200, rng=None):
     values : pandas.DataFrame or numpy.ndarray, shape (events, marker)
         Linear marker intensities.
     cutoff : float
-        Entries with ``-cutoff <= value <= cutoff`` are replaced; values further below zero (e.g. from unmixing) are
-        kept, like the positive ones.
+        Threshold for the replacement, see `threshold_on`.
     scale : float
         Standard deviation of the noise (e.g. 200, or 25 for a narrow variant).
+    threshold_on : {"raw", "abs"}
+        What is compared with `cutoff`. ``"raw"``: the value itself, entries with ``value < cutoff`` are replaced, also
+        large negative ones. ``"abs"``: its absolute value, entries with ``-cutoff <= value <= cutoff`` are replaced and
+        values further below zero (e.g. from unmixing) are kept, like the positive ones.
     rng : None, int, numpy.random.RandomState or numpy.random.Generator
         Random state, see the module docstring. For a reproducible draw per sample use e.g.
         ``rng=stable_seed(0, sample_name)``.
@@ -654,8 +657,10 @@ def gaussian_negative(values, cutoff=1000, scale=200, rng=None):
         Copy with the replaced entries (a DataFrame keeps index and columns; float32 is upcast to float64). NaN entries
         stay NaN.
     """
+    if threshold_on not in ("raw", "abs"):
+        raise ValueError(f"threshold_on must be 'raw' or 'abs', not {threshold_on!r}")
     noise = _rng(rng).normal(0, scale, values.shape)
-    if isinstance(values, pd.DataFrame):
-        return values.mask(values.abs() <= cutoff, noise)
-    values = np.asarray(values)
-    return np.where(np.abs(values) <= cutoff, noise, values)
+    is_frame = isinstance(values, pd.DataFrame)
+    values = values if is_frame else np.asarray(values)
+    low = values < cutoff if threshold_on == "raw" else abs(values) <= cutoff
+    return values.mask(low, noise) if is_frame else np.where(low, noise, values)

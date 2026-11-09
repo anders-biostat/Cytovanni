@@ -5,7 +5,7 @@ From: pytorch/pytorch:2.8.0-cuda12.9-cudnn9-devel
     pip install --no-cache-dir uv
 
     uv pip install --system jupyter ipykernel
-    uv pip install --system "cytovanni[all]==1.2.0"
+    uv pip install --system "cytovanni[all]==1.2.1"
     # test suite (run from a clone of the repository, see docs/tutorials/container.md)
     uv pip install --system pytest pytest-cov pytest-xdist
 
@@ -32,7 +32,7 @@ From: pytorch/pytorch:2.8.0-cuda12.9-cudnn9-devel
 
 %labels
     Author valentinwust
-    Version v1.2.0
+    Version v1.2.1
 
 %help
     Container that can run all parts of Cytovanni, including its test suite.
