@@ -18,9 +18,10 @@ However, our preferred way is using this container as a Jupyter kernel.
 For this, you need to create a script `init_kernel.sh` containing
 ```bash
 #!/bin/bash
+[[ "$1" == "-f" ]] || exit 1
 apptainer exec --nv /path/to/cytovanni-container.sif python -m ipykernel "$@"
 ```
-`--nv` enables the container to access the graphics card, and `/path/to` should be replaced by the correct path structure.
+`--nv` enables the container to access the graphics card, and `/path/to` should be replaced by the correct path structure. The second line speeds up the startup when using the kernel through VSCode.
 Apptainer automatically mounts the user directory; you can additionally mount other directories using `--bind`.
 You then need to create a custom Jupyter kernel file, first by creating the folder
 ```bash
