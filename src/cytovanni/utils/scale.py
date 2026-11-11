@@ -296,8 +296,9 @@ class ArcSinhFormatter(mticker.Formatter):
 
         Horizontally (y axis): the labels are aligned at the end of the part before the exponent, so the 0 stands
         under the 0 of 10^p and the exponents stick out towards the axis. Right-aligned labels (left axis) keep their
-        right edge where the label with the widest exponent ends; left-aligned labels (right axis) start where the
-        label with the widest part before the exponent starts.
+        right edge where the label with the widest exponent ends. Left-aligned labels (right axis) stay where they
+        are, except the 0, which moves to stand under the 0 of the positive 10^p (the minus sign of negative labels
+        does not indent the others).
 
         The tick objects are reused for other positions, so all of them are reset at every draw.
         """
@@ -316,6 +317,10 @@ class ArcSinhFormatter(mticker.Formatter):
             for lb in set(lb for lb in labels if lb):
                 head[lb] = _label_box(_base_label(lb), fontprops, figure)[0]
                 tail[lb] = _label_box(lb, fontprops, figure)[0] - head[lb]
+            # left-aligned labels: only the 0 moves, to end where the part before the exponent of the positive labels
+            # ends (of the negative ones if there is no positive label)
+            positive = [head[lb] for lb in head if lb != format_label(0) and not lb.startswith(r"$\mathdefault{-")]
+            ref_head = max(positive or list(head.values()))
         dpi_scale = figure.dpi_scale_trans
         for tick, label in zip(ticks, labels):
             down = (shift if onx else shift / 2) if label == format_label(0) else 0.
@@ -327,8 +332,8 @@ class ArcSinhFormatter(mticker.Formatter):
                     ha = text.get_horizontalalignment()
                     if ha == "right":
                         right = tail[label] - max(tail.values())
-                    elif ha == "left":
-                        right = max(head.values()) - head[label]
+                    elif ha == "left" and label == format_label(0):
+                        right = ref_head - head[label]
                 text.set_transform(transform + mtransforms.ScaledTranslation(right / 72., -d / 72., dpi_scale))
 
 
