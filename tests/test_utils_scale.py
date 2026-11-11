@@ -160,6 +160,41 @@ def test_zero_label_baseline_aligned_with_power_labels(onx):
     plt.close(fig)
 
 
+@pytest.mark.parametrize("side", ["left", "right"])
+def test_y_labels_aligned_by_their_digits(side):
+    """On a y axis the 0 stands under the 0 of 10^p. Left axis: the parts before the exponents end at the same x.
+    Right axis: the labels keep their common start, only the 0 moves under the 0 of the positive 10^p."""
+    from cytovanni.utils.scale import _base_label, _label_box
+    fig, ax, axis = _plot(5000., (-1e5, 1e6), onx=False)
+    if side == "right":
+        axis.tick_right()
+    fig.canvas.draw()
+    renderer = fig.canvas.get_renderer()
+    lo, hi = sorted(axis.get_view_interval())
+    ends, starts = {}, {}
+    for tick in axis.get_major_ticks():
+        text = tick.label1 if side == "left" else tick.label2
+        label = text.get_text()
+        if not label or not lo <= tick.get_loc() <= hi:
+            continue
+        head = _label_box(_base_label(label), text.get_fontproperties(), fig)[0] * fig.dpi / 72
+        starts[label] = text.get_window_extent(renderer).x0
+        ends[label] = starts[label] + head
+    zero = r"$\mathdefault{0}$"
+    assert zero in ends and len(ends) >= 4 and any("-" in lb for lb in ends)
+    if side == "left":
+        assert max(ends.values()) - min(ends.values()) < .5                # pixels
+    else:
+        positive = [lb for lb in ends if lb != zero and "-" not in lb]
+        assert all(abs(ends[zero] - ends[lb]) < .5 for lb in positive)
+        others = [starts[lb] for lb in starts if lb != zero]
+        assert max(others) - min(others) < .5 and starts[zero] > min(others) + 2
+    if side == "left":
+        # the 0 moved left of the axis edge, the power labels with the widest exponent did not move
+        assert ends[r"$\mathdefault{0}$"] < ax.get_window_extent(renderer).x0 - 5
+    plt.close(fig)
+
+
 @pytest.mark.parametrize("lim, expected", [((2e3, 8e3), [2e3, 5e3]),          # no power of ten: 2 and 5 x 10^p
                                            ((-8e3, -2e3), [-5e3, -2e3]),
                                            ((3e3, 5e4), None)])                 # one power, no 0: one more label

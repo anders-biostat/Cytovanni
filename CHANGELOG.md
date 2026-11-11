@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.2.2 (2026-11-11)
+
+- Arcsinh axis labels (`"arcsinh"` scale and `set_arcsinh_ticks`) on a y axis are aligned by their digits: the 0
+  stands under the 0 of 10^p instead of under the exponent. On a right-hand y axis only the 0 moves. Plots only.
+
 ## 1.2.1 (2026-11-09)
 
 - `cytovanni.utils.batcheval.gaussian_negative` has a `threshold_on` argument. The default `"raw"` replaces every value

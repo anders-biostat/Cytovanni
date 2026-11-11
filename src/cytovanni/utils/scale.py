@@ -5,7 +5,8 @@ labelled in scientific notation like a log axis; the powers close to 0, which cr
 out as far as needed for the labels to fit. Minor ticks are at 2..9 x 10^p, and continue to the unlabelled powers
 below the labels as far as they stay apart. If that leaves fewer than two labels (no power of ten in the view, or
 one without the 0), labels at m x 10^p are added (2 and 5 preferred, e.g. 2x10^3 and 5x10^3). All of this depends on
-the size of the axis and the font of the tick labels and is recomputed at every draw.
+the size of the axis and the font of the tick labels and is recomputed at every draw. On a y axis the labels are
+aligned by their digits: the 0 stands under the 0 of 10^p, the exponents stick out towards the axis.
 
 Two ways to use it:
 
@@ -77,6 +78,11 @@ def format_label(value):
     if m == 1:
         return r"$\mathdefault{%s10^{%d}}$" % (sign, p)
     return r"$\mathdefault{%s%d\times10^{%d}}$" % (sign, m, p)
+
+
+def _base_label(label):
+    """`label` without its exponent (``-10`` of ``-10^{3}``); labels without one are returned unchanged."""
+    return label.split("^{")[0] + "}$" if "^{" in label else label
 
 
 def _label_box(label, fontprops, figure):
@@ -277,15 +283,24 @@ class ArcSinhFormatter(mticker.Formatter):
     def format_ticks(self, values):
         labels = super().format_ticks(values)
         if self.axis is not None and len(values):
-            self._align_zero(labels)
+            self._align_labels(labels)
         return labels
 
-    def _align_zero(self, labels):
-        """Put the baseline of the 0 label on that of the power labels.
+    def _align_labels(self, labels):
+        """Put the baseline of the 0 label on that of the power labels and, on a y axis, the labels under each other
+        by their digits.
 
-        Tick labels are aligned by their top (x axis) or the middle of their height above the baseline (y axis), and
-        the superscript makes the power labels taller than the 0: the 0 is moved down by the difference (x) or half
-        of it (y). The tick objects are reused for other positions, so all of them are reset at every draw.
+        Vertically: tick labels are aligned by their top (x axis) or the middle of their height above the baseline
+        (y axis), and the superscript makes the power labels taller than the 0: the 0 is moved down by the difference
+        (x) or half of it (y).
+
+        Horizontally (y axis): the labels are aligned at the end of the part before the exponent, so the 0 stands
+        under the 0 of 10^p and the exponents stick out towards the axis. Right-aligned labels (left axis) keep their
+        right edge where the label with the widest exponent ends. Left-aligned labels (right axis) stay where they
+        are, except the 0, which moves to stand under the 0 of the positive 10^p (the minus sign of negative labels
+        does not indent the others).
+
+        The tick objects are reused for other positions, so all of them are reset at every draw.
         """
         ticks = self.axis.get_major_ticks(len(labels))
         fontprops = ticks[0].label1.get_fontproperties()
@@ -296,13 +311,30 @@ class ArcSinhFormatter(mticker.Formatter):
             shift = max(_label_box(lb, fontprops, figure)[2] for lb in set(powers)) \
                 - _label_box(format_label(0), fontprops, figure)[2]
         onx = self.axis.axis_name == "x"
+        # width of the exponent of each label and of the part before it, in points
+        tail, head = {}, {}
+        if not onx:
+            for lb in set(lb for lb in labels if lb):
+                head[lb] = _label_box(_base_label(lb), fontprops, figure)[0]
+                tail[lb] = _label_box(lb, fontprops, figure)[0] - head[lb]
+            # left-aligned labels: only the 0 moves, to end where the part before the exponent of the positive labels
+            # ends (of the negative ones if there is no positive label)
+            positive = [head[lb] for lb in head if lb != format_label(0) and not lb.startswith(r"$\mathdefault{-")]
+            ref_head = max(positive or list(head.values()))
         dpi_scale = figure.dpi_scale_trans
         for tick, label in zip(ticks, labels):
             down = (shift if onx else shift / 2) if label == format_label(0) else 0.
             # label2 of the x axis (top) is aligned at its bottom: no shift needed there
             for text, transform, d in [(tick.label1, tick._get_text1_transform()[0], down),
                                        (tick.label2, tick._get_text2_transform()[0], 0. if onx else down)]:
-                text.set_transform(transform + mtransforms.ScaledTranslation(0, -d / 72., dpi_scale))
+                right = 0.
+                if label in tail:
+                    ha = text.get_horizontalalignment()
+                    if ha == "right":
+                        right = tail[label] - max(tail.values())
+                    elif ha == "left" and label == format_label(0):
+                        right = ref_head - head[label]
+                text.set_transform(transform + mtransforms.ScaledTranslation(right / 72., -d / 72., dpi_scale))
 
 
 class ArcSinhScale(mscale.ScaleBase):
