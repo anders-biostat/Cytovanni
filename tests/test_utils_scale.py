@@ -160,6 +160,33 @@ def test_zero_label_baseline_aligned_with_power_labels(onx):
     plt.close(fig)
 
 
+@pytest.mark.parametrize("side", ["left", "right"])
+def test_y_labels_aligned_by_their_digits(side):
+    """On a y axis the 0 stands under the 0 of 10^p: the parts before the exponents end at the same x, on both sides
+    of the axes (labels right-aligned on the left, left-aligned on the right)."""
+    from cytovanni.utils.scale import _base_label, _label_box
+    fig, ax, axis = _plot(5000., (-1e5, 1e6), onx=False)
+    if side == "right":
+        axis.tick_right()
+    fig.canvas.draw()
+    renderer = fig.canvas.get_renderer()
+    lo, hi = sorted(axis.get_view_interval())
+    ends = {}
+    for tick in axis.get_major_ticks():
+        text = tick.label1 if side == "left" else tick.label2
+        label = text.get_text()
+        if not label or not lo <= tick.get_loc() <= hi:
+            continue
+        head = _label_box(_base_label(label), text.get_fontproperties(), fig)[0] * fig.dpi / 72
+        ends[label] = text.get_window_extent(renderer).x0 + head
+    assert r"$\mathdefault{0}$" in ends and len(ends) >= 4
+    assert max(ends.values()) - min(ends.values()) < .5                    # pixels
+    if side == "left":
+        # the 0 moved left of the axis edge, the power labels with the widest exponent did not move
+        assert ends[r"$\mathdefault{0}$"] < ax.get_window_extent(renderer).x0 - 5
+    plt.close(fig)
+
+
 @pytest.mark.parametrize("lim, expected", [((2e3, 8e3), [2e3, 5e3]),          # no power of ten: 2 and 5 x 10^p
                                            ((-8e3, -2e3), [-5e3, -2e3]),
                                            ((3e3, 5e4), None)])                 # one power, no 0: one more label
