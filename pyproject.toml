@@ -68,6 +68,9 @@ filterwarnings = [
 source = ["cytovanni"]
 branch = true
 
+[tool.hatch.build.targets.sdist]
+exclude = ["/docs"]
+
 [tool.coverage.report]
 fail_under = 70
 show_missing = false

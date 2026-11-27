@@ -19,3 +19,5 @@ It assumes batch effects have two sources:
 
 Because every correction is linear and has few parameters, technical variation is removed while biological differences
 between samples are kept. The method also stays compatible with unstained and FMO controls.
+
+The documentation is still a work in progress; a current draft of the associated paper [is available in this git.](https://raw.githubusercontent.com/anders-biostat/Cytovanni/main/docs/paper_draft.pdf)
